@@ -2,3 +2,4 @@
 transformers>=4.40
 torch>=2.1
 datasets>=2.16
+protobuf>=4.25

@@ -1,7 +1,7 @@
 from effirag.baselines import run_naive_graphrag
 from effirag.config import RetrievalConfig
 from effirag.metrics import supporting_fact_recall
-from effirag.retrieval import run_effirag
+from effirag.retrieval import _personalized_pagerank, run_effirag
 from effirag.types import ContextDocument, Sample
 
 
@@ -47,3 +47,16 @@ def test_supporting_fact_recall_in_range():
     result = run_effirag(sample, cfg)
     recall = supporting_fact_recall(sample, result)
     assert 0.0 <= recall <= 1.0
+
+
+def test_personalized_pagerank_spreads_mass_to_neighbors():
+    import networkx as nx
+
+    g = nx.Graph()
+    g.add_edge("a", "b")
+    g.add_edge("b", "c")
+
+    scores = _personalized_pagerank(g, source="a", alpha=0.15)
+    assert scores["a"] > 0.0
+    assert scores["b"] > 0.0
+    assert scores["c"] > 0.0

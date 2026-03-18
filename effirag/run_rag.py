@@ -1,4 +1,5 @@
 import argparse
+import json
 from dataclasses import asdict
 from pathlib import Path
 
@@ -8,6 +9,7 @@ from .metrics import supporting_fact_precision, supporting_fact_recall
 from .qa_metrics import exact_match_score, token_f1_score
 from .registry import get_dataset_loader, get_generator, get_method, register_defaults
 from .render import render_context
+from .types import AnchorResult, RetrievalResult
 from .utils import (
     append_jsonl,
     load_yaml,
@@ -18,6 +20,59 @@ from .utils import (
     write_json,
     write_jsonl,
 )
+
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover
+    def tqdm(iterable, **kwargs):
+        return iterable
+
+
+def _reconstruct_retrieval(payload: dict) -> RetrievalResult:
+    anchor_results = []
+    for item in payload.get("anchor_results", []) or []:
+        anchor_results.append(
+            AnchorResult(
+                anchor=item.get("anchor", ""),
+                scores=item.get("scores", {}) or {},
+                top_candidates=item.get("top_candidates", []) or [],
+                sample_index=int(item.get("sample_index", 0)),
+                metadata=item.get("metadata", {}) or {},
+            )
+        )
+
+    return RetrievalResult(
+        sample_id=str(payload.get("sample_id", "")),
+        method=str(payload.get("method", "")),
+        anchors=[str(x) for x in (payload.get("anchors", []) or [])],
+        seeds=[str(x) for x in (payload.get("seeds", []) or [])],
+        selected_nodes=[str(x) for x in (payload.get("selected_nodes", []) or [])],
+        selected_sentence_ids=[str(x) for x in (payload.get("selected_sentence_ids", []) or [])],
+        selected_sentences=[str(x) for x in (payload.get("selected_sentences", []) or [])],
+        anchor_results=anchor_results,
+        diagnostics=payload.get("diagnostics", {}) or {},
+        latency_ms=float(payload.get("latency_ms", 0.0)),
+    )
+
+
+def _load_precomputed_retrieval(path: str):
+    by_sample_id = {}
+    fp = Path(path)
+    if not fp.exists():
+        raise FileNotFoundError(f"Precomputed retrieval file not found: {path}")
+
+    with fp.open("r", encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            row = json.loads(line)
+            sample_id = str(row.get("sample_id", ""))
+            retrieval_payload = row.get("retrieval", {}) or {}
+            if not sample_id:
+                continue
+            by_sample_id[sample_id] = _reconstruct_retrieval(retrieval_payload)
+    return by_sample_id
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -54,7 +109,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def execute_rag_experiment(cfg):
+def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieval_path: str = None):
     register_defaults()
 
     loader = get_dataset_loader(cfg.dataset)
@@ -62,12 +117,21 @@ def execute_rag_experiment(cfg):
     generator_fn = get_generator(cfg.generator)
 
     samples = loader(split=cfg.split, limit=cfg.limit, data_path=cfg.data_path)
+    retrieval_cache = {}
+    if precomputed_retrieval_path:
+        retrieval_cache = _load_precomputed_retrieval(precomputed_retrieval_path)
 
     rows = []
     cfg_values = asdict(cfg)
     run_stamp = timestamp_for_filename()
     run_iso = timestamp_iso_utc()
-    for sample in samples:
+    for sample in tqdm(
+        samples,
+        total=len(samples),
+        desc=f"RAG[{cfg.method}/{cfg.generator}]",
+        leave=False,
+        disable=not show_progress,
+    ):
         total_timer = Timer()
         total_timer.start()
 
@@ -76,7 +140,9 @@ def execute_rag_experiment(cfg):
 
         cpu_peak = process_rss_mb() if cfg.measure_cpu_ram else 0.0
 
-        retrieval = method_fn(sample, cfg)
+        retrieval = retrieval_cache.get(sample.qid)
+        if retrieval is None:
+            retrieval = method_fn(sample, cfg)
         rendered = render_context(sample, retrieval, cfg.max_context_sentences)
 
         if cfg.measure_cpu_ram:

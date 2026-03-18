@@ -61,18 +61,40 @@ def _parse_hotpot_record(rec):
     answer = rec.get("answer", "")
 
     contexts = []
-    for c in rec.get("context", []):
-        if not isinstance(c, list) or len(c) != 2:
-            continue
-        title, sents = c
-        contexts.append(ContextDocument(title=str(title), sentences=[str(x) for x in sents]))
+    raw_context = rec.get("context", [])
+    if isinstance(raw_context, dict):
+        # HF hotpot_qa schema: {"title": [...], "sentences": [[...], ...]}
+        titles = raw_context.get("title", [])
+        sentences = raw_context.get("sentences", [])
+        for title, sents in zip(titles, sentences):
+            contexts.append(
+                ContextDocument(
+                    title=str(title),
+                    sentences=[str(x) for x in (sents or [])],
+                )
+            )
+    elif isinstance(raw_context, list):
+        # Local schema: [[title, [sent1, sent2]], ...]
+        for c in raw_context:
+            if not isinstance(c, list) or len(c) != 2:
+                continue
+            title, sents = c
+            contexts.append(ContextDocument(title=str(title), sentences=[str(x) for x in (sents or [])]))
 
     supporting_facts = []
-    for sf in rec.get("supporting_facts", []):
-        if not isinstance(sf, list) or len(sf) != 2:
-            continue
-        title, sent_idx = sf
-        supporting_facts.append((str(title), int(sent_idx)))
+    raw_supporting_facts = rec.get("supporting_facts", [])
+    if isinstance(raw_supporting_facts, dict):
+        # HF hotpot_qa schema: {"title": [...], "sent_id": [...]}
+        titles = raw_supporting_facts.get("title", [])
+        sent_ids = raw_supporting_facts.get("sent_id", [])
+        for title, sent_idx in zip(titles, sent_ids):
+            supporting_facts.append((str(title), int(sent_idx)))
+    elif isinstance(raw_supporting_facts, list):
+        for sf in raw_supporting_facts:
+            if not isinstance(sf, list) or len(sf) != 2:
+                continue
+            title, sent_idx = sf
+            supporting_facts.append((str(title), int(sent_idx)))
 
     return Sample(
         qid=qid,

@@ -16,6 +16,12 @@ from .utils import (
     write_jsonl,
 )
 
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover
+    def tqdm(iterable, **kwargs):
+        return iterable
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run retrieval-only EffiRAG experiments.")
@@ -71,7 +77,7 @@ def _worker(sample, cfg_values: dict):
     }
 
 
-def execute_retrieval_experiment(cfg):
+def execute_retrieval_experiment(cfg, show_progress: bool = True):
     register_defaults()
 
     loader = get_dataset_loader(cfg.dataset)
@@ -86,11 +92,23 @@ def execute_retrieval_experiment(cfg):
     if cfg.num_workers > 1 and len(samples) > 1:
         with ProcessPoolExecutor(max_workers=cfg.num_workers) as executor:
             futures = [executor.submit(_worker, sample, cfg_values) for sample in samples]
-            for fut in as_completed(futures):
+            for fut in tqdm(
+                as_completed(futures),
+                total=len(futures),
+                desc=f"Retrieval[{cfg.method}]",
+                leave=False,
+                disable=not show_progress,
+            ):
                 rows.append(fut.result())
         rows.sort(key=lambda x: x["sample_id"])
     else:
-        for sample in samples:
+        for sample in tqdm(
+            samples,
+            total=len(samples),
+            desc=f"Retrieval[{cfg.method}]",
+            leave=False,
+            disable=not show_progress,
+        ):
             retrieval = method_fn(sample, cfg)
             recall = supporting_fact_recall(sample, retrieval)
             precision = supporting_fact_precision(sample, retrieval)

@@ -15,20 +15,49 @@ def _personalized_pagerank(g, source, alpha):
     if source not in g:
         return {}
 
-    personalization = {}
-    for node in g.nodes:
-        personalization[node] = 0.0
+    # Personalized PageRank with no SciPy dependency.
+    # alpha is teleport probability in this project config.
+    nodes = list(g.nodes)
+    if not nodes:
+        return {}
+
+    n = len(nodes)
+    teleport = alpha
+    damping = 1.0 - alpha
+    tol = 1.0e-6
+    max_iter = 100
+
+    personalization = {node: 0.0 for node in nodes}
     personalization[source] = 1.0
 
-    try:
-        return nx.pagerank(
-            g,
-            alpha=1.0 - alpha,
-            personalization=personalization,
-            max_iter=100,
-        )
-    except Exception:
+    ranks = dict(personalization)
+    dangling = [node for node in nodes if g.degree(node) == 0]
+
+    for _ in range(max_iter):
+        prev = ranks
+        ranks = {node: teleport * personalization[node] for node in nodes}
+
+        dangling_mass = damping * sum(prev[node] for node in dangling)
+        if dangling_mass > 0.0:
+            for node in nodes:
+                ranks[node] += dangling_mass * personalization[node]
+
+        for node in nodes:
+            deg = g.degree(node)
+            if deg == 0:
+                continue
+            share = damping * prev[node] / float(deg)
+            for nbr in g.neighbors(node):
+                ranks[nbr] += share
+
+        err = sum(abs(ranks[node] - prev[node]) for node in nodes)
+        if err < n * tol:
+            break
+
+    norm = sum(ranks.values())
+    if norm <= 0.0:
         return {source: 1.0}
+    return {node: score / norm for node, score in ranks.items()}
 
 
 def _topk_nodes(scores, k):
