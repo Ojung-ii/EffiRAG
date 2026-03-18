@@ -1,0 +1,27 @@
+dataset: hotpotqa
+split: validation
+method: effirag
+output_dir: outputs/rag
+limit: 100
+
+max_anchors: 4
+samples_per_anchor: 8
+num_workers: 1
+candidate_top_t: 20
+seed_k: 4
+pair_top_lp: 4
+corridor_top_bc: 20
+trim_on: true
+trim_rho: 0.75
+
+run_qa: true
+generator: heuristic
+model_name: ""
+max_context_sentences: 15
+measure_gpu_peak: false
+measure_cpu_ram: true
+
+ppr_alpha: 0.15
+tau: 4
+edge_drop_prob: 0.1
+random_seed: 42

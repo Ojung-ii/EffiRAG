@@ -1,0 +1,4 @@
+-r requirements-retrieval.txt
+transformers>=4.40
+torch>=2.1
+datasets>=2.16
