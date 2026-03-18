@@ -1,0 +1,12 @@
+effirag_toy/
+├── configs.py
+├── types.py
+├── utils.py
+├── toy_graph.py
+├── diffusion.py
+├── seed_selection.py
+├── corridor_trimming.py
+├── baselines.py
+├── metrics.py
+├── run_toy.py
+└── plot_toy.py
