@@ -1,10 +1,10 @@
-# EffiRAG MVP (HotpotQA)
+# EffiRAG MVP (Multi-dataset)
 
 Modular minimum-viable GraphRAG experiment codebase with:
-- Dataset: `hotpotqa`
+- Dataset: `hotpotqa`, `musique`, `2wikimultihopqa`, `popqa`
 - Method: `effirag`
 - Baseline: `naive_graphrag`
-- Retrieval eval: supporting-fact recall/precision
+- Retrieval eval: supporting-fact recall/precision + Recall@K (`K=1,2,5,10,20,30,50,100,150,200`)
 - QA eval: EM and token F1
 - Efficiency eval: retrieval latency and total latency
 - Optional efficiency eval: GPU peak memory and CPU RAM
@@ -18,11 +18,13 @@ EffiRAG/
   requirements-rag.txt
   environment.template.yml
   scripts/
+    build_datasets.sh
     run_retrieval.sh
     run_rag.sh
     run_ablation.sh
     run_toy.sh
     run_grid.sh
+    run_dataset_suite.sh
   configs/
     retrieval.yaml
     rag.yaml
@@ -43,10 +45,13 @@ EffiRAG/
     metrics.py
     qa_metrics.py
     efficiency.py
+    prepare_datasets.py
     run_retrieval.py
     run_rag.py
     run_ablation.py
   tests/
+    test_datasets.py
+    test_generator.py
     test_retrieval.py
     test_render.py
     test_metrics.py
@@ -76,11 +81,33 @@ conda activate effirag
 
 ## Data
 
-Supported dataset name is currently `hotpotqa`.
+Supported dataset names:
+- `hotpotqa`
+- `musique`
+- `2wikimultihopqa` (alias: `twowikimultihopqa`)
+- `popqa`
 
 You can run with:
-- local file via `--data-path` (`.json` or `.jsonl`, HotpotQA-like schema), or
-- Hugging Face `hotpot_qa` (when available), with automatic fallback demo samples for quick smoke tests.
+- local file via `--data-path` (`.json` or `.jsonl`), or
+- HF datasets (when available), with automatic fallback demo samples for quick smoke tests.
+
+로컬 파일 없이 실행해도 아래 경로가 있으면 자동 탐색합니다:
+- `./data/qa/<dataset>.json`
+- `./data/<dataset>.json`
+- `~/raptor/data/qa/<dataset>.json`
+- `~/HippoRAG/data/<dataset>.json`
+
+데이터셋 구축(정규화 json 생성) 예시:
+
+```bash
+scripts/build_datasets.sh \
+  --datasets hotpotqa,musique,2wikimultihopqa,popqa \
+  --source-root /home/ojungii/raptor/data/qa \
+  --output-root data/qa \
+  --overwrite true
+```
+
+`--source-root`를 생략하면 로더가 HF/자동탐색 경로를 시도합니다.
 
 ## Retrieval Run Example
 
@@ -109,6 +136,19 @@ scripts/run_retrieval.sh
 ```
 
 실행 종료 시 터미널에 요약 결과가 마크다운 테이블로 출력됩니다.
+
+참고: `supporting_fact_recall`은 각 샘플의 최종 선택 문장 전체에 대한 recall이며, 추가로 `Recall@K` 평균(`supporting_fact_recall_at_<K>`)이 요약 json에 저장됩니다.
+
+렌더링 모드:
+- `effirag`: 기본 `corridor` (메서드 기반 자동 선택)
+- `naive_graphrag`: 기본 `flat`
+- 수동 지정: `--render-mode flat|corridor`
+
+corridor 렌더 예산 파라미터:
+- `--max-corridors-in-context` (default: 2)
+- `--max-main-sentences-per-corridor` (default: 2)
+- `--max-support-per-corridor` (default: 1)
+- `--max-total-sentences` (default: 12)
 
 ## RAG Run Example
 
@@ -143,6 +183,26 @@ scripts/run_rag.sh
 ```
 
 실행 종료 시 터미널에 요약 결과가 마크다운 테이블로 출력됩니다.
+
+## Multi-dataset RAG Run
+
+`hotpotqa,musique,2wikimultihopqa,popqa`를 순차 실행:
+
+```bash
+scripts/run_dataset_suite.sh \
+  --data-root data/qa \
+  --model-name Qwen/Qwen2.5-7B-Instruct
+```
+
+샘플 제한 테스트:
+
+```bash
+scripts/run_dataset_suite.sh \
+  --datasets musique,2wikimultihopqa,popqa \
+  --data-root data/qa \
+  --limit 100 \
+  --model-name Qwen/Qwen2.5-7B-Instruct
+```
 
 ## Ablation Run Example
 

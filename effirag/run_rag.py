@@ -5,7 +5,13 @@ from pathlib import Path
 
 from .config import RagConfig, apply_cli_overrides, dataclass_from_dict
 from .efficiency import Timer, gpu_peak_mb, process_rss_mb, reset_gpu_peak
-from .metrics import supporting_fact_precision, supporting_fact_recall
+from .metrics import (
+    DEFAULT_RECALL_KS,
+    supporting_fact_ids,
+    supporting_fact_precision,
+    supporting_fact_recall,
+    supporting_fact_recall_at_ks,
+)
 from .qa_metrics import exact_match_score, token_f1_score
 from .registry import get_dataset_loader, get_generator, get_method, register_defaults
 from .render import render_context
@@ -49,6 +55,7 @@ def _reconstruct_retrieval(payload: dict) -> RetrievalResult:
         selected_nodes=[str(x) for x in (payload.get("selected_nodes", []) or [])],
         selected_sentence_ids=[str(x) for x in (payload.get("selected_sentence_ids", []) or [])],
         selected_sentences=[str(x) for x in (payload.get("selected_sentences", []) or [])],
+        corridors=payload.get("corridors", []) or [],
         anchor_results=anchor_results,
         diagnostics=payload.get("diagnostics", {}) or {},
         latency_ms=float(payload.get("latency_ms", 0.0)),
@@ -99,6 +106,23 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--generator", type=str, default=None, choices=["heuristic", "oracle", "hf"])
     parser.add_argument("--model-name", type=str, default=None)
     parser.add_argument("--max-context-sentences", type=int, default=None)
+    parser.add_argument("--render-mode", type=str, default=None, choices=["flat", "corridor", "corridor_aware_flat"])
+    parser.add_argument("--max-corridors-in-context", type=int, default=None)
+    parser.add_argument("--max-main-sentences-per-corridor", type=int, default=None)
+    parser.add_argument("--max-support-per-corridor", type=int, default=None)
+    parser.add_argument("--max-total-sentences", type=int, default=None)
+    parser.add_argument("--alpha", type=float, default=None)
+    parser.add_argument("--beta", type=float, default=None)
+    parser.add_argument("--gamma-main", type=float, default=None)
+    parser.add_argument("--delta-support", type=float, default=None)
+    parser.add_argument("--eta-connector", type=float, default=None)
+    parser.add_argument("--zeta-query", type=float, default=None)
+    parser.add_argument("--xi-locality", type=float, default=None)
+    parser.add_argument("--lambda-redundancy", type=float, default=None)
+    parser.add_argument("--top-corridors", type=int, default=None)
+    parser.add_argument("--max-sentences", type=int, default=None)
+    parser.add_argument("--reserve-top-corridor", type=str, default=None)
+    parser.add_argument("--order-strategy", type=str, default=None, choices=["score", "retrieval", "corridor_rank"])
     parser.add_argument("--measure-gpu-peak", type=str, default=None)
     parser.add_argument("--measure-cpu-ram", type=str, default=None)
 
@@ -143,7 +167,29 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         retrieval = retrieval_cache.get(sample.qid)
         if retrieval is None:
             retrieval = method_fn(sample, cfg)
-        rendered = render_context(sample, retrieval, cfg.max_context_sentences)
+        render_mode = cfg.render_mode or ("corridor_aware_flat" if cfg.method == "effirag" else "flat")
+        rendered = render_context(
+            sample,
+            retrieval,
+            max_context_sentences=cfg.max_context_sentences,
+            render_mode=render_mode,
+            max_corridors_in_context=cfg.max_corridors_in_context,
+            max_main_sentences_per_corridor=cfg.max_main_sentences_per_corridor,
+            max_support_per_corridor=cfg.max_support_per_corridor,
+            max_total_sentences=cfg.max_total_sentences,
+            alpha=cfg.alpha,
+            beta=cfg.beta,
+            gamma_main=cfg.gamma_main,
+            delta_support=cfg.delta_support,
+            eta_connector=cfg.eta_connector,
+            zeta_query=cfg.zeta_query,
+            xi_locality=cfg.xi_locality,
+            lambda_redundancy=cfg.lambda_redundancy,
+            top_corridors=cfg.top_corridors,
+            max_sentences=cfg.max_sentences,
+            reserve_top_corridor=cfg.reserve_top_corridor,
+            order_strategy=cfg.order_strategy,
+        )
 
         if cfg.measure_cpu_ram:
             cpu_peak = max(cpu_peak, process_rss_mb())
@@ -161,6 +207,11 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
 
         recall = supporting_fact_recall(sample, retrieval)
         precision = supporting_fact_precision(sample, retrieval)
+        recall_at_k = supporting_fact_recall_at_ks(sample, retrieval, ks=DEFAULT_RECALL_KS)
+        gold_ids = supporting_fact_ids(sample)
+        rendered_ids = set(rendered.sentence_ids)
+        rendered_recall = float(len(gold_ids.intersection(rendered_ids)) / len(gold_ids)) if gold_ids else 0.0
+        rendered_precision = float(len(gold_ids.intersection(rendered_ids)) / len(rendered_ids)) if rendered_ids else 0.0
 
         efficiency = {
             "retrieval_latency_ms": retrieval.latency_ms,
@@ -175,6 +226,9 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         metrics = {
             "supporting_fact_recall": recall,
             "supporting_fact_precision": precision,
+            "recall_at_k": recall_at_k,
+            "rendered_supporting_fact_recall": rendered_recall,
+            "rendered_supporting_fact_precision": rendered_precision,
             "em": em,
             "f1": f1,
         }
@@ -190,7 +244,15 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                 "metrics": metrics,
                 "efficiency": efficiency,
                 "retrieval": asdict(retrieval),
+                "retrieval_selected_sentence_ids": list(retrieval.selected_sentence_ids),
                 "rendered": asdict(rendered),
+                "rendered_sentence_ids": list(rendered.sentence_ids),
+                "rendered_corridor_ids": list(rendered.rendered_corridor_ids),
+                "rendering": {
+                    "render_mode": rendered.render_mode,
+                    "truncated_corridors": rendered.truncated_corridor_count,
+                    "truncated_sentences": rendered.truncated_sentence_count,
+                },
                 "generation": asdict(generation) if generation else None,
             }
         )
@@ -205,13 +267,30 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         "generator": cfg.generator,
         "supporting_fact_recall": mean_or_zero([r["metrics"]["supporting_fact_recall"] for r in rows]),
         "supporting_fact_precision": mean_or_zero([r["metrics"]["supporting_fact_precision"] for r in rows]),
+        "rendered_supporting_fact_recall": mean_or_zero(
+            [r["metrics"].get("rendered_supporting_fact_recall", 0.0) for r in rows]
+        ),
+        "rendered_supporting_fact_precision": mean_or_zero(
+            [r["metrics"].get("rendered_supporting_fact_precision", 0.0) for r in rows]
+        ),
         "em": mean_or_zero([r["metrics"]["em"] for r in rows]),
         "f1": mean_or_zero([r["metrics"]["f1"] for r in rows]),
         "retrieval_latency_ms": mean_or_zero([r["efficiency"]["retrieval_latency_ms"] for r in rows]),
         "total_latency_ms": mean_or_zero([r["efficiency"]["total_latency_ms"] for r in rows]),
+        "truncated_corridors_avg": mean_or_zero([r.get("rendering", {}).get("truncated_corridors", 0.0) for r in rows]),
+        "truncated_sentences_avg": mean_or_zero([r.get("rendering", {}).get("truncated_sentences", 0.0) for r in rows]),
         "run_timestamp": run_stamp,
         "run_timestamp_utc": run_iso,
     }
+
+    recall_at_k_summary = {}
+    for k in DEFAULT_RECALL_KS:
+        key = str(int(k))
+        vals = [float((r["metrics"].get("recall_at_k", {}) or {}).get(key, 0.0)) for r in rows]
+        agg = mean_or_zero(vals)
+        recall_at_k_summary[key] = agg
+        summary[f"supporting_fact_recall_at_{key}"] = agg
+    summary["supporting_fact_recall_at_k"] = recall_at_k_summary
 
     if cfg.run_qa:
         summary["generation_latency_ms"] = mean_or_zero([r["efficiency"]["generation_latency_ms"] for r in rows])
@@ -269,10 +348,16 @@ def main() -> None:
                 "generator",
                 "samples",
                 "sf_recall",
+                "Recall@1",
+                "Recall@5",
+                "Recall@20",
+                "rendered_sf_recall",
                 "EM",
                 "F1",
                 "retrieval_ms",
                 "total_ms",
+                "trunc_corr_avg",
+                "trunc_sent_avg",
             ],
             [
                 [
@@ -281,10 +366,16 @@ def main() -> None:
                     summary["generator"],
                     int(summary["n_samples"]),
                     "%.4f" % summary["supporting_fact_recall"],
+                    "%.4f" % summary.get("supporting_fact_recall_at_1", 0.0),
+                    "%.4f" % summary.get("supporting_fact_recall_at_5", 0.0),
+                    "%.4f" % summary.get("supporting_fact_recall_at_20", 0.0),
+                    "%.4f" % summary.get("rendered_supporting_fact_recall", 0.0),
                     "%.4f" % summary["em"],
                     "%.4f" % summary["f1"],
                     "%.2f" % summary["retrieval_latency_ms"],
                     "%.2f" % summary["total_latency_ms"],
+                    "%.2f" % summary.get("truncated_corridors_avg", 0.0),
+                    "%.2f" % summary.get("truncated_sentences_avg", 0.0),
                 ]
             ],
         )

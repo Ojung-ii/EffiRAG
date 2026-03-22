@@ -3,15 +3,15 @@ split: validation
 output_dir: outputs/ablation
 limit: 100
 
-max_anchors: 4
+max_anchors: 6
 samples_per_anchor: 8
 num_workers: 4
 candidate_top_t: 20
 seed_k: 4
-pair_top_lp: 4
+pair_top_lp: 3
 corridor_top_bc: 20
 trim_on: true
-trim_rho: 0.75
+trim_rho: 0.6
 
 ppr_alpha: 0.15
 tau: 4

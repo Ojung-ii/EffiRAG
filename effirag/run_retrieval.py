@@ -4,7 +4,13 @@ from dataclasses import asdict
 from pathlib import Path
 
 from .config import RetrievalConfig, apply_cli_overrides, dataclass_from_dict
-from .metrics import aggregate_retrieval_metrics, supporting_fact_precision, supporting_fact_recall
+from .metrics import (
+    DEFAULT_RECALL_KS,
+    aggregate_retrieval_metrics,
+    supporting_fact_precision,
+    supporting_fact_recall,
+    supporting_fact_recall_at_ks,
+)
 from .registry import get_dataset_loader, get_method, register_defaults
 from .utils import (
     append_jsonl,
@@ -64,6 +70,7 @@ def _worker(sample, cfg_values: dict):
 
     recall = supporting_fact_recall(sample, retrieval)
     precision = supporting_fact_precision(sample, retrieval)
+    recall_at_k = supporting_fact_recall_at_ks(sample, retrieval, ks=DEFAULT_RECALL_KS)
 
     return {
         "sample_id": sample.qid,
@@ -71,6 +78,7 @@ def _worker(sample, cfg_values: dict):
         "method": retrieval.method,
         "supporting_fact_recall": recall,
         "supporting_fact_precision": precision,
+        "recall_at_k": recall_at_k,
         "retrieval_latency_ms": retrieval.latency_ms,
         "selected_sentence_count": len(retrieval.selected_sentence_ids),
         "retrieval": asdict(retrieval),
@@ -112,6 +120,7 @@ def execute_retrieval_experiment(cfg, show_progress: bool = True):
             retrieval = method_fn(sample, cfg)
             recall = supporting_fact_recall(sample, retrieval)
             precision = supporting_fact_precision(sample, retrieval)
+            recall_at_k = supporting_fact_recall_at_ks(sample, retrieval, ks=DEFAULT_RECALL_KS)
             rows.append(
                 {
                     "sample_id": sample.qid,
@@ -119,6 +128,7 @@ def execute_retrieval_experiment(cfg, show_progress: bool = True):
                     "method": retrieval.method,
                     "supporting_fact_recall": recall,
                     "supporting_fact_precision": precision,
+                    "recall_at_k": recall_at_k,
                     "retrieval_latency_ms": retrieval.latency_ms,
                     "selected_sentence_count": len(retrieval.selected_sentence_ids),
                     "retrieval": asdict(retrieval),
@@ -181,6 +191,9 @@ def main() -> None:
                 "samples",
                 "supporting_fact_recall",
                 "supporting_fact_precision",
+                "recall@1",
+                "recall@5",
+                "recall@20",
                 "retrieval_latency_ms",
             ],
             [
@@ -190,6 +203,9 @@ def main() -> None:
                     int(summary["n_samples"]),
                     "%.4f" % summary["supporting_fact_recall"],
                     "%.4f" % summary["supporting_fact_precision"],
+                    "%.4f" % summary.get("supporting_fact_recall_at_1", 0.0),
+                    "%.4f" % summary.get("supporting_fact_recall_at_5", 0.0),
+                    "%.4f" % summary.get("supporting_fact_recall_at_20", 0.0),
                     "%.2f" % summary["retrieval_latency_ms"],
                 ]
             ],

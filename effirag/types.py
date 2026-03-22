@@ -36,6 +36,7 @@ class RetrievalResult:
     selected_nodes: List[str]
     selected_sentence_ids: List[str]
     selected_sentences: List[str]
+    corridors: List[Dict[str, Any]] = field(default_factory=list)
     anchor_results: List[AnchorResult] = field(default_factory=list)
     diagnostics: Dict[str, Any] = field(default_factory=dict)
     latency_ms: float = 0.0
@@ -49,6 +50,11 @@ class RenderedContext:
     sentences: List[str]
     sentence_ids: List[str]
     truncated: bool
+    render_mode: str = "flat"
+    rendered_corridor_ids: List[str] = field(default_factory=list)
+    truncated_corridor_count: int = 0
+    truncated_sentence_count: int = 0
+    retrieval_selected_sentence_ids: List[str] = field(default_factory=list)
 
 
 @dataclass

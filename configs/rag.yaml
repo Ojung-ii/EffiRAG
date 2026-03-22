@@ -4,20 +4,25 @@ method: effirag
 output_dir: outputs/rag
 limit: 100
 
-max_anchors: 4
+max_anchors: 6
 samples_per_anchor: 8
 num_workers: 1
 candidate_top_t: 20
 seed_k: 4
-pair_top_lp: 4
+pair_top_lp: 3
 corridor_top_bc: 20
 trim_on: true
-trim_rho: 0.75
+trim_rho: 0.6
 
 run_qa: true
 generator: heuristic
 model_name: ""
-max_context_sentences: 15
+max_context_sentences: 10
+render_mode: ""
+max_corridors_in_context: 2
+max_main_sentences_per_corridor: 2
+max_support_per_corridor: 1
+max_total_sentences: 12
 measure_gpu_peak: false
 measure_cpu_ram: true
 

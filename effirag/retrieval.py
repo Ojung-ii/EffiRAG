@@ -9,6 +9,7 @@ from .config import RetrievalConfig
 from .graph import build_document_entity_graph
 from .registry import register_method
 from .types import AnchorResult, RetrievalResult
+from .utils import content_tokens
 
 
 def _personalized_pagerank(g, source, alpha):
@@ -127,6 +128,86 @@ def _pair_support(anchor_scores, seed_scores, node):
     return sqrt(anchor_scores.get(node, 0.0) * seed_scores.get(node, 0.0))
 
 
+def _ordered_unique(items):
+    seen = set()
+    ordered = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        ordered.append(item)
+    return ordered
+
+
+def _sentence_node_to_id(g, node):
+    if g.nodes[node].get("node_type") != "sentence":
+        return None
+    return str(g.nodes[node].get("sentence_id", node))
+
+
+def _build_single_corridor_payload(g, anchor, seed, corridor_id, corridor_score, node_scores):
+    ordered_nodes = [node for node, _ in node_scores]
+    local_nodes = set(ordered_nodes) | {anchor, seed}
+    local_graph = g.subgraph(local_nodes).copy()
+
+    path_nodes = []
+    if anchor in local_graph and seed in local_graph:
+        try:
+            path_nodes = nx.shortest_path(local_graph, anchor, seed)
+        except Exception:
+            path_nodes = []
+
+    main_sentence_nodes = [node for node in path_nodes if g.nodes[node].get("node_type") == "sentence"]
+    if not main_sentence_nodes:
+        main_sentence_nodes = [node for node, _ in node_scores if g.nodes[node].get("node_type") == "sentence"]
+
+    connector_nodes = {node for node in path_nodes if g.nodes[node].get("node_type") != "sentence"}
+    main_sentence_set = set(main_sentence_nodes)
+    candidate_support_nodes = [
+        node
+        for node, _ in node_scores
+        if g.nodes[node].get("node_type") == "sentence" and node not in main_sentence_set
+    ]
+
+    adjacent_support_nodes = []
+    for node in candidate_support_nodes:
+        nbrs = set(g.neighbors(node))
+        if nbrs.intersection(main_sentence_set) or nbrs.intersection(connector_nodes):
+            adjacent_support_nodes.append(node)
+
+    support_sentence_nodes = _ordered_unique(adjacent_support_nodes + candidate_support_nodes)
+
+    sentence_score_map = {}
+    for node, score in node_scores:
+        sid = _sentence_node_to_id(g, node)
+        if sid is None:
+            continue
+        sentence_score_map[sid] = max(float(score), sentence_score_map.get(sid, 0.0))
+
+    main_sentence_ids = _ordered_unique([_sentence_node_to_id(g, node) for node in main_sentence_nodes if node in g])
+    main_sentence_ids = [sid for sid in main_sentence_ids if sid]
+
+    support_sentence_ids = _ordered_unique([_sentence_node_to_id(g, node) for node in support_sentence_nodes if node in g])
+    support_sentence_ids = [sid for sid in support_sentence_ids if sid and sid not in set(main_sentence_ids)]
+    connector_adjacent_sentence_ids = _ordered_unique(
+        [_sentence_node_to_id(g, node) for node in adjacent_support_nodes if node in g]
+    )
+    connector_adjacent_sentence_ids = [
+        sid for sid in connector_adjacent_sentence_ids if sid and sid not in set(main_sentence_ids)
+    ]
+
+    return {
+        "corridor_id": corridor_id,
+        "corridor_score": float(corridor_score),
+        "anchors": [str(anchor), str(seed)],
+        "main_path_sentence_ids": main_sentence_ids,
+        "support_sentence_ids": support_sentence_ids,
+        "connector_adjacent_sentence_ids": connector_adjacent_sentence_ids,
+        "sentence_score_map": sentence_score_map,
+        "path_node_ids": [str(node) for node in path_nodes],
+    }
+
+
 def _build_corridor(
     g,
     anchors,
@@ -137,7 +218,7 @@ def _build_corridor(
     corridor_top_bc,
 ):
     if not anchors or not seeds:
-        return g.subgraph(anchors + list(seeds)).copy(), [], {}
+        return g.subgraph(anchors + list(seeds)).copy(), [], {}, []
 
     seed_score_map = {}
     for seed in seeds:
@@ -155,11 +236,13 @@ def _build_corridor(
 
     pair_stats.sort(key=lambda x: x[1], reverse=True)
     retained_pairs = [pair for pair, _ in pair_stats[:pair_top_lp]]
+    pair_score_map = {pair: score for pair, score in pair_stats}
 
     corridor_nodes = set()
     sentence_scores = {}
+    corridor_payloads = []
 
-    for anchor, seed in retained_pairs:
+    for idx, (anchor, seed) in enumerate(retained_pairs, start=1):
         a_scores = anchor_scores_by_node.get(anchor, {})
         z_scores = seed_score_map.get(seed, {})
         node_scores = []
@@ -169,15 +252,27 @@ def _build_corridor(
             node_scores.append((node, s))
 
         node_scores.sort(key=lambda x: x[1], reverse=True)
-        for node, score in node_scores[:corridor_top_bc]:
+        top_node_scores = node_scores[:corridor_top_bc]
+        for node, score in top_node_scores:
             corridor_nodes.add(node)
             sentence_scores[node] = max(sentence_scores.get(node, 0.0), score)
 
         corridor_nodes.add(anchor)
         corridor_nodes.add(seed)
 
+        corridor_payloads.append(
+            _build_single_corridor_payload(
+                g=g,
+                anchor=anchor,
+                seed=seed,
+                corridor_id=f"c{idx:02d}",
+                corridor_score=pair_score_map.get((anchor, seed), 0.0),
+                node_scores=top_node_scores,
+            )
+        )
+
     h = g.subgraph(corridor_nodes).copy()
-    return h, retained_pairs, sentence_scores
+    return h, retained_pairs, sentence_scores, corridor_payloads
 
 
 def _can_remove_node(h, node, anchors, min_seed_keep, seeds):
@@ -235,7 +330,113 @@ def _extract_sentence_payload(g, selected_nodes, sentence_scores):
     sentences.sort(key=lambda x: x[2], reverse=True)
     sentence_ids = [sid for sid, _, _ in sentences]
     sentence_text = [text for _, text, _ in sentences]
-    return sentence_ids, sentence_text
+    sentence_score_map = {sid: float(score) for sid, _, score in sentences}
+    return sentence_ids, sentence_text, sentence_score_map
+
+
+def _filter_corridor_payloads(corridors, selected_sentence_ids):
+    selected = set(selected_sentence_ids)
+    filtered = []
+
+    for corridor in corridors:
+        main_ids = [sid for sid in corridor.get("main_path_sentence_ids", []) if sid in selected]
+        main_set = set(main_ids)
+        support_ids = [
+            sid
+            for sid in corridor.get("support_sentence_ids", [])
+            if sid in selected and sid not in main_set
+        ]
+        connector_adjacent_ids = [
+            sid
+            for sid in corridor.get("connector_adjacent_sentence_ids", [])
+            if sid in selected and sid not in main_set
+        ]
+
+        if not main_ids and not support_ids:
+            continue
+
+        payload = dict(corridor)
+        payload["main_path_sentence_ids"] = main_ids
+        payload["support_sentence_ids"] = support_ids
+        payload["connector_adjacent_sentence_ids"] = connector_adjacent_ids
+        filtered.append(payload)
+
+    return filtered
+
+
+def _build_sentence_feature_table(sample, selected_sentence_ids, sentence_texts, sentence_score_map, corridors):
+    question_tokens = set(content_tokens(sample.question))
+    sentence_text_map = {sid: text for sid, text in zip(selected_sentence_ids, sentence_texts)}
+    selected_set = set(selected_sentence_ids)
+
+    ranked_corridors = sorted(corridors or [], key=lambda c: float(c.get("corridor_score", 0.0)), reverse=True)
+    corridor_rank = {str(c.get("corridor_id", f"c{idx:02d}")): idx for idx, c in enumerate(ranked_corridors, start=1)}
+
+    feature_table = {}
+    for global_idx, sid in enumerate(selected_sentence_ids):
+        feature_table[sid] = {
+            "corridor_ids": [],
+            "best_corridor_rank": None,
+            "best_corridor_score": 0.0,
+            "is_main_candidate": False,
+            "is_support_candidate": False,
+            "is_connector_adjacent": False,
+            "query_overlap_score": 0.0,
+            "locality_score": 1.0 / float(global_idx + 1),
+            "base_retrieval_score": float(sentence_score_map.get(sid, 0.0)),
+        }
+
+    for idx, corridor in enumerate(ranked_corridors, start=1):
+        cid = str(corridor.get("corridor_id", f"c{idx:02d}"))
+        cscore = float(corridor.get("corridor_score", 0.0))
+        main_ids = [sid for sid in corridor.get("main_path_sentence_ids", []) if sid in selected_set]
+        support_ids = [sid for sid in corridor.get("support_sentence_ids", []) if sid in selected_set]
+        connector_ids = [sid for sid in corridor.get("connector_adjacent_sentence_ids", []) if sid in selected_set]
+
+        for mpos, sid in enumerate(main_ids):
+            item = feature_table.get(sid)
+            if item is None:
+                continue
+            if cid not in item["corridor_ids"]:
+                item["corridor_ids"].append(cid)
+            item["is_main_candidate"] = True
+            item["best_corridor_score"] = max(item["best_corridor_score"], cscore)
+            if item["best_corridor_rank"] is None or idx < item["best_corridor_rank"]:
+                item["best_corridor_rank"] = idx
+            item["locality_score"] = max(item["locality_score"], 1.0 / float((idx) * (mpos + 1)))
+
+        for spos, sid in enumerate(support_ids):
+            item = feature_table.get(sid)
+            if item is None:
+                continue
+            if cid not in item["corridor_ids"]:
+                item["corridor_ids"].append(cid)
+            item["is_support_candidate"] = True
+            item["best_corridor_score"] = max(item["best_corridor_score"], cscore)
+            if item["best_corridor_rank"] is None or idx < item["best_corridor_rank"]:
+                item["best_corridor_rank"] = idx
+            item["locality_score"] = max(item["locality_score"], 0.75 / float((idx) * (spos + 1)))
+
+        for sid in connector_ids:
+            item = feature_table.get(sid)
+            if item is None:
+                continue
+            item["is_connector_adjacent"] = True
+
+    for sid, item in feature_table.items():
+        sent = sentence_text_map.get(sid, "")
+        sent_tokens = set(content_tokens(sent))
+        item["query_overlap_score"] = float(len(question_tokens.intersection(sent_tokens)))
+        item["corridor_ids"] = sorted(
+            item["corridor_ids"],
+            key=lambda cid: corridor_rank.get(cid, 10**9),
+        )
+        if item["best_corridor_rank"] is None and item["corridor_ids"]:
+            item["best_corridor_rank"] = corridor_rank.get(item["corridor_ids"][0])
+        if item["best_corridor_rank"] is None:
+            item["best_corridor_rank"] = 10**9
+
+    return feature_table
 
 
 def run_graphrag_core(
@@ -326,7 +527,7 @@ def run_graphrag_core(
             }
         )
 
-    corridor, retained_pairs, sentence_scores = _build_corridor(
+    corridor, retained_pairs, sentence_scores, corridor_payloads = _build_corridor(
         g=g,
         anchors=anchors,
         seeds=chosen["seeds"],
@@ -341,7 +542,17 @@ def run_graphrag_core(
         final_graph = _greedy_trim(corridor.copy(), anchors=anchors, seeds=chosen["seeds"], rho=cfg.trim_rho)
 
     selected_nodes = set(final_graph.nodes())
-    selected_sentence_ids, selected_sentences = _extract_sentence_payload(g, selected_nodes, sentence_scores)
+    selected_sentence_ids, selected_sentences, selected_sentence_score_map = _extract_sentence_payload(
+        g, selected_nodes, sentence_scores
+    )
+    filtered_corridors = _filter_corridor_payloads(corridor_payloads, selected_sentence_ids)
+    sentence_feature_table = _build_sentence_feature_table(
+        sample=sample,
+        selected_sentence_ids=selected_sentence_ids,
+        sentence_texts=selected_sentences,
+        sentence_score_map=selected_sentence_score_map,
+        corridors=filtered_corridors,
+    )
 
     anchor_results = []
     for anchor in anchors:
@@ -366,14 +577,17 @@ def run_graphrag_core(
         selected_nodes=sorted(selected_nodes),
         selected_sentence_ids=selected_sentence_ids,
         selected_sentences=selected_sentences,
+        corridors=filtered_corridors,
         anchor_results=anchor_results,
         diagnostics={
             "best_run_id": chosen.get("run_id", 0),
             "num_seeds": len(chosen["seeds"]),
             "retained_pairs": [[a, z] for a, z in retained_pairs],
+            "num_corridors": len(filtered_corridors),
             "corridor_nodes_before_trim": corridor.number_of_nodes(),
             "corridor_nodes_after_trim": final_graph.number_of_nodes(),
             "sentence_scores": sentence_scores,
+            "sentence_feature_table": sentence_feature_table,
             "stable_seed_selection": stable_seed_selection,
             "trim_enabled": enable_trim and cfg.trim_on,
         },

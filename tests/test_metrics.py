@@ -1,4 +1,4 @@
-from effirag.metrics import supporting_fact_recall
+from effirag.metrics import supporting_fact_recall, supporting_fact_recall_at_k
 from effirag.qa_metrics import exact_match_score, token_f1_score
 from effirag.types import ContextDocument, RetrievalResult, Sample
 
@@ -27,3 +27,25 @@ def test_supporting_fact_recall_metric():
     )
 
     assert supporting_fact_recall(sample, retrieval) == 1.0
+
+
+def test_supporting_fact_recall_at_k_metric():
+    sample = Sample(
+        qid="m2",
+        question="q",
+        answer="a",
+        contexts=[ContextDocument(title="Doc", sentences=["s0", "s1"])],
+        supporting_facts=[("Doc", 0), ("Doc", 1)],
+    )
+    retrieval = RetrievalResult(
+        sample_id="m2",
+        method="effirag",
+        anchors=[],
+        seeds=[],
+        selected_nodes=[],
+        selected_sentence_ids=["Doc::0", "Doc::9", "Doc::1"],
+        selected_sentences=["s0", "bad", "s1"],
+    )
+
+    assert supporting_fact_recall_at_k(sample, retrieval, 1) == 0.5
+    assert supporting_fact_recall_at_k(sample, retrieval, 3) == 1.0
