@@ -23,7 +23,18 @@ def _get_global_graph(cfg):
 
     cache_dir = str(getattr(cfg, "graph_cache_dir", "") or "outputs/index_cache").strip()
     force_rebuild = bool(getattr(cfg, "force_rebuild_graph_index", False))
-    memo_key = (str(Path(corpus_path).resolve()), str(Path(cache_dir).resolve()))
+    openie_mode = str(getattr(cfg, "openie_mode", "llm") or "llm").strip().lower()
+    openie_model_name = str(getattr(cfg, "openie_model_name", "") or "").strip()
+    openie_text_max_chars = int(getattr(cfg, "openie_text_max_chars", 2200))
+    openie_max_new_tokens = int(getattr(cfg, "openie_max_new_tokens", 256))
+    memo_key = (
+        str(Path(corpus_path).resolve()),
+        str(Path(cache_dir).resolve()),
+        openie_mode,
+        openie_model_name,
+        openie_text_max_chars,
+        openie_max_new_tokens,
+    )
 
     if (not force_rebuild) and memo_key in _GLOBAL_INDEX_MEMO:
         graph, meta = _GLOBAL_INDEX_MEMO[memo_key]
@@ -35,6 +46,10 @@ def _get_global_graph(cfg):
         corpus_path=corpus_path,
         cache_dir=cache_dir,
         force_rebuild=force_rebuild,
+        openie_mode=openie_mode,
+        openie_model_name=openie_model_name,
+        openie_text_max_chars=openie_text_max_chars,
+        openie_max_new_tokens=openie_max_new_tokens,
     )
     _GLOBAL_INDEX_MEMO[memo_key] = (graph, dict(meta))
     meta = dict(meta)

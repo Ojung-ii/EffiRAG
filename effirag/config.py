@@ -15,6 +15,10 @@ class RetrievalConfig:
     global_corpus_path: str = ""
     graph_cache_dir: str = "outputs/index_cache"
     force_rebuild_graph_index: bool = False
+    openie_mode: str = "llm"
+    openie_model_name: str = "Qwen/Qwen2.5-7B-Instruct"
+    openie_text_max_chars: int = 2200
+    openie_max_new_tokens: int = 256
 
     max_anchors: int = 6
     samples_per_anchor: int = 8

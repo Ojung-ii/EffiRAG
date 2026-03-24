@@ -11,6 +11,10 @@ def _build_parser():
     parser.add_argument("--corpus-path", type=str, required=True)
     parser.add_argument("--cache-dir", type=str, default="outputs/index_cache")
     parser.add_argument("--force-rebuild", type=str, default="false")
+    parser.add_argument("--openie-mode", type=str, default="llm", choices=["llm", "lexical"])
+    parser.add_argument("--openie-model-name", type=str, default="Qwen/Qwen2.5-7B-Instruct")
+    parser.add_argument("--openie-text-max-chars", type=int, default=2200)
+    parser.add_argument("--openie-max-new-tokens", type=int, default=256)
     return parser
 
 
@@ -23,6 +27,10 @@ def main():
         corpus_path=args.corpus_path,
         cache_dir=args.cache_dir,
         force_rebuild=force_rebuild,
+        openie_mode=args.openie_mode,
+        openie_model_name=args.openie_model_name,
+        openie_text_max_chars=args.openie_text_max_chars,
+        openie_max_new_tokens=args.openie_max_new_tokens,
     )
 
     index_dir = Path(meta.get("index_dir", args.cache_dir))
@@ -31,6 +39,10 @@ def main():
         "corpus_path": str(Path(args.corpus_path).resolve()),
         "cache_dir": str(Path(args.cache_dir).resolve()),
         "force_rebuild": bool(force_rebuild),
+        "openie_mode": str(args.openie_mode),
+        "openie_model_name": str(args.openie_model_name),
+        "openie_text_max_chars": int(args.openie_text_max_chars),
+        "openie_max_new_tokens": int(args.openie_max_new_tokens),
         "cache_hit": bool(meta.get("cache_hit", False)),
         "memory_graph_nodes": int(graph.number_of_nodes()),
         "memory_graph_edges": int(graph.number_of_edges()),

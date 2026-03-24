@@ -9,6 +9,10 @@ limit=""
 global_corpus_root=""
 graph_cache_dir="outputs/index_cache"
 force_rebuild_graph_index="false"
+openie_mode="llm"
+openie_model_name="Qwen/Qwen2.5-7B-Instruct"
+openie_text_max_chars=2200
+openie_max_new_tokens=256
 
 method="effirag"
 generator="hf"
@@ -83,6 +87,22 @@ while [[ $# -gt 0 ]]; do
       ;;
     --force-rebuild-graph-index)
       force_rebuild_graph_index="$2"
+      shift 2
+      ;;
+    --openie-mode)
+      openie_mode="$2"
+      shift 2
+      ;;
+    --openie-model-name)
+      openie_model_name="$2"
+      shift 2
+      ;;
+    --openie-text-max-chars)
+      openie_text_max_chars="$2"
+      shift 2
+      ;;
+    --openie-max-new-tokens)
+      openie_max_new_tokens="$2"
       shift 2
       ;;
     --method)
@@ -226,6 +246,10 @@ Options:
   --global-corpus-root <dir>      Directory containing <dataset>_corpus.json for global KG mode
   --graph-cache-dir <dir>         Graph cache dir (default: outputs/index_cache)
   --force-rebuild-graph-index <bool>  Force rebuild global KG index (default: false)
+  --openie-mode <mode>            llm|lexical (default: llm)
+  --openie-model-name <hf-model>  OpenIE model (default: Qwen/Qwen2.5-7B-Instruct)
+  --openie-text-max-chars <int>   OpenIE input clip length per sentence (default: 2200)
+  --openie-max-new-tokens <int>   OpenIE generation cap (default: 256)
   --model-name <hf-model>         HF model (default: Qwen/Qwen2.5-7B-Instruct)
   --generator <name>              Generator: heuristic|oracle|hf (default: hf)
   --method <name>                 Retrieval method: effirag|naive_graphrag (default: effirag)
@@ -296,6 +320,10 @@ for dataset in "${datasets[@]}"; do
     --global-corpus-path "${global_corpus_path}"
     --graph-cache-dir "${graph_cache_dir}"
     --force-rebuild-graph-index "${force_rebuild_graph_index}"
+    --openie-mode "${openie_mode}"
+    --openie-model-name "${openie_model_name}"
+    --openie-text-max-chars "${openie_text_max_chars}"
+    --openie-max-new-tokens "${openie_max_new_tokens}"
     --max-anchors "${max_anchors}"
     --samples-per-anchor "${samples_per_anchor}"
     --num-workers "${num_workers}"

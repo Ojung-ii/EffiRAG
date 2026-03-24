@@ -101,6 +101,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--global-corpus-path", type=str, default=None)
     parser.add_argument("--graph-cache-dir", type=str, default=None)
     parser.add_argument("--force-rebuild-graph-index", type=str, default=None)
+    parser.add_argument("--openie-mode", type=str, default=None, choices=["llm", "lexical"])
+    parser.add_argument("--openie-model-name", type=str, default=None)
+    parser.add_argument("--openie-text-max-chars", type=int, default=None)
+    parser.add_argument("--openie-max-new-tokens", type=int, default=None)
 
     parser.add_argument("--max-anchors", type=int, default=None)
     parser.add_argument("--samples-per-anchor", type=int, default=None)
@@ -319,6 +323,10 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "global_corpus_path": cfg.global_corpus_path,
             "graph_cache_dir": cfg.graph_cache_dir,
             "force_rebuild_graph_index": cfg.force_rebuild_graph_index,
+            "openie_mode": cfg.openie_mode,
+            "openie_model_name": cfg.openie_model_name,
+            "openie_text_max_chars": cfg.openie_text_max_chars,
+            "openie_max_new_tokens": cfg.openie_max_new_tokens,
             "max_anchors": cfg.max_anchors,
             "samples_per_anchor": cfg.samples_per_anchor,
             "candidate_top_t": cfg.candidate_top_t,

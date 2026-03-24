@@ -145,9 +145,13 @@ scripts/run_retrieval.sh
 
 ```bash
 python3 -m effirag.run_index \
-  --corpus-path data/hipporag2/hotpotqa_corpus.json \
+  --corpus-path data/hotpotqa_corpus.json \
   --cache-dir outputs/index_cache \
-  --force-rebuild false
+  --force-rebuild false \
+  --openie-mode llm \
+  --openie-model-name Qwen/Qwen2.5-7B-Instruct \
+  --openie-text-max-chars 2200 \
+  --openie-max-new-tokens 256
 ```
 
 retrieval/rag 실행 시 아래 옵션을 주면 query-local context 대신 전역 코퍼스 그래프를 사용합니다.
@@ -155,6 +159,14 @@ retrieval/rag 실행 시 아래 옵션을 주면 query-local context 대신 전�
 - `--global-corpus-path`
 - `--graph-cache-dir`
 - `--force-rebuild-graph-index true|false`
+- `--openie-mode llm|lexical` (기본: `llm`)
+- `--openie-model-name`
+- `--openie-text-max-chars`
+- `--openie-max-new-tokens`
+
+참고:
+- 기본 인덱싱은 LLM OpenIE 기반(`llm`)입니다.
+- LLM/모델 로딩 실패 시, 실행은 중단하지 않고 lexical 인덱싱으로 폴백하며 메타(`meta.json -> stats`)에 사유가 기록됩니다.
 
 렌더링 모드:
 - `effirag`: 기본 `corridor_aware_flat` (메서드 기반 자동 선택)

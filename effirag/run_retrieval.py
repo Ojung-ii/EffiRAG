@@ -41,6 +41,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--global-corpus-path", type=str, default=None)
     parser.add_argument("--graph-cache-dir", type=str, default=None)
     parser.add_argument("--force-rebuild-graph-index", type=str, default=None)
+    parser.add_argument("--openie-mode", type=str, default=None, choices=["llm", "lexical"])
+    parser.add_argument("--openie-model-name", type=str, default=None)
+    parser.add_argument("--openie-text-max-chars", type=int, default=None)
+    parser.add_argument("--openie-max-new-tokens", type=int, default=None)
 
     parser.add_argument("--max-anchors", type=int, default=None)
     parser.add_argument("--samples-per-anchor", type=int, default=None)
@@ -147,6 +151,10 @@ def execute_retrieval_experiment(cfg, show_progress: bool = True):
     summary["global_corpus_path"] = str(cfg.global_corpus_path or "")
     summary["graph_cache_dir"] = str(cfg.graph_cache_dir or "")
     summary["force_rebuild_graph_index"] = bool(cfg.force_rebuild_graph_index)
+    summary["openie_mode"] = str(cfg.openie_mode or "")
+    summary["openie_model_name"] = str(cfg.openie_model_name or "")
+    summary["openie_text_max_chars"] = int(cfg.openie_text_max_chars)
+    summary["openie_max_new_tokens"] = int(cfg.openie_max_new_tokens)
     summary["run_timestamp"] = run_stamp
     summary["run_timestamp_utc"] = run_iso
 

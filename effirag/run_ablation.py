@@ -18,6 +18,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--global-corpus-path", type=str, default=None)
     parser.add_argument("--graph-cache-dir", type=str, default=None)
     parser.add_argument("--force-rebuild-graph-index", type=str, default=None)
+    parser.add_argument("--openie-mode", type=str, default=None, choices=["llm", "lexical"])
+    parser.add_argument("--openie-model-name", type=str, default=None)
+    parser.add_argument("--openie-text-max-chars", type=int, default=None)
+    parser.add_argument("--openie-max-new-tokens", type=int, default=None)
 
     parser.add_argument("--max-anchors", type=int, default=None)
     parser.add_argument("--samples-per-anchor", type=int, default=None)
