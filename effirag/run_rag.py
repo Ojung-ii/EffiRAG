@@ -82,6 +82,13 @@ def _load_precomputed_retrieval(path: str):
     return by_sample_id
 
 
+def _is_generation_fallback(generation) -> bool:
+    if generation is None:
+        return False
+    raw = str(getattr(generation, "raw_text", "") or "")
+    return ("HF generation failed" in raw) or ("Fallback(heuristic)" in raw)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run end-to-end EffiRAG QA experiments.")
     parser.add_argument("--config", type=str, default=None)
@@ -149,6 +156,10 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
     cfg_values = asdict(cfg)
     run_stamp = timestamp_for_filename()
     run_iso = timestamp_iso_utc()
+    render_mode_requested = str(cfg.render_mode or "").strip()
+    resolved_render_mode = render_mode_requested or ("corridor_aware_flat" if cfg.method == "effirag" else "flat")
+    retrieval_source_counts = {"precomputed": 0, "on_the_fly": 0}
+    fallback_count = 0
     for sample in tqdm(
         samples,
         total=len(samples),
@@ -165,14 +176,17 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         cpu_peak = process_rss_mb() if cfg.measure_cpu_ram else 0.0
 
         retrieval = retrieval_cache.get(sample.qid)
+        retrieval_source = "precomputed"
         if retrieval is None:
             retrieval = method_fn(sample, cfg)
-        render_mode = cfg.render_mode or ("corridor_aware_flat" if cfg.method == "effirag" else "flat")
+            retrieval_source = "on_the_fly"
+        retrieval_source_counts[retrieval_source] = retrieval_source_counts.get(retrieval_source, 0) + 1
+
         rendered = render_context(
             sample,
             retrieval,
             max_context_sentences=cfg.max_context_sentences,
-            render_mode=render_mode,
+            render_mode=resolved_render_mode,
             max_corridors_in_context=cfg.max_corridors_in_context,
             max_main_sentences_per_corridor=cfg.max_main_sentences_per_corridor,
             max_support_per_corridor=cfg.max_support_per_corridor,
@@ -201,6 +215,8 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             generation = generator_fn(sample, rendered, cfg.model_name)
             em = exact_match_score(generation.prediction, sample.answer)
             f1 = token_f1_score(generation.prediction, sample.answer)
+            if _is_generation_fallback(generation):
+                fallback_count += 1
 
         if cfg.measure_cpu_ram:
             cpu_peak = max(cpu_peak, process_rss_mb())
@@ -239,6 +255,8 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                 "question": sample.question,
                 "answer": sample.answer,
                 "prediction": generation.prediction if generation else "",
+                "qa_executed": bool(generation is not None),
+                "generation_fallback": bool(_is_generation_fallback(generation)),
                 "method": retrieval.method,
                 "generator": cfg.generator,
                 "metrics": metrics,
@@ -250,9 +268,11 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                 "rendered_corridor_ids": list(rendered.rendered_corridor_ids),
                 "rendering": {
                     "render_mode": rendered.render_mode,
+                    "render_mode_requested": render_mode_requested or "(auto)",
                     "truncated_corridors": rendered.truncated_corridor_count,
                     "truncated_sentences": rendered.truncated_sentence_count,
                 },
+                "retrieval_source": retrieval_source,
                 "generation": asdict(generation) if generation else None,
             }
         )
@@ -265,6 +285,17 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         "dataset": cfg.dataset,
         "method": cfg.method,
         "generator": cfg.generator,
+        "run_qa": bool(cfg.run_qa),
+        "qa_executed_samples": float(sum(1 for r in rows if r.get("qa_executed"))),
+        "qa_skipped_samples": float(sum(1 for r in rows if not r.get("qa_executed"))),
+        "render_mode_requested": render_mode_requested or "(auto)",
+        "render_mode_resolved": resolved_render_mode,
+        "precomputed_retrieval_used": bool(precomputed_retrieval_path),
+        "retrieval_source_breakdown": retrieval_source_counts,
+        "fallback_count": int(fallback_count),
+        "fallback_rate": mean_or_zero(
+            [1.0 if r.get("generation_fallback", False) else 0.0 for r in rows if r.get("qa_executed", False)]
+        ),
         "supporting_fact_recall": mean_or_zero([r["metrics"]["supporting_fact_recall"] for r in rows]),
         "supporting_fact_precision": mean_or_zero([r["metrics"]["supporting_fact_precision"] for r in rows]),
         "rendered_supporting_fact_recall": mean_or_zero(
@@ -281,6 +312,39 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         "truncated_sentences_avg": mean_or_zero([r.get("rendering", {}).get("truncated_sentences", 0.0) for r in rows]),
         "run_timestamp": run_stamp,
         "run_timestamp_utc": run_iso,
+        "retrieval_params": {
+            "max_anchors": cfg.max_anchors,
+            "samples_per_anchor": cfg.samples_per_anchor,
+            "candidate_top_t": cfg.candidate_top_t,
+            "seed_k": cfg.seed_k,
+            "pair_top_lp": cfg.pair_top_lp,
+            "corridor_top_bc": cfg.corridor_top_bc,
+            "trim_on": cfg.trim_on,
+            "trim_rho": cfg.trim_rho,
+            "ppr_alpha": cfg.ppr_alpha,
+            "tau": cfg.tau,
+            "edge_drop_prob": cfg.edge_drop_prob,
+            "random_seed": cfg.random_seed,
+        },
+        "render_params": {
+            "max_context_sentences": cfg.max_context_sentences,
+            "max_corridors_in_context": cfg.max_corridors_in_context,
+            "max_main_sentences_per_corridor": cfg.max_main_sentences_per_corridor,
+            "max_support_per_corridor": cfg.max_support_per_corridor,
+            "max_total_sentences": cfg.max_total_sentences,
+            "alpha": cfg.alpha,
+            "beta": cfg.beta,
+            "gamma_main": cfg.gamma_main,
+            "delta_support": cfg.delta_support,
+            "eta_connector": cfg.eta_connector,
+            "zeta_query": cfg.zeta_query,
+            "xi_locality": cfg.xi_locality,
+            "lambda_redundancy": cfg.lambda_redundancy,
+            "top_corridors": cfg.top_corridors,
+            "max_sentences": cfg.max_sentences,
+            "reserve_top_corridor": cfg.reserve_top_corridor,
+            "order_strategy": cfg.order_strategy,
+        },
     }
 
     recall_at_k_summary = {}

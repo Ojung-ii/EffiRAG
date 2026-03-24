@@ -140,9 +140,9 @@ scripts/run_retrieval.sh
 참고: `supporting_fact_recall`은 각 샘플의 최종 선택 문장 전체에 대한 recall이며, 추가로 `Recall@K` 평균(`supporting_fact_recall_at_<K>`)이 요약 json에 저장됩니다.
 
 렌더링 모드:
-- `effirag`: 기본 `corridor` (메서드 기반 자동 선택)
+- `effirag`: 기본 `corridor_aware_flat` (메서드 기반 자동 선택)
 - `naive_graphrag`: 기본 `flat`
-- 수동 지정: `--render-mode flat|corridor`
+- 수동 지정: `--render-mode flat|corridor|corridor_aware_flat`
 
 corridor 렌더 예산 파라미터:
 - `--max-corridors-in-context` (default: 2)
