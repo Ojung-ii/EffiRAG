@@ -1,15 +1,45 @@
 import random
 import time
 from math import sqrt
+from pathlib import Path
 
 import networkx as nx
 
 from .anchors import select_lexical_anchors
 from .config import RetrievalConfig
+from .global_index import load_or_build_global_index
 from .graph import build_document_entity_graph
 from .registry import register_method
 from .types import AnchorResult, RetrievalResult
 from .utils import content_tokens
+
+_GLOBAL_INDEX_MEMO = {}
+
+
+def _get_global_graph(cfg):
+    corpus_path = str(getattr(cfg, "global_corpus_path", "") or "").strip()
+    if not corpus_path:
+        return None, {}
+
+    cache_dir = str(getattr(cfg, "graph_cache_dir", "") or "outputs/index_cache").strip()
+    force_rebuild = bool(getattr(cfg, "force_rebuild_graph_index", False))
+    memo_key = (str(Path(corpus_path).resolve()), str(Path(cache_dir).resolve()))
+
+    if (not force_rebuild) and memo_key in _GLOBAL_INDEX_MEMO:
+        graph, meta = _GLOBAL_INDEX_MEMO[memo_key]
+        meta = dict(meta)
+        meta["memory_cache_hit"] = True
+        return graph, meta
+
+    graph, meta = load_or_build_global_index(
+        corpus_path=corpus_path,
+        cache_dir=cache_dir,
+        force_rebuild=force_rebuild,
+    )
+    _GLOBAL_INDEX_MEMO[memo_key] = (graph, dict(meta))
+    meta = dict(meta)
+    meta["memory_cache_hit"] = False
+    return graph, meta
 
 
 def _personalized_pagerank(g, source, alpha):
@@ -447,9 +477,17 @@ def run_graphrag_core(
     enable_trim,
 ):
     start = time.perf_counter()
+    graph_scope = "query_context"
+    global_index_meta = {}
+    g = None
 
-    artifacts = build_document_entity_graph(sample)
-    g = artifacts.graph
+    if str(getattr(cfg, "global_corpus_path", "") or "").strip():
+        g, global_index_meta = _get_global_graph(cfg)
+        graph_scope = "global_corpus"
+    else:
+        artifacts = build_document_entity_graph(sample)
+        g = artifacts.graph
+
     anchors = select_lexical_anchors(sample, g, cfg.max_anchors)
 
     if not anchors:
@@ -580,6 +618,8 @@ def run_graphrag_core(
         corridors=filtered_corridors,
         anchor_results=anchor_results,
         diagnostics={
+            "graph_scope": graph_scope,
+            "global_index": global_index_meta if graph_scope == "global_corpus" else {},
             "best_run_id": chosen.get("run_id", 0),
             "num_seeds": len(chosen["seeds"]),
             "retained_pairs": [[a, z] for a, z in retained_pairs],

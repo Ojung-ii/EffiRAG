@@ -15,6 +15,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--split", type=str, default=None)
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--output-dir", type=str, default=None)
+    parser.add_argument("--global-corpus-path", type=str, default=None)
+    parser.add_argument("--graph-cache-dir", type=str, default=None)
+    parser.add_argument("--force-rebuild-graph-index", type=str, default=None)
 
     parser.add_argument("--max-anchors", type=int, default=None)
     parser.add_argument("--samples-per-anchor", type=int, default=None)

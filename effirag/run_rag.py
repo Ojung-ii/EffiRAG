@@ -98,6 +98,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--method", type=str, default=None, choices=["effirag", "naive_graphrag"])
     parser.add_argument("--output-dir", type=str, default=None)
+    parser.add_argument("--global-corpus-path", type=str, default=None)
+    parser.add_argument("--graph-cache-dir", type=str, default=None)
+    parser.add_argument("--force-rebuild-graph-index", type=str, default=None)
 
     parser.add_argument("--max-anchors", type=int, default=None)
     parser.add_argument("--samples-per-anchor", type=int, default=None)
@@ -313,6 +316,9 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         "run_timestamp": run_stamp,
         "run_timestamp_utc": run_iso,
         "retrieval_params": {
+            "global_corpus_path": cfg.global_corpus_path,
+            "graph_cache_dir": cfg.graph_cache_dir,
+            "force_rebuild_graph_index": cfg.force_rebuild_graph_index,
             "max_anchors": cfg.max_anchors,
             "samples_per_anchor": cfg.samples_per_anchor,
             "candidate_top_t": cfg.candidate_top_t,

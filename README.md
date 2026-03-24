@@ -139,6 +139,23 @@ scripts/run_retrieval.sh
 
 참고: `supporting_fact_recall`은 각 샘플의 최종 선택 문장 전체에 대한 recall이며, 추가로 `Recall@K` 평균(`supporting_fact_recall_at_<K>`)이 요약 json에 저장됩니다.
 
+## Global Corpus KG Index (One-time Build + Reuse)
+
+전역 코퍼스(예: `*_corpus.json`)에서 한 번 그래프를 구축해 캐시에 저장하고, 이후 retrieval/RAG에서 재사용할 수 있습니다.
+
+```bash
+python3 -m effirag.run_index \
+  --corpus-path data/hipporag2/hotpotqa_corpus.json \
+  --cache-dir outputs/index_cache \
+  --force-rebuild false
+```
+
+retrieval/rag 실행 시 아래 옵션을 주면 query-local context 대신 전역 코퍼스 그래프를 사용합니다.
+
+- `--global-corpus-path`
+- `--graph-cache-dir`
+- `--force-rebuild-graph-index true|false`
+
 렌더링 모드:
 - `effirag`: 기본 `corridor_aware_flat` (메서드 기반 자동 선택)
 - `naive_graphrag`: 기본 `flat`

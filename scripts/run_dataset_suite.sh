@@ -6,6 +6,9 @@ data_root=""
 output_root="outputs/dataset_suite_$(date -u +%Y%m%d_%H%M%S)"
 split="validation"
 limit=""
+global_corpus_root=""
+graph_cache_dir="outputs/index_cache"
+force_rebuild_graph_index="false"
 
 method="effirag"
 generator="hf"
@@ -68,6 +71,18 @@ while [[ $# -gt 0 ]]; do
       ;;
     --limit)
       limit="$2"
+      shift 2
+      ;;
+    --global-corpus-root)
+      global_corpus_root="$2"
+      shift 2
+      ;;
+    --graph-cache-dir)
+      graph_cache_dir="$2"
+      shift 2
+      ;;
+    --force-rebuild-graph-index)
+      force_rebuild_graph_index="$2"
       shift 2
       ;;
     --method)
@@ -208,6 +223,9 @@ Options:
   --output-root <dir>             Root output dir (default: outputs/dataset_suite_<timestamp>)
   --split <name>                  Split name (default: validation)
   --limit <int>                   Optional sample cap (omit for full split)
+  --global-corpus-root <dir>      Directory containing <dataset>_corpus.json for global KG mode
+  --graph-cache-dir <dir>         Graph cache dir (default: outputs/index_cache)
+  --force-rebuild-graph-index <bool>  Force rebuild global KG index (default: false)
   --model-name <hf-model>         HF model (default: Qwen/Qwen2.5-7B-Instruct)
   --generator <name>              Generator: heuristic|oracle|hf (default: hf)
   --method <name>                 Retrieval method: effirag|naive_graphrag (default: effirag)
@@ -252,11 +270,19 @@ echo "[suite] output root: ${output_root}"
 
 for dataset in "${datasets[@]}"; do
   data_path=""
+  global_corpus_path=""
   if [[ -n "${data_root}" ]]; then
     if [[ -f "${data_root}/${dataset}.json" ]]; then
       data_path="${data_root}/${dataset}.json"
     elif [[ -f "${data_root}/${dataset}.jsonl" ]]; then
       data_path="${data_root}/${dataset}.jsonl"
+    fi
+  fi
+  if [[ -n "${global_corpus_root}" ]]; then
+    if [[ -f "${global_corpus_root}/${dataset}_corpus.json" ]]; then
+      global_corpus_path="${global_corpus_root}/${dataset}_corpus.json"
+    elif [[ -f "${global_corpus_root}/${dataset}_corpus.jsonl" ]]; then
+      global_corpus_path="${global_corpus_root}/${dataset}_corpus.jsonl"
     fi
   fi
 
@@ -267,6 +293,9 @@ for dataset in "${datasets[@]}"; do
     --split "${split}"
     --method "${method}"
     --output-dir "${out_dir}"
+    --global-corpus-path "${global_corpus_path}"
+    --graph-cache-dir "${graph_cache_dir}"
+    --force-rebuild-graph-index "${force_rebuild_graph_index}"
     --max-anchors "${max_anchors}"
     --samples-per-anchor "${samples_per_anchor}"
     --num-workers "${num_workers}"
@@ -314,7 +343,7 @@ for dataset in "${datasets[@]}"; do
     cmd+=(--limit "${limit}")
   fi
 
-  echo "[suite] running dataset=${dataset} data_path=${data_path:-<auto>}"
+  echo "[suite] running dataset=${dataset} data_path=${data_path:-<auto>} global_corpus_path=${global_corpus_path:-<none>}"
   "${cmd[@]}"
 done
 

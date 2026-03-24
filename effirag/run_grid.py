@@ -31,6 +31,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--retrieval-limit", type=int, default=100)
     parser.add_argument("--rag-limit", type=int, default=100)
     parser.add_argument("--output-root", type=str, default="outputs")
+    parser.add_argument("--global-corpus-path", type=str, default="")
+    parser.add_argument("--graph-cache-dir", type=str, default="outputs/index_cache")
+    parser.add_argument("--force-rebuild-graph-index", type=str, default="false")
 
     parser.add_argument("--grid-method", type=str, default="effirag", choices=["effirag", "naive_graphrag"])
     parser.add_argument("--include-naive-baseline", type=str, default="true")
@@ -152,6 +155,9 @@ def _retrieval_cfg(args, base_dir: Path, method: str, profile: dict) -> Retrieva
         limit=args.retrieval_limit,
         method=method,
         output_dir=str(base_dir / "retrieval" / method / profile["profile"]),
+        global_corpus_path=args.global_corpus_path,
+        graph_cache_dir=args.graph_cache_dir,
+        force_rebuild_graph_index=parse_bool(args.force_rebuild_graph_index),
         max_anchors=profile["max_anchors"],
         samples_per_anchor=profile["samples_per_anchor"],
         num_workers=args.num_workers,
@@ -177,6 +183,9 @@ def _rag_cfg(args, base_dir: Path, method: str, generator: str, profile: dict) -
         limit=args.rag_limit,
         method=method,
         output_dir=str(base_dir / "rag" / generator / method / profile["profile"]),
+        global_corpus_path=args.global_corpus_path,
+        graph_cache_dir=args.graph_cache_dir,
+        force_rebuild_graph_index=parse_bool(args.force_rebuild_graph_index),
         max_anchors=profile["max_anchors"],
         samples_per_anchor=profile["samples_per_anchor"],
         num_workers=args.num_workers,

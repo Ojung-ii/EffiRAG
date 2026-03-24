@@ -12,6 +12,9 @@ class RetrievalConfig:
     limit: int = None
     method: str = "effirag"
     output_dir: str = "outputs/retrieval"
+    global_corpus_path: str = ""
+    graph_cache_dir: str = "outputs/index_cache"
+    force_rebuild_graph_index: bool = False
 
     max_anchors: int = 6
     samples_per_anchor: int = 8
@@ -81,4 +84,6 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["measure_cpu_ram"] = parse_bool(merged["measure_cpu_ram"])
     if "reserve_top_corridor" in merged:
         merged["reserve_top_corridor"] = parse_bool(merged["reserve_top_corridor"])
+    if "force_rebuild_graph_index" in merged:
+        merged["force_rebuild_graph_index"] = parse_bool(merged["force_rebuild_graph_index"])
     return merged

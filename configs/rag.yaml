@@ -3,6 +3,9 @@ split: validation
 method: effirag
 output_dir: outputs/rag
 limit: 100
+global_corpus_path: ""
+graph_cache_dir: outputs/index_cache
+force_rebuild_graph_index: false
 
 max_anchors: 6
 samples_per_anchor: 8
