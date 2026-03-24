@@ -164,6 +164,14 @@ retrieval/rag 실행 시 아래 옵션을 주면 query-local context 대신 전�
 - `--openie-text-max-chars`
 - `--openie-max-new-tokens`
 
+임베딩 재정렬 옵션(기본 off):
+- `--embedding-enabled true|false`
+- `--embedding-model-name` (예: `sentence-transformers/all-MiniLM-L6-v2`)
+- `--embedding-weight` (retrieval 점수와 임베딩 유사도 결합 가중치)
+- `--embedding-rerank-topn`
+- `--embedding-batch-size`
+- `--embedding-max-length`
+
 참고:
 - 기본 인덱싱은 LLM OpenIE 기반(`llm`)입니다.
 - LLM/모델 로딩 실패 시, 실행은 중단하지 않고 lexical 인덱싱으로 폴백하며 메타(`meta.json -> stats`)에 사유가 기록됩니다.

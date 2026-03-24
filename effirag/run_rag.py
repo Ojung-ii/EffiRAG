@@ -105,6 +105,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--openie-model-name", type=str, default=None)
     parser.add_argument("--openie-text-max-chars", type=int, default=None)
     parser.add_argument("--openie-max-new-tokens", type=int, default=None)
+    parser.add_argument("--embedding-enabled", type=str, default=None)
+    parser.add_argument("--embedding-model-name", type=str, default=None)
+    parser.add_argument("--embedding-weight", type=float, default=None)
+    parser.add_argument("--embedding-rerank-topn", type=int, default=None)
+    parser.add_argument("--embedding-batch-size", type=int, default=None)
+    parser.add_argument("--embedding-max-length", type=int, default=None)
 
     parser.add_argument("--max-anchors", type=int, default=None)
     parser.add_argument("--samples-per-anchor", type=int, default=None)
@@ -327,6 +333,12 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "openie_model_name": cfg.openie_model_name,
             "openie_text_max_chars": cfg.openie_text_max_chars,
             "openie_max_new_tokens": cfg.openie_max_new_tokens,
+            "embedding_enabled": cfg.embedding_enabled,
+            "embedding_model_name": cfg.embedding_model_name,
+            "embedding_weight": cfg.embedding_weight,
+            "embedding_rerank_topn": cfg.embedding_rerank_topn,
+            "embedding_batch_size": cfg.embedding_batch_size,
+            "embedding_max_length": cfg.embedding_max_length,
             "max_anchors": cfg.max_anchors,
             "samples_per_anchor": cfg.samples_per_anchor,
             "candidate_top_t": cfg.candidate_top_t,

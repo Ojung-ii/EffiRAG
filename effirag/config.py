@@ -19,6 +19,12 @@ class RetrievalConfig:
     openie_model_name: str = "Qwen/Qwen2.5-7B-Instruct"
     openie_text_max_chars: int = 2200
     openie_max_new_tokens: int = 256
+    embedding_enabled: bool = False
+    embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_weight: float = 0.35
+    embedding_rerank_topn: int = 80
+    embedding_batch_size: int = 16
+    embedding_max_length: int = 256
 
     max_anchors: int = 6
     samples_per_anchor: int = 8
@@ -90,4 +96,6 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["reserve_top_corridor"] = parse_bool(merged["reserve_top_corridor"])
     if "force_rebuild_graph_index" in merged:
         merged["force_rebuild_graph_index"] = parse_bool(merged["force_rebuild_graph_index"])
+    if "embedding_enabled" in merged:
+        merged["embedding_enabled"] = parse_bool(merged["embedding_enabled"])
     return merged

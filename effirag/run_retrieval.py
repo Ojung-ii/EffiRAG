@@ -45,6 +45,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--openie-model-name", type=str, default=None)
     parser.add_argument("--openie-text-max-chars", type=int, default=None)
     parser.add_argument("--openie-max-new-tokens", type=int, default=None)
+    parser.add_argument("--embedding-enabled", type=str, default=None)
+    parser.add_argument("--embedding-model-name", type=str, default=None)
+    parser.add_argument("--embedding-weight", type=float, default=None)
+    parser.add_argument("--embedding-rerank-topn", type=int, default=None)
+    parser.add_argument("--embedding-batch-size", type=int, default=None)
+    parser.add_argument("--embedding-max-length", type=int, default=None)
 
     parser.add_argument("--max-anchors", type=int, default=None)
     parser.add_argument("--samples-per-anchor", type=int, default=None)
@@ -155,6 +161,12 @@ def execute_retrieval_experiment(cfg, show_progress: bool = True):
     summary["openie_model_name"] = str(cfg.openie_model_name or "")
     summary["openie_text_max_chars"] = int(cfg.openie_text_max_chars)
     summary["openie_max_new_tokens"] = int(cfg.openie_max_new_tokens)
+    summary["embedding_enabled"] = bool(cfg.embedding_enabled)
+    summary["embedding_model_name"] = str(cfg.embedding_model_name or "")
+    summary["embedding_weight"] = float(cfg.embedding_weight)
+    summary["embedding_rerank_topn"] = int(cfg.embedding_rerank_topn)
+    summary["embedding_batch_size"] = int(cfg.embedding_batch_size)
+    summary["embedding_max_length"] = int(cfg.embedding_max_length)
     summary["run_timestamp"] = run_stamp
     summary["run_timestamp_utc"] = run_iso
 

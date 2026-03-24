@@ -13,6 +13,12 @@ openie_mode="llm"
 openie_model_name="Qwen/Qwen2.5-7B-Instruct"
 openie_text_max_chars=2200
 openie_max_new_tokens=256
+embedding_enabled="false"
+embedding_model_name="sentence-transformers/all-MiniLM-L6-v2"
+embedding_weight=0.35
+embedding_rerank_topn=80
+embedding_batch_size=16
+embedding_max_length=256
 
 method="effirag"
 generator="hf"
@@ -103,6 +109,30 @@ while [[ $# -gt 0 ]]; do
       ;;
     --openie-max-new-tokens)
       openie_max_new_tokens="$2"
+      shift 2
+      ;;
+    --embedding-enabled)
+      embedding_enabled="$2"
+      shift 2
+      ;;
+    --embedding-model-name)
+      embedding_model_name="$2"
+      shift 2
+      ;;
+    --embedding-weight)
+      embedding_weight="$2"
+      shift 2
+      ;;
+    --embedding-rerank-topn)
+      embedding_rerank_topn="$2"
+      shift 2
+      ;;
+    --embedding-batch-size)
+      embedding_batch_size="$2"
+      shift 2
+      ;;
+    --embedding-max-length)
+      embedding_max_length="$2"
       shift 2
       ;;
     --method)
@@ -250,6 +280,12 @@ Options:
   --openie-model-name <hf-model>  OpenIE model (default: Qwen/Qwen2.5-7B-Instruct)
   --openie-text-max-chars <int>   OpenIE input clip length per sentence (default: 2200)
   --openie-max-new-tokens <int>   OpenIE generation cap (default: 256)
+  --embedding-enabled <bool>      Enable embedding rerank in retrieval (default: false)
+  --embedding-model-name <hf-model> Embedding model (default: sentence-transformers/all-MiniLM-L6-v2)
+  --embedding-weight <float>      Fusion weight for embedding similarity (default: 0.35)
+  --embedding-rerank-topn <int>   Rerank first N retrieved sentences (default: 80)
+  --embedding-batch-size <int>    Embedding encode batch size (default: 16)
+  --embedding-max-length <int>    Embedding tokenizer max length (default: 256)
   --model-name <hf-model>         HF model (default: Qwen/Qwen2.5-7B-Instruct)
   --generator <name>              Generator: heuristic|oracle|hf (default: hf)
   --method <name>                 Retrieval method: effirag|naive_graphrag (default: effirag)
@@ -324,6 +360,12 @@ for dataset in "${datasets[@]}"; do
     --openie-model-name "${openie_model_name}"
     --openie-text-max-chars "${openie_text_max_chars}"
     --openie-max-new-tokens "${openie_max_new_tokens}"
+    --embedding-enabled "${embedding_enabled}"
+    --embedding-model-name "${embedding_model_name}"
+    --embedding-weight "${embedding_weight}"
+    --embedding-rerank-topn "${embedding_rerank_topn}"
+    --embedding-batch-size "${embedding_batch_size}"
+    --embedding-max-length "${embedding_max_length}"
     --max-anchors "${max_anchors}"
     --samples-per-anchor "${samples_per_anchor}"
     --num-workers "${num_workers}"

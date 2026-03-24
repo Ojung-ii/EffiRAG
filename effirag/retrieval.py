@@ -7,6 +7,7 @@ import networkx as nx
 
 from .anchors import select_lexical_anchors
 from .config import RetrievalConfig
+from .embedding import rerank_sentences_by_embedding
 from .global_index import load_or_build_global_index
 from .graph import build_document_entity_graph
 from .registry import register_method
@@ -598,6 +599,38 @@ def run_graphrag_core(
     selected_sentence_ids, selected_sentences, selected_sentence_score_map = _extract_sentence_payload(
         g, selected_nodes, sentence_scores
     )
+    embedding_diag = {
+        "enabled": bool(getattr(cfg, "embedding_enabled", False)),
+        "applied": False,
+        "error": "",
+        "model_name": str(getattr(cfg, "embedding_model_name", "") or ""),
+        "weight": float(getattr(cfg, "embedding_weight", 0.35)),
+        "rerank_topn": int(getattr(cfg, "embedding_rerank_topn", 80)),
+        "batch_size": int(getattr(cfg, "embedding_batch_size", 16)),
+        "max_length": int(getattr(cfg, "embedding_max_length", 256)),
+        "head_size": 0,
+    }
+    if embedding_diag["enabled"] and selected_sentence_ids:
+        rerank = rerank_sentences_by_embedding(
+            question=sample.question,
+            sentence_ids=selected_sentence_ids,
+            sentence_texts=selected_sentences,
+            base_score_map=selected_sentence_score_map,
+            model_name=embedding_diag["model_name"],
+            weight=embedding_diag["weight"],
+            rerank_topn=embedding_diag["rerank_topn"],
+            batch_size=embedding_diag["batch_size"],
+            max_length=embedding_diag["max_length"],
+            max_chars=600,
+        )
+        selected_sentence_ids = list(rerank.get("ranked_sentence_ids", selected_sentence_ids))
+        selected_sentences = list(rerank.get("ranked_sentence_texts", selected_sentences))
+        embedding_diag["applied"] = bool(rerank.get("applied", False))
+        embedding_diag["error"] = str(rerank.get("error", "") or "")
+        embedding_diag["head_size"] = int(rerank.get("rerank_topn", 0))
+        embedding_diag["similarity_by_sentence_id"] = rerank.get("similarity_by_sentence_id", {})
+        embedding_diag["fused_score_by_sentence_id"] = rerank.get("fused_score_by_sentence_id", {})
+
     filtered_corridors = _filter_corridor_payloads(corridor_payloads, selected_sentence_ids)
     sentence_feature_table = _build_sentence_feature_table(
         sample=sample,
@@ -643,6 +676,7 @@ def run_graphrag_core(
             "corridor_nodes_after_trim": final_graph.number_of_nodes(),
             "sentence_scores": sentence_scores,
             "sentence_feature_table": sentence_feature_table,
+            "embedding_rerank": embedding_diag,
             "stable_seed_selection": stable_seed_selection,
             "trim_enabled": enable_trim and cfg.trim_on,
         },

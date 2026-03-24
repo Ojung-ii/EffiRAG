@@ -49,6 +49,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--openie-model-name", type=str, default="Qwen/Qwen2.5-7B-Instruct")
     parser.add_argument("--openie-text-max-chars", type=int, default=2200)
     parser.add_argument("--openie-max-new-tokens", type=int, default=256)
+    parser.add_argument("--embedding-enabled", type=str, default="false")
+    parser.add_argument("--embedding-model-name", type=str, default="sentence-transformers/all-MiniLM-L6-v2")
+    parser.add_argument("--embedding-weight", type=float, default=0.35)
+    parser.add_argument("--embedding-rerank-topn", type=int, default=80)
+    parser.add_argument("--embedding-batch-size", type=int, default=16)
+    parser.add_argument("--embedding-max-length", type=int, default=256)
 
     parser.add_argument("--method", type=str, default="effirag", choices=["effirag", "naive_graphrag"])
     parser.add_argument("--run-qa", type=str, default="true")
@@ -145,6 +151,12 @@ def _build_retrieval_cfg(args, output_dir: Path):
         openie_model_name=args.openie_model_name,
         openie_text_max_chars=args.openie_text_max_chars,
         openie_max_new_tokens=args.openie_max_new_tokens,
+        embedding_enabled=parse_bool(args.embedding_enabled),
+        embedding_model_name=args.embedding_model_name,
+        embedding_weight=args.embedding_weight,
+        embedding_rerank_topn=args.embedding_rerank_topn,
+        embedding_batch_size=args.embedding_batch_size,
+        embedding_max_length=args.embedding_max_length,
         max_anchors=args.max_anchors,
         samples_per_anchor=args.samples_per_anchor,
         num_workers=args.num_workers,
@@ -176,6 +188,12 @@ def _base_rag_kwargs(args, output_dir: Path):
         openie_model_name=args.openie_model_name,
         openie_text_max_chars=args.openie_text_max_chars,
         openie_max_new_tokens=args.openie_max_new_tokens,
+        embedding_enabled=parse_bool(args.embedding_enabled),
+        embedding_model_name=args.embedding_model_name,
+        embedding_weight=args.embedding_weight,
+        embedding_rerank_topn=args.embedding_rerank_topn,
+        embedding_batch_size=args.embedding_batch_size,
+        embedding_max_length=args.embedding_max_length,
         max_anchors=args.max_anchors,
         samples_per_anchor=args.samples_per_anchor,
         num_workers=args.num_workers,

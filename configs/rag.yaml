@@ -10,6 +10,12 @@ openie_mode: llm
 openie_model_name: Qwen/Qwen2.5-7B-Instruct
 openie_text_max_chars: 2200
 openie_max_new_tokens: 256
+embedding_enabled: false
+embedding_model_name: sentence-transformers/all-MiniLM-L6-v2
+embedding_weight: 0.35
+embedding_rerank_topn: 80
+embedding_batch_size: 16
+embedding_max_length: 256
 
 max_anchors: 6
 samples_per_anchor: 8

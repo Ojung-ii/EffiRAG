@@ -22,6 +22,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--openie-model-name", type=str, default=None)
     parser.add_argument("--openie-text-max-chars", type=int, default=None)
     parser.add_argument("--openie-max-new-tokens", type=int, default=None)
+    parser.add_argument("--embedding-enabled", type=str, default=None)
+    parser.add_argument("--embedding-model-name", type=str, default=None)
+    parser.add_argument("--embedding-weight", type=float, default=None)
+    parser.add_argument("--embedding-rerank-topn", type=int, default=None)
+    parser.add_argument("--embedding-batch-size", type=int, default=None)
+    parser.add_argument("--embedding-max-length", type=int, default=None)
 
     parser.add_argument("--max-anchors", type=int, default=None)
     parser.add_argument("--samples-per-anchor", type=int, default=None)
