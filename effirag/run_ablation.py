@@ -6,6 +6,12 @@ from .config import RetrievalConfig, apply_cli_overrides, dataclass_from_dict
 from .run_retrieval import execute_retrieval_experiment
 from .utils import append_jsonl, load_yaml, markdown_table, timestamp_for_filename, timestamp_iso_utc, write_json
 
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover
+    def tqdm(iterable, **kwargs):
+        return iterable
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run EffiRAG retrieval ablations.")
@@ -18,10 +24,17 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--global-corpus-path", type=str, default=None)
     parser.add_argument("--graph-cache-dir", type=str, default=None)
     parser.add_argument("--force-rebuild-graph-index", type=str, default=None)
+    parser.add_argument("--prebuilt-igraph-path", type=str, default=None)
+    parser.add_argument("--prebuilt-igraph-format", type=str, default=None)
+    parser.add_argument("--prebuilt-entity-token-limit", type=int, default=None)
     parser.add_argument("--openie-mode", type=str, default=None, choices=["llm", "lexical"])
     parser.add_argument("--openie-model-name", type=str, default=None)
     parser.add_argument("--openie-text-max-chars", type=int, default=None)
     parser.add_argument("--openie-max-new-tokens", type=int, default=None)
+    parser.add_argument("--openie-local-files-only", type=str, default=None)
+    parser.add_argument("--openie-retry-attempts", type=int, default=None)
+    parser.add_argument("--openie-retry-backoff-sec", type=float, default=None)
+    parser.add_argument("--openie-error-sample-limit", type=int, default=None)
     parser.add_argument("--embedding-enabled", type=str, default=None)
     parser.add_argument("--embedding-model-name", type=str, default=None)
     parser.add_argument("--embedding-weight", type=float, default=None)
@@ -49,6 +62,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ppr-alpha", type=float, default=None)
     parser.add_argument("--tau", type=int, default=None)
     parser.add_argument("--edge-drop-prob", type=float, default=None)
+    parser.add_argument("--ppr-engine", type=str, default=None, choices=["auto", "power", "mc"])
+    parser.add_argument("--ppr-power-max-iter", type=int, default=None)
+    parser.add_argument("--ppr-power-tol", type=float, default=None)
+    parser.add_argument("--ppr-min-score", type=float, default=None)
+    parser.add_argument("--ppr-mc-walks", type=int, default=None)
+    parser.add_argument("--ppr-mc-max-steps", type=int, default=None)
+    parser.add_argument("--ppr-parallel-workers", type=int, default=None)
+    parser.add_argument("--ppr-subgraph-enable", type=str, default=None)
+    parser.add_argument("--ppr-subgraph-hops", type=int, default=None)
+    parser.add_argument("--ppr-subgraph-max-nodes", type=int, default=None)
+    parser.add_argument("--anchor-diag-topn", type=int, default=None)
+    parser.add_argument("--anchor-diag-store-full-scores", type=str, default=None)
     return parser
 
 
@@ -70,7 +95,13 @@ def execute_ablation(cfg):
     ]
 
     summaries = []
-    for name, run_cfg in variants:
+    for name, run_cfg in tqdm(
+        variants,
+        total=len(variants),
+        desc="Ablation variants",
+        unit="variant",
+        leave=False,
+    ):
         _, summary = execute_retrieval_experiment(run_cfg)
         summary["variant"] = name
         summary["ablation_run_timestamp"] = run_stamp

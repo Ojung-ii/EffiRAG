@@ -30,8 +30,30 @@ from .utils import (
 try:
     from tqdm.auto import tqdm
 except Exception:  # pragma: no cover
-    def tqdm(iterable, **kwargs):
-        return iterable
+    class _NoOpTqdm:
+        def __init__(self, iterable=None, **kwargs):
+            self.iterable = iterable
+
+        def __iter__(self):
+            return iter(self.iterable if self.iterable is not None else [])
+
+        def update(self, n=1):
+            return None
+
+        def set_postfix(self, *args, **kwargs):
+            return None
+
+        def close(self):
+            return None
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    def tqdm(iterable=None, **kwargs):
+        return _NoOpTqdm(iterable=iterable, **kwargs)
 
 
 def _reconstruct_retrieval(payload: dict) -> RetrievalResult:
@@ -101,10 +123,17 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--global-corpus-path", type=str, default=None)
     parser.add_argument("--graph-cache-dir", type=str, default=None)
     parser.add_argument("--force-rebuild-graph-index", type=str, default=None)
+    parser.add_argument("--prebuilt-igraph-path", type=str, default=None)
+    parser.add_argument("--prebuilt-igraph-format", type=str, default=None)
+    parser.add_argument("--prebuilt-entity-token-limit", type=int, default=None)
     parser.add_argument("--openie-mode", type=str, default=None, choices=["llm", "lexical"])
     parser.add_argument("--openie-model-name", type=str, default=None)
     parser.add_argument("--openie-text-max-chars", type=int, default=None)
     parser.add_argument("--openie-max-new-tokens", type=int, default=None)
+    parser.add_argument("--openie-local-files-only", type=str, default=None)
+    parser.add_argument("--openie-retry-attempts", type=int, default=None)
+    parser.add_argument("--openie-retry-backoff-sec", type=float, default=None)
+    parser.add_argument("--openie-error-sample-limit", type=int, default=None)
     parser.add_argument("--embedding-enabled", type=str, default=None)
     parser.add_argument("--embedding-model-name", type=str, default=None)
     parser.add_argument("--embedding-weight", type=float, default=None)
@@ -150,6 +179,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ppr-alpha", type=float, default=None)
     parser.add_argument("--tau", type=int, default=None)
     parser.add_argument("--edge-drop-prob", type=float, default=None)
+    parser.add_argument("--ppr-engine", type=str, default=None, choices=["auto", "power", "mc"])
+    parser.add_argument("--ppr-power-max-iter", type=int, default=None)
+    parser.add_argument("--ppr-power-tol", type=float, default=None)
+    parser.add_argument("--ppr-min-score", type=float, default=None)
+    parser.add_argument("--ppr-mc-walks", type=int, default=None)
+    parser.add_argument("--ppr-mc-max-steps", type=int, default=None)
+    parser.add_argument("--ppr-parallel-workers", type=int, default=None)
+    parser.add_argument("--ppr-subgraph-enable", type=str, default=None)
+    parser.add_argument("--ppr-subgraph-hops", type=int, default=None)
+    parser.add_argument("--ppr-subgraph-max-nodes", type=int, default=None)
+    parser.add_argument("--anchor-diag-topn", type=int, default=None)
+    parser.add_argument("--anchor-diag-store-full-scores", type=str, default=None)
     return parser
 
 
@@ -173,122 +214,142 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
     resolved_render_mode = render_mode_requested or ("corridor_aware_flat" if cfg.method == "effirag" else "flat")
     retrieval_source_counts = {"precomputed": 0, "on_the_fly": 0}
     fallback_count = 0
-    for sample in tqdm(
-        samples,
+    retrieval_bar = tqdm(
         total=len(samples),
-        desc=f"RAG[{cfg.method}/{cfg.generator}]",
+        desc=f"Retrieval[{cfg.method}]",
+        unit="sample",
         leave=False,
         disable=not show_progress,
-    ):
-        total_timer = Timer()
-        total_timer.start()
+    )
+    generation_bar = tqdm(
+        total=len(samples),
+        desc=f"Generation[{cfg.generator}]",
+        unit="sample",
+        leave=False,
+        disable=(not show_progress) or (not cfg.run_qa),
+    )
+    try:
+        for sample in tqdm(
+            samples,
+            total=len(samples),
+            desc=f"RAG[{cfg.method}/{cfg.generator}]",
+            leave=False,
+            disable=not show_progress,
+        ):
+            total_timer = Timer()
+            total_timer.start()
 
-        if cfg.measure_gpu_peak:
-            reset_gpu_peak()
+            if cfg.measure_gpu_peak:
+                reset_gpu_peak()
 
-        cpu_peak = process_rss_mb() if cfg.measure_cpu_ram else 0.0
+            cpu_peak = process_rss_mb() if cfg.measure_cpu_ram else 0.0
 
-        retrieval = retrieval_cache.get(sample.qid)
-        retrieval_source = "precomputed"
-        if retrieval is None:
-            retrieval = method_fn(sample, cfg)
-            retrieval_source = "on_the_fly"
-        retrieval_source_counts[retrieval_source] = retrieval_source_counts.get(retrieval_source, 0) + 1
+            retrieval = retrieval_cache.get(sample.qid)
+            retrieval_source = "precomputed"
+            if retrieval is None:
+                retrieval = method_fn(sample, cfg)
+                retrieval_source = "on_the_fly"
+            retrieval_source_counts[retrieval_source] = retrieval_source_counts.get(retrieval_source, 0) + 1
 
-        rendered = render_context(
-            sample,
-            retrieval,
-            max_context_sentences=cfg.max_context_sentences,
-            render_mode=resolved_render_mode,
-            max_corridors_in_context=cfg.max_corridors_in_context,
-            max_main_sentences_per_corridor=cfg.max_main_sentences_per_corridor,
-            max_support_per_corridor=cfg.max_support_per_corridor,
-            max_total_sentences=cfg.max_total_sentences,
-            alpha=cfg.alpha,
-            beta=cfg.beta,
-            gamma_main=cfg.gamma_main,
-            delta_support=cfg.delta_support,
-            eta_connector=cfg.eta_connector,
-            zeta_query=cfg.zeta_query,
-            xi_locality=cfg.xi_locality,
-            lambda_redundancy=cfg.lambda_redundancy,
-            top_corridors=cfg.top_corridors,
-            max_sentences=cfg.max_sentences,
-            reserve_top_corridor=cfg.reserve_top_corridor,
-            order_strategy=cfg.order_strategy,
-        )
+            rendered = render_context(
+                sample,
+                retrieval,
+                max_context_sentences=cfg.max_context_sentences,
+                render_mode=resolved_render_mode,
+                max_corridors_in_context=cfg.max_corridors_in_context,
+                max_main_sentences_per_corridor=cfg.max_main_sentences_per_corridor,
+                max_support_per_corridor=cfg.max_support_per_corridor,
+                max_total_sentences=cfg.max_total_sentences,
+                alpha=cfg.alpha,
+                beta=cfg.beta,
+                gamma_main=cfg.gamma_main,
+                delta_support=cfg.delta_support,
+                eta_connector=cfg.eta_connector,
+                zeta_query=cfg.zeta_query,
+                xi_locality=cfg.xi_locality,
+                lambda_redundancy=cfg.lambda_redundancy,
+                top_corridors=cfg.top_corridors,
+                max_sentences=cfg.max_sentences,
+                reserve_top_corridor=cfg.reserve_top_corridor,
+                order_strategy=cfg.order_strategy,
+            )
+            retrieval_bar.update(1)
 
-        if cfg.measure_cpu_ram:
-            cpu_peak = max(cpu_peak, process_rss_mb())
+            if cfg.measure_cpu_ram:
+                cpu_peak = max(cpu_peak, process_rss_mb())
 
-        generation = None
-        em = 0.0
-        f1 = 0.0
-        if cfg.run_qa:
-            generation = generator_fn(sample, rendered, cfg.model_name)
-            em = exact_match_score(generation.prediction, sample.answer)
-            f1 = token_f1_score(generation.prediction, sample.answer)
-            if _is_generation_fallback(generation):
-                fallback_count += 1
+            generation = None
+            em = 0.0
+            f1 = 0.0
+            if cfg.run_qa:
+                generation = generator_fn(sample, rendered, cfg.model_name)
+                em = exact_match_score(generation.prediction, sample.answer)
+                f1 = token_f1_score(generation.prediction, sample.answer)
+                if _is_generation_fallback(generation):
+                    fallback_count += 1
+                generation_bar.update(1)
 
-        if cfg.measure_cpu_ram:
-            cpu_peak = max(cpu_peak, process_rss_mb())
+            if cfg.measure_cpu_ram:
+                cpu_peak = max(cpu_peak, process_rss_mb())
 
-        recall = supporting_fact_recall(sample, retrieval)
-        precision = supporting_fact_precision(sample, retrieval)
-        recall_at_k = supporting_fact_recall_at_ks(sample, retrieval, ks=DEFAULT_RECALL_KS)
-        gold_ids = supporting_fact_ids(sample)
-        rendered_ids = set(rendered.sentence_ids)
-        rendered_recall = float(len(gold_ids.intersection(rendered_ids)) / len(gold_ids)) if gold_ids else 0.0
-        rendered_precision = float(len(gold_ids.intersection(rendered_ids)) / len(rendered_ids)) if rendered_ids else 0.0
+            recall = supporting_fact_recall(sample, retrieval)
+            precision = supporting_fact_precision(sample, retrieval)
+            recall_at_k = supporting_fact_recall_at_ks(sample, retrieval, ks=DEFAULT_RECALL_KS)
+            gold_ids = supporting_fact_ids(sample)
+            rendered_ids = set(rendered.sentence_ids)
+            rendered_recall = float(len(gold_ids.intersection(rendered_ids)) / len(gold_ids)) if gold_ids else 0.0
+            rendered_precision = float(len(gold_ids.intersection(rendered_ids)) / len(rendered_ids)) if rendered_ids else 0.0
 
-        efficiency = {
-            "retrieval_latency_ms": retrieval.latency_ms,
-            "generation_latency_ms": generation.latency_ms if generation else 0.0,
-            "total_latency_ms": total_timer.elapsed_ms(),
-        }
-        if cfg.measure_gpu_peak:
-            efficiency["gpu_peak_mb"] = gpu_peak_mb()
-        if cfg.measure_cpu_ram:
-            efficiency["cpu_ram_peak_mb"] = cpu_peak
-
-        metrics = {
-            "supporting_fact_recall": recall,
-            "supporting_fact_precision": precision,
-            "recall_at_k": recall_at_k,
-            "rendered_supporting_fact_recall": rendered_recall,
-            "rendered_supporting_fact_precision": rendered_precision,
-            "em": em,
-            "f1": f1,
-        }
-
-        rows.append(
-            {
-                "sample_id": sample.qid,
-                "question": sample.question,
-                "answer": sample.answer,
-                "prediction": generation.prediction if generation else "",
-                "qa_executed": bool(generation is not None),
-                "generation_fallback": bool(_is_generation_fallback(generation)),
-                "method": retrieval.method,
-                "generator": cfg.generator,
-                "metrics": metrics,
-                "efficiency": efficiency,
-                "retrieval": asdict(retrieval),
-                "retrieval_selected_sentence_ids": list(retrieval.selected_sentence_ids),
-                "rendered": asdict(rendered),
-                "rendered_sentence_ids": list(rendered.sentence_ids),
-                "rendered_corridor_ids": list(rendered.rendered_corridor_ids),
-                "rendering": {
-                    "render_mode": rendered.render_mode,
-                    "render_mode_requested": render_mode_requested or "(auto)",
-                    "truncated_corridors": rendered.truncated_corridor_count,
-                    "truncated_sentences": rendered.truncated_sentence_count,
-                },
-                "retrieval_source": retrieval_source,
-                "generation": asdict(generation) if generation else None,
+            efficiency = {
+                "retrieval_latency_ms": retrieval.latency_ms,
+                "generation_latency_ms": generation.latency_ms if generation else 0.0,
+                "total_latency_ms": total_timer.elapsed_ms(),
             }
-        )
+            if cfg.measure_gpu_peak:
+                efficiency["gpu_peak_mb"] = gpu_peak_mb()
+            if cfg.measure_cpu_ram:
+                efficiency["cpu_ram_peak_mb"] = cpu_peak
+
+            metrics = {
+                "supporting_fact_recall": recall,
+                "supporting_fact_precision": precision,
+                "recall_at_k": recall_at_k,
+                "rendered_supporting_fact_recall": rendered_recall,
+                "rendered_supporting_fact_precision": rendered_precision,
+                "em": em,
+                "f1": f1,
+            }
+
+            rows.append(
+                {
+                    "sample_id": sample.qid,
+                    "question": sample.question,
+                    "answer": sample.answer,
+                    "prediction": generation.prediction if generation else "",
+                    "qa_executed": bool(generation is not None),
+                    "generation_fallback": bool(_is_generation_fallback(generation)),
+                    "method": retrieval.method,
+                    "generator": cfg.generator,
+                    "metrics": metrics,
+                    "efficiency": efficiency,
+                    "retrieval": asdict(retrieval),
+                    "retrieval_selected_sentence_ids": list(retrieval.selected_sentence_ids),
+                    "rendered": asdict(rendered),
+                    "rendered_sentence_ids": list(rendered.sentence_ids),
+                    "rendered_corridor_ids": list(rendered.rendered_corridor_ids),
+                    "rendering": {
+                        "render_mode": rendered.render_mode,
+                        "render_mode_requested": render_mode_requested or "(auto)",
+                        "truncated_corridors": rendered.truncated_corridor_count,
+                        "truncated_sentences": rendered.truncated_sentence_count,
+                    },
+                    "retrieval_source": retrieval_source,
+                    "generation": asdict(generation) if generation else None,
+                }
+            )
+    finally:
+        retrieval_bar.close()
+        generation_bar.close()
 
     for row in rows:
         row["run_timestamp"] = run_stamp
@@ -329,10 +390,17 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "global_corpus_path": cfg.global_corpus_path,
             "graph_cache_dir": cfg.graph_cache_dir,
             "force_rebuild_graph_index": cfg.force_rebuild_graph_index,
+            "prebuilt_igraph_path": cfg.prebuilt_igraph_path,
+            "prebuilt_igraph_format": cfg.prebuilt_igraph_format,
+            "prebuilt_entity_token_limit": cfg.prebuilt_entity_token_limit,
             "openie_mode": cfg.openie_mode,
             "openie_model_name": cfg.openie_model_name,
             "openie_text_max_chars": cfg.openie_text_max_chars,
             "openie_max_new_tokens": cfg.openie_max_new_tokens,
+            "openie_local_files_only": cfg.openie_local_files_only,
+            "openie_retry_attempts": cfg.openie_retry_attempts,
+            "openie_retry_backoff_sec": cfg.openie_retry_backoff_sec,
+            "openie_error_sample_limit": cfg.openie_error_sample_limit,
             "embedding_enabled": cfg.embedding_enabled,
             "embedding_model_name": cfg.embedding_model_name,
             "embedding_weight": cfg.embedding_weight,
@@ -350,6 +418,18 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "ppr_alpha": cfg.ppr_alpha,
             "tau": cfg.tau,
             "edge_drop_prob": cfg.edge_drop_prob,
+            "ppr_engine": cfg.ppr_engine,
+            "ppr_power_max_iter": cfg.ppr_power_max_iter,
+            "ppr_power_tol": cfg.ppr_power_tol,
+            "ppr_min_score": cfg.ppr_min_score,
+            "ppr_mc_walks": cfg.ppr_mc_walks,
+            "ppr_mc_max_steps": cfg.ppr_mc_max_steps,
+            "ppr_parallel_workers": cfg.ppr_parallel_workers,
+            "ppr_subgraph_enable": cfg.ppr_subgraph_enable,
+            "ppr_subgraph_hops": cfg.ppr_subgraph_hops,
+            "ppr_subgraph_max_nodes": cfg.ppr_subgraph_max_nodes,
+            "anchor_diag_topn": cfg.anchor_diag_topn,
+            "anchor_diag_store_full_scores": cfg.anchor_diag_store_full_scores,
             "random_seed": cfg.random_seed,
         },
         "render_params": {

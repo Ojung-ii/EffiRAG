@@ -15,10 +15,17 @@ class RetrievalConfig:
     global_corpus_path: str = ""
     graph_cache_dir: str = "outputs/index_cache"
     force_rebuild_graph_index: bool = False
+    prebuilt_igraph_path: str = ""
+    prebuilt_igraph_format: str = "hipporag_pickle"
+    prebuilt_entity_token_limit: int = 6
     openie_mode: str = "llm"
     openie_model_name: str = "Qwen/Qwen2.5-7B-Instruct"
     openie_text_max_chars: int = 2200
     openie_max_new_tokens: int = 256
+    openie_local_files_only: bool = True
+    openie_retry_attempts: int = 3
+    openie_retry_backoff_sec: float = 0.2
+    openie_error_sample_limit: int = 20
     embedding_enabled: bool = False
     embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_weight: float = 0.35
@@ -40,6 +47,18 @@ class RetrievalConfig:
     tau: int = 4
     edge_drop_prob: float = 0.1
     random_seed: int = 42
+    ppr_engine: str = "auto"  # auto | power | mc
+    ppr_power_max_iter: int = 100
+    ppr_power_tol: float = 1.0e-6
+    ppr_min_score: float = 0.0
+    ppr_mc_walks: int = 512
+    ppr_mc_max_steps: int = 24
+    ppr_parallel_workers: int = 1
+    ppr_subgraph_enable: bool = True
+    ppr_subgraph_hops: int = 2
+    ppr_subgraph_max_nodes: int = 30000
+    anchor_diag_topn: int = 10
+    anchor_diag_store_full_scores: bool = False
 
 
 @dataclass
@@ -96,6 +115,12 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["reserve_top_corridor"] = parse_bool(merged["reserve_top_corridor"])
     if "force_rebuild_graph_index" in merged:
         merged["force_rebuild_graph_index"] = parse_bool(merged["force_rebuild_graph_index"])
+    if "openie_local_files_only" in merged:
+        merged["openie_local_files_only"] = parse_bool(merged["openie_local_files_only"])
     if "embedding_enabled" in merged:
         merged["embedding_enabled"] = parse_bool(merged["embedding_enabled"])
+    if "ppr_subgraph_enable" in merged:
+        merged["ppr_subgraph_enable"] = parse_bool(merged["ppr_subgraph_enable"])
+    if "anchor_diag_store_full_scores" in merged:
+        merged["anchor_diag_store_full_scores"] = parse_bool(merged["anchor_diag_store_full_scores"])
     return merged

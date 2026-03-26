@@ -1,5 +1,8 @@
+import multiprocessing as mp
 import random
 import time
+from collections import deque
+from concurrent.futures import ProcessPoolExecutor
 from math import sqrt
 from pathlib import Path
 
@@ -14,27 +17,49 @@ from .registry import register_method
 from .types import AnchorResult, RetrievalResult
 from .utils import content_tokens
 
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover
+    def tqdm(iterable, **kwargs):
+        return iterable
+
 _GLOBAL_INDEX_MEMO = {}
+_PPR_GRAPH_STRUCT_MEMO = {}
+_PPR_PARALLEL_STRUCT = None
 
 
 def _get_global_graph(cfg):
     corpus_path = str(getattr(cfg, "global_corpus_path", "") or "").strip()
-    if not corpus_path:
+    prebuilt_igraph_path = str(getattr(cfg, "prebuilt_igraph_path", "") or "").strip()
+    if not corpus_path and not prebuilt_igraph_path:
         return None, {}
 
     cache_dir = str(getattr(cfg, "graph_cache_dir", "") or "outputs/index_cache").strip()
     force_rebuild = bool(getattr(cfg, "force_rebuild_graph_index", False))
+    prebuilt_igraph_format = str(getattr(cfg, "prebuilt_igraph_format", "hipporag_pickle") or "hipporag_pickle").strip()
+    prebuilt_entity_token_limit = int(getattr(cfg, "prebuilt_entity_token_limit", 6))
     openie_mode = str(getattr(cfg, "openie_mode", "llm") or "llm").strip().lower()
     openie_model_name = str(getattr(cfg, "openie_model_name", "") or "").strip()
     openie_text_max_chars = int(getattr(cfg, "openie_text_max_chars", 2200))
     openie_max_new_tokens = int(getattr(cfg, "openie_max_new_tokens", 256))
+    openie_local_files_only = bool(getattr(cfg, "openie_local_files_only", True))
+    openie_retry_attempts = int(getattr(cfg, "openie_retry_attempts", 3))
+    openie_retry_backoff_sec = float(getattr(cfg, "openie_retry_backoff_sec", 0.2))
+    openie_error_sample_limit = int(getattr(cfg, "openie_error_sample_limit", 20))
     memo_key = (
-        str(Path(corpus_path).resolve()),
+        str(Path(corpus_path).resolve()) if corpus_path else "",
+        str(Path(prebuilt_igraph_path).resolve()) if prebuilt_igraph_path else "",
+        prebuilt_igraph_format,
+        prebuilt_entity_token_limit,
         str(Path(cache_dir).resolve()),
         openie_mode,
         openie_model_name,
         openie_text_max_chars,
         openie_max_new_tokens,
+        openie_local_files_only,
+        openie_retry_attempts,
+        openie_retry_backoff_sec,
+        openie_error_sample_limit,
     )
 
     if (not force_rebuild) and memo_key in _GLOBAL_INDEX_MEMO:
@@ -47,10 +72,17 @@ def _get_global_graph(cfg):
         corpus_path=corpus_path,
         cache_dir=cache_dir,
         force_rebuild=force_rebuild,
+        prebuilt_igraph_path=prebuilt_igraph_path,
+        prebuilt_igraph_format=prebuilt_igraph_format,
+        prebuilt_entity_token_limit=prebuilt_entity_token_limit,
         openie_mode=openie_mode,
         openie_model_name=openie_model_name,
         openie_text_max_chars=openie_text_max_chars,
         openie_max_new_tokens=openie_max_new_tokens,
+        openie_local_files_only=openie_local_files_only,
+        openie_retry_attempts=openie_retry_attempts,
+        openie_retry_backoff_sec=openie_retry_backoff_sec,
+        openie_error_sample_limit=openie_error_sample_limit,
     )
     _GLOBAL_INDEX_MEMO[memo_key] = (graph, dict(meta))
     meta = dict(meta)
@@ -58,53 +90,272 @@ def _get_global_graph(cfg):
     return graph, meta
 
 
-def _personalized_pagerank(g, source, alpha):
-    if source not in g:
-        return {}
+def _get_graph_struct(g):
+    key = id(g)
+    cached = _PPR_GRAPH_STRUCT_MEMO.get(key)
+    if cached is not None:
+        return cached
 
-    # Personalized PageRank with no SciPy dependency.
-    # alpha is teleport probability in this project config.
     nodes = list(g.nodes)
-    if not nodes:
+    node_to_idx = {node: idx for idx, node in enumerate(nodes)}
+    neighbors = [[] for _ in range(len(nodes))]
+    degrees = [0 for _ in range(len(nodes))]
+    for idx, node in enumerate(nodes):
+        nbrs = [node_to_idx[nbr] for nbr in g.neighbors(node) if nbr in node_to_idx]
+        neighbors[idx] = nbrs
+        degrees[idx] = len(nbrs)
+    dangling = [idx for idx, deg in enumerate(degrees) if deg == 0]
+
+    struct = {
+        "nodes": nodes,
+        "node_to_idx": node_to_idx,
+        "neighbors": neighbors,
+        "degrees": degrees,
+        "dangling": dangling,
+        "n": len(nodes),
+    }
+    _PPR_GRAPH_STRUCT_MEMO[key] = struct
+    return struct
+
+
+def _resolve_ppr_engine(cfg, graph_scope, graph):
+    raw = str(getattr(cfg, "ppr_engine", "auto") or "auto").strip().lower()
+    if raw in {"power", "mc"}:
+        return raw
+
+    # auto: keep small local graphs in exact mode, switch large global/prebuilt graphs to stochastic MC.
+    if graph_scope in {"global_corpus", "prebuilt_igraph"} and graph.number_of_nodes() >= 50000:
+        return "mc"
+    return "power"
+
+
+def _build_anchor_subgraph(g, anchors, hops, max_nodes):
+    if int(hops) <= 0 or int(max_nodes) <= 0 or not anchors:
+        return g
+
+    visited = set()
+    q = deque()
+    for anchor in anchors:
+        if anchor in g and anchor not in visited:
+            visited.add(anchor)
+            q.append((anchor, 0))
+
+    while q and len(visited) < int(max_nodes):
+        node, depth = q.popleft()
+        if depth >= int(hops):
+            continue
+        for nbr in g.neighbors(node):
+            if nbr in visited:
+                continue
+            visited.add(nbr)
+            if len(visited) >= int(max_nodes):
+                break
+            q.append((nbr, depth + 1))
+
+    if not visited or len(visited) >= g.number_of_nodes():
+        return g
+    return g.subgraph(list(visited)).copy()
+
+
+def _power_ppr_idx(struct, source_idx, alpha, max_iter, tol):
+    n = int(struct["n"])
+    if n <= 0:
         return {}
 
-    n = len(nodes)
-    teleport = alpha
-    damping = 1.0 - alpha
-    tol = 1.0e-6
-    max_iter = 100
+    teleport = float(alpha)
+    damping = 1.0 - float(alpha)
+    neighbors = struct["neighbors"]
+    degrees = struct["degrees"]
+    dangling = struct["dangling"]
 
-    personalization = {node: 0.0 for node in nodes}
-    personalization[source] = 1.0
+    ranks = [0.0 for _ in range(n)]
+    ranks[source_idx] = 1.0
 
-    ranks = dict(personalization)
-    dangling = [node for node in nodes if g.degree(node) == 0]
+    for _ in range(max(1, int(max_iter))):
+        new_ranks = [0.0 for _ in range(n)]
+        new_ranks[source_idx] = teleport
 
-    for _ in range(max_iter):
-        prev = ranks
-        ranks = {node: teleport * personalization[node] for node in nodes}
+        if dangling:
+            dangling_mass = damping * sum(ranks[idx] for idx in dangling)
+            if dangling_mass > 0.0:
+                new_ranks[source_idx] += dangling_mass
 
-        dangling_mass = damping * sum(prev[node] for node in dangling)
-        if dangling_mass > 0.0:
-            for node in nodes:
-                ranks[node] += dangling_mass * personalization[node]
-
-        for node in nodes:
-            deg = g.degree(node)
-            if deg == 0:
+        for node_idx, prev_score in enumerate(ranks):
+            deg = degrees[node_idx]
+            if deg <= 0 or prev_score <= 0.0:
                 continue
-            share = damping * prev[node] / float(deg)
-            for nbr in g.neighbors(node):
-                ranks[nbr] += share
+            share = damping * prev_score / float(deg)
+            for nbr_idx in neighbors[node_idx]:
+                new_ranks[nbr_idx] += share
 
-        err = sum(abs(ranks[node] - prev[node]) for node in nodes)
-        if err < n * tol:
+        err = sum(abs(new_ranks[i] - ranks[i]) for i in range(n))
+        ranks = new_ranks
+        if err < n * float(tol):
             break
 
-    norm = sum(ranks.values())
+    norm = sum(ranks)
     if norm <= 0.0:
-        return {source: 1.0}
-    return {node: score / norm for node, score in ranks.items()}
+        return {source_idx: 1.0}
+    return {idx: (score / norm) for idx, score in enumerate(ranks) if score > 0.0}
+
+
+def _mc_ppr_idx(struct, source_idx, alpha, num_walks, max_steps, seed, min_score):
+    n = int(struct["n"])
+    if n <= 0:
+        return {}
+
+    neighbors = struct["neighbors"]
+    rng = random.Random(int(seed))
+    walk_count = max(1, int(num_walks))
+    step_cap = max(1, int(max_steps))
+    teleport = float(alpha)
+
+    visits = {}
+    total = 0
+    for _ in range(walk_count):
+        cur = source_idx
+        visits[cur] = visits.get(cur, 0) + 1
+        total += 1
+        for _ in range(step_cap):
+            if rng.random() < teleport:
+                cur = source_idx
+            else:
+                nbrs = neighbors[cur]
+                if not nbrs:
+                    cur = source_idx
+                else:
+                    cur = nbrs[rng.randrange(len(nbrs))]
+            visits[cur] = visits.get(cur, 0) + 1
+            total += 1
+
+    if total <= 0:
+        return {source_idx: 1.0}
+    cutoff = max(0.0, float(min_score))
+    return {idx: (cnt / float(total)) for idx, cnt in visits.items() if (cnt / float(total)) >= cutoff}
+
+
+def _mc_task(payload):
+    if _PPR_PARALLEL_STRUCT is None:
+        raise RuntimeError("MC parallel worker has no graph structure.")
+    source_idx, alpha, num_walks, max_steps, seed, min_score = payload
+    return _mc_ppr_idx(
+        struct=_PPR_PARALLEL_STRUCT,
+        source_idx=int(source_idx),
+        alpha=float(alpha),
+        num_walks=int(num_walks),
+        max_steps=int(max_steps),
+        seed=int(seed),
+        min_score=float(min_score),
+    )
+
+
+def _personalized_pagerank(g, source, alpha, max_iter=100, tol=1.0e-6, min_score=0.0):
+    if source not in g:
+        return {}
+    struct = _get_graph_struct(g)
+    source_idx = struct["node_to_idx"].get(source)
+    if source_idx is None:
+        return {}
+    idx_scores = _power_ppr_idx(struct, source_idx=source_idx, alpha=alpha, max_iter=max_iter, tol=tol)
+    nodes = struct["nodes"]
+    cutoff = max(0.0, float(min_score))
+    return {nodes[idx]: score for idx, score in idx_scores.items() if score >= cutoff}
+
+
+def _compute_ppr_batch(g, sources, cfg, engine, run_seed, show_progress, desc):
+    struct = _get_graph_struct(g)
+    nodes = struct["nodes"]
+    min_score = float(getattr(cfg, "ppr_min_score", 0.0))
+    alpha = float(getattr(cfg, "ppr_alpha", 0.15))
+
+    if not sources:
+        return {}
+
+    if engine == "mc":
+        tasks = []
+        seed_base = int(getattr(cfg, "random_seed", 42)) * 1000003 + int(run_seed) * 10007
+        for s_idx, source in enumerate(sources):
+            source_idx = struct["node_to_idx"].get(source)
+            if source_idx is None:
+                tasks.append(None)
+                continue
+            tasks.append(
+                (
+                    int(source_idx),
+                    alpha,
+                    int(getattr(cfg, "ppr_mc_walks", 512)),
+                    int(getattr(cfg, "ppr_mc_max_steps", 24)),
+                    seed_base + s_idx * 7919,
+                    min_score,
+                )
+            )
+
+        use_parallel = False
+        ppr_workers = max(1, int(getattr(cfg, "ppr_parallel_workers", 1)))
+        # Avoid nested process pools when dataset-level workers are already used.
+        if int(getattr(cfg, "num_workers", 1)) <= 1 and ppr_workers > 1:
+            try:
+                use_parallel = mp.get_start_method(allow_none=True) == "fork"
+            except Exception:
+                use_parallel = False
+
+        outputs = []
+        if use_parallel:
+            global _PPR_PARALLEL_STRUCT
+            _PPR_PARALLEL_STRUCT = struct
+            valid_tasks = [task for task in tasks if task is not None]
+            with ProcessPoolExecutor(max_workers=ppr_workers) as ex:
+                valid_outputs = list(
+                    tqdm(
+                        ex.map(_mc_task, valid_tasks),
+                        total=len(valid_tasks),
+                        desc=desc,
+                        leave=False,
+                        disable=not show_progress,
+                    )
+                )
+            _PPR_PARALLEL_STRUCT = None
+            it = iter(valid_outputs)
+            for task in tasks:
+                outputs.append({} if task is None else next(it))
+        else:
+            for task in tqdm(
+                tasks,
+                total=len(tasks),
+                desc=desc,
+                leave=False,
+                disable=not show_progress,
+            ):
+                if task is None:
+                    outputs.append({})
+                else:
+                    outputs.append(_mc_task(task) if _PPR_PARALLEL_STRUCT is not None else _mc_ppr_idx(struct, *task))
+
+        mapped = {}
+        for source, idx_scores in zip(sources, outputs):
+            mapped[source] = {nodes[idx]: score for idx, score in idx_scores.items()}
+        return mapped
+
+    mapped = {}
+    for source in tqdm(
+        sources,
+        total=len(sources),
+        desc=desc,
+        leave=False,
+        disable=not show_progress,
+    ):
+        if source not in struct["node_to_idx"]:
+            mapped[source] = {}
+            continue
+        idx_scores = _power_ppr_idx(
+            struct=struct,
+            source_idx=int(struct["node_to_idx"][source]),
+            alpha=alpha,
+            max_iter=int(getattr(cfg, "ppr_power_max_iter", 100)),
+            tol=float(getattr(cfg, "ppr_power_tol", 1.0e-6)),
+        )
+        mapped[source] = {nodes[idx]: score for idx, score in idx_scores.items() if score >= min_score}
+    return mapped
 
 
 def _topk_nodes(scores, k):
@@ -114,6 +365,8 @@ def _topk_nodes(scores, k):
 
 
 def _stochastic_perturb_graph(g, rng, drop_prob):
+    if float(drop_prob) <= 0.0:
+        return g
     h = g.copy()
     if h.number_of_edges() == 0:
         return h
@@ -259,19 +512,33 @@ def _build_corridor(
     anchors,
     seeds,
     anchor_scores_by_node,
-    alpha,
+    cfg,
+    ppr_engine,
     pair_top_lp,
     corridor_top_bc,
+    show_progress=False,
 ):
     if not anchors or not seeds:
         return g.subgraph(anchors + list(seeds)).copy(), [], {}, []
 
-    seed_score_map = {}
-    for seed in seeds:
-        seed_score_map[seed] = _personalized_pagerank(g, seed, alpha=alpha)
+    seed_score_map = _compute_ppr_batch(
+        g=g,
+        sources=list(seeds),
+        cfg=cfg,
+        engine=ppr_engine,
+        run_seed=911,
+        show_progress=show_progress,
+        desc="Corridor seed PPR",
+    )
 
     pair_stats = []
-    for anchor in anchors:
+    for anchor in tqdm(
+        anchors,
+        total=len(anchors),
+        desc="Corridor pair score",
+        leave=False,
+        disable=not show_progress,
+    ):
         a_scores = anchor_scores_by_node.get(anchor, {})
         for seed in seeds:
             z_scores = seed_score_map.get(seed, {})
@@ -288,7 +555,16 @@ def _build_corridor(
     sentence_scores = {}
     corridor_payloads = []
 
-    for idx, (anchor, seed) in enumerate(retained_pairs, start=1):
+    for idx, (anchor, seed) in enumerate(
+        tqdm(
+            retained_pairs,
+            total=len(retained_pairs),
+            desc="Corridor compose",
+            leave=False,
+            disable=not show_progress,
+        ),
+        start=1,
+    ):
         a_scores = anchor_scores_by_node.get(anchor, {})
         z_scores = seed_score_map.get(seed, {})
         node_scores = []
@@ -497,9 +773,11 @@ def run_graphrag_core(
     global_index_meta = {}
     g = None
 
-    if str(getattr(cfg, "global_corpus_path", "") or "").strip():
+    has_global_corpus = bool(str(getattr(cfg, "global_corpus_path", "") or "").strip())
+    has_prebuilt_igraph = bool(str(getattr(cfg, "prebuilt_igraph_path", "") or "").strip())
+    if has_global_corpus or has_prebuilt_igraph:
         g, global_index_meta = _get_global_graph(cfg)
-        graph_scope = "global_corpus"
+        graph_scope = "prebuilt_igraph" if has_prebuilt_igraph else "global_corpus"
     else:
         artifacts = build_document_entity_graph(sample)
         g = artifacts.graph
@@ -513,15 +791,73 @@ def run_graphrag_core(
 
     rng = random.Random(cfg.random_seed)
     per_anchor_runs = {a: [] for a in anchors}
+    show_inner_progress = bool(getattr(cfg, "show_inner_progress", True))
+    if int(getattr(cfg, "num_workers", 1)) > 1:
+        show_inner_progress = False
 
-    for _ in range(max(1, cfg.samples_per_anchor)):
-        h = _stochastic_perturb_graph(g, rng, cfg.edge_drop_prob)
+    ppr_engine = _resolve_ppr_engine(cfg, graph_scope=graph_scope, graph=g)
+    ppr_graph = g
+    ppr_subgraph_applied = False
+    if (
+        bool(getattr(cfg, "ppr_subgraph_enable", True))
+        and graph_scope in {"global_corpus", "prebuilt_igraph"}
+        and anchors
+    ):
+        maybe_sub = _build_anchor_subgraph(
+            g=g,
+            anchors=anchors,
+            hops=int(getattr(cfg, "ppr_subgraph_hops", 2)),
+            max_nodes=int(getattr(cfg, "ppr_subgraph_max_nodes", 30000)),
+        )
+        if maybe_sub is not g:
+            ppr_graph = maybe_sub
+            ppr_subgraph_applied = True
+            anchors = [a for a in anchors if a in ppr_graph]
+            per_anchor_runs = {a: [] for a in anchors}
+
+    n_runs = max(1, cfg.samples_per_anchor)
+    for _ in tqdm(
+        range(n_runs),
+        total=n_runs,
+        desc="PPR perturb",
+        leave=False,
+        disable=not show_inner_progress,
+    ):
+        run_seed = int(rng.random() * 10**9)
+        if ppr_engine == "power":
+            h = _stochastic_perturb_graph(ppr_graph, rng, cfg.edge_drop_prob)
+            run_map = _compute_ppr_batch(
+                g=h,
+                sources=anchors,
+                cfg=cfg,
+                engine="power",
+                run_seed=run_seed,
+                show_progress=show_inner_progress,
+                desc="Anchor PPR",
+            )
+        else:
+            run_map = _compute_ppr_batch(
+                g=ppr_graph,
+                sources=anchors,
+                cfg=cfg,
+                engine="mc",
+                run_seed=run_seed,
+                show_progress=show_inner_progress,
+                desc="Anchor PPR",
+            )
+
         for anchor in anchors:
-            per_anchor_runs[anchor].append(_personalized_pagerank(h, anchor, alpha=cfg.ppr_alpha))
+            per_anchor_runs[anchor].append(run_map.get(anchor, {}))
 
     run_results = []
-    num_runs = max(1, cfg.samples_per_anchor)
-    for run_id in range(num_runs):
+    num_runs = n_runs
+    for run_id in tqdm(
+        range(num_runs),
+        total=num_runs,
+        desc="Seed selection",
+        leave=False,
+        disable=not show_inner_progress,
+    ):
         agg_scores = {}
         anchor_scores = {}
 
@@ -533,7 +869,7 @@ def run_graphrag_core(
 
         candidates = _topk_nodes(agg_scores, cfg.candidate_top_t)
         weights = {node: agg_scores[node] for node in candidates}
-        seeds = _greedy_seed_set(g, candidates, weights, cfg.seed_k, cfg.tau)
+        seeds = _greedy_seed_set(ppr_graph, candidates, weights, cfg.seed_k, cfg.tau)
 
         run_results.append(
             {
@@ -561,7 +897,7 @@ def run_graphrag_core(
             seeds = run["seeds"]
             loss = 0.0
             for node in surrogate_universe:
-                loss += surrogate_weights[node] * _min_set_distance(g, node, seeds, cfg.tau)
+                loss += surrogate_weights[node] * _min_set_distance(ppr_graph, node, seeds, cfg.tau)
             run["global_loss"] = loss
             if loss < best_loss:
                 best_loss = loss
@@ -582,13 +918,15 @@ def run_graphrag_core(
         )
 
     corridor, retained_pairs, sentence_scores, corridor_payloads = _build_corridor(
-        g=g,
+        g=ppr_graph,
         anchors=anchors,
         seeds=chosen["seeds"],
         anchor_scores_by_node=chosen["anchor_scores"],
-        alpha=cfg.ppr_alpha,
+        cfg=cfg,
+        ppr_engine=ppr_engine,
         pair_top_lp=cfg.pair_top_lp,
         corridor_top_bc=cfg.corridor_top_bc,
+        show_progress=show_inner_progress,
     )
 
     final_graph = corridor
@@ -641,16 +979,28 @@ def run_graphrag_core(
     )
 
     anchor_results = []
-    for anchor in anchors:
+    diag_topn = max(1, int(getattr(cfg, "anchor_diag_topn", 10)))
+    diag_full = bool(getattr(cfg, "anchor_diag_store_full_scores", False))
+    for anchor in tqdm(
+        anchors,
+        total=len(anchors),
+        desc="Anchor diagnostics",
+        leave=False,
+        disable=not show_inner_progress,
+    ):
         for sample_idx, scores in enumerate(per_anchor_runs.get(anchor, [])):
-            top_candidates = _topk_nodes(scores, 10)
+            top_candidates = _topk_nodes(scores, diag_topn)
+            if diag_full:
+                score_payload = {k: float(v) for k, v in scores.items() if v > 0.0}
+            else:
+                score_payload = {k: float(scores.get(k, 0.0)) for k in top_candidates}
             anchor_results.append(
                 AnchorResult(
                     anchor=anchor,
-                    scores={k: float(v) for k, v in scores.items() if v > 0.0},
+                    scores=score_payload,
                     top_candidates=top_candidates,
                     sample_index=sample_idx,
-                    metadata={"topn": 10},
+                    metadata={"topn": diag_topn, "full_scores": diag_full},
                 )
             )
 
@@ -667,7 +1017,12 @@ def run_graphrag_core(
         anchor_results=anchor_results,
         diagnostics={
             "graph_scope": graph_scope,
-            "global_index": global_index_meta if graph_scope == "global_corpus" else {},
+            "global_index": global_index_meta if graph_scope in {"global_corpus", "prebuilt_igraph"} else {},
+            "ppr_engine_requested": str(getattr(cfg, "ppr_engine", "auto")),
+            "ppr_engine_effective": ppr_engine,
+            "ppr_subgraph_applied": bool(ppr_subgraph_applied),
+            "ppr_graph_nodes": int(ppr_graph.number_of_nodes()),
+            "ppr_graph_edges": int(ppr_graph.number_of_edges()),
             "best_run_id": chosen.get("run_id", 0),
             "num_seeds": len(chosen["seeds"]),
             "retained_pairs": [[a, z] for a, z in retained_pairs],
@@ -679,6 +1034,8 @@ def run_graphrag_core(
             "embedding_rerank": embedding_diag,
             "stable_seed_selection": stable_seed_selection,
             "trim_enabled": enable_trim and cfg.trim_on,
+            "anchor_diag_topn": int(diag_topn),
+            "anchor_diag_store_full_scores": bool(diag_full),
         },
         latency_ms=latency_ms,
     )
