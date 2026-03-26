@@ -26,6 +26,11 @@ class RetrievalConfig:
     openie_retry_attempts: int = 3
     openie_retry_backoff_sec: float = 0.2
     openie_error_sample_limit: int = 20
+    openie_api_base_url: str = ""
+    openie_api_key: str = ""
+    openie_api_timeout_sec: float = 120.0
+    openie_parallel_workers: int = 4
+    openie_log_every: int = 200
     embedding_enabled: bool = False
     embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
     embedding_weight: float = 0.35
@@ -67,6 +72,10 @@ class RagConfig(RetrievalConfig):
     run_qa: bool = True
     generator: str = "heuristic"
     model_name: str = ""
+    llm_base_url: str = ""
+    llm_api_key: str = ""
+    llm_timeout_sec: float = 120.0
+    llm_max_new_tokens: int = 64
     max_context_sentences: int = 10
     render_mode: str = ""
     max_corridors_in_context: int = 2

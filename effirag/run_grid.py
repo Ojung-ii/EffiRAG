@@ -38,6 +38,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--openie-model-name", type=str, default="Qwen/Qwen2.5-7B-Instruct")
     parser.add_argument("--openie-text-max-chars", type=int, default=2200)
     parser.add_argument("--openie-max-new-tokens", type=int, default=256)
+    parser.add_argument("--openie-api-base-url", type=str, default="")
+    parser.add_argument("--openie-api-key", type=str, default="")
+    parser.add_argument("--openie-api-timeout-sec", type=float, default=120.0)
+    parser.add_argument("--openie-parallel-workers", type=int, default=4)
+    parser.add_argument("--openie-log-every", type=int, default=200)
     parser.add_argument("--embedding-enabled", type=str, default="false")
     parser.add_argument("--embedding-model-name", type=str, default="sentence-transformers/all-MiniLM-L6-v2")
     parser.add_argument("--embedding-weight", type=float, default=0.35)
@@ -52,6 +57,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-qa", type=str, default="true")
     parser.add_argument("--generators", type=str, default="heuristic,hf")
     parser.add_argument("--hf-model", type=str, default="Qwen/Qwen3.5-2B")
+    parser.add_argument("--llm-base-url", type=str, default="")
+    parser.add_argument("--llm-api-key", type=str, default="")
+    parser.add_argument("--llm-timeout-sec", type=float, default=120.0)
+    parser.add_argument("--llm-max-new-tokens", type=int, default=64)
 
     parser.add_argument("--num-workers", type=int, default=1)
     parser.add_argument("--rag-workers", type=int, default=1)
@@ -172,6 +181,11 @@ def _retrieval_cfg(args, base_dir: Path, method: str, profile: dict) -> Retrieva
         openie_model_name=args.openie_model_name,
         openie_text_max_chars=args.openie_text_max_chars,
         openie_max_new_tokens=args.openie_max_new_tokens,
+        openie_api_base_url=args.openie_api_base_url,
+        openie_api_key=args.openie_api_key,
+        openie_api_timeout_sec=args.openie_api_timeout_sec,
+        openie_parallel_workers=args.openie_parallel_workers,
+        openie_log_every=args.openie_log_every,
         embedding_enabled=parse_bool(args.embedding_enabled),
         embedding_model_name=args.embedding_model_name,
         embedding_weight=args.embedding_weight,
@@ -195,7 +209,7 @@ def _retrieval_cfg(args, base_dir: Path, method: str, profile: dict) -> Retrieva
 
 
 def _rag_cfg(args, base_dir: Path, method: str, generator: str, profile: dict) -> RagConfig:
-    model_name = args.hf_model if generator == "hf" else ""
+    model_name = args.hf_model if generator in {"hf", "openai_compat", "vllm"} else ""
     return RagConfig(
         dataset=args.dataset,
         data_path=args.data_path,
@@ -210,6 +224,11 @@ def _rag_cfg(args, base_dir: Path, method: str, generator: str, profile: dict) -
         openie_model_name=args.openie_model_name,
         openie_text_max_chars=args.openie_text_max_chars,
         openie_max_new_tokens=args.openie_max_new_tokens,
+        openie_api_base_url=args.openie_api_base_url,
+        openie_api_key=args.openie_api_key,
+        openie_api_timeout_sec=args.openie_api_timeout_sec,
+        openie_parallel_workers=args.openie_parallel_workers,
+        openie_log_every=args.openie_log_every,
         embedding_enabled=parse_bool(args.embedding_enabled),
         embedding_model_name=args.embedding_model_name,
         embedding_weight=args.embedding_weight,
@@ -232,6 +251,10 @@ def _rag_cfg(args, base_dir: Path, method: str, generator: str, profile: dict) -
         run_qa=parse_bool(args.run_qa),
         generator=generator,
         model_name=model_name,
+        llm_base_url=args.llm_base_url,
+        llm_api_key=args.llm_api_key,
+        llm_timeout_sec=args.llm_timeout_sec,
+        llm_max_new_tokens=args.llm_max_new_tokens,
         max_context_sentences=profile["max_context_sentences"],
         measure_gpu_peak=False,
         measure_cpu_ram=False,
@@ -341,7 +364,7 @@ def main() -> None:
     if not generators:
         raise ValueError("--generators cannot be empty.")
     for g in generators:
-        if g not in {"heuristic", "hf", "oracle"}:
+        if g not in {"heuristic", "hf", "oracle", "openai_compat", "vllm"}:
             raise ValueError(f"Unsupported generator: {g}")
     if args.rag_workers < 1:
         raise ValueError("--rag-workers must be >= 1.")

@@ -28,6 +28,11 @@ def _build_parser():
     parser.add_argument("--openie-retry-attempts", type=int, default=3)
     parser.add_argument("--openie-retry-backoff-sec", type=float, default=0.2)
     parser.add_argument("--openie-error-sample-limit", type=int, default=20)
+    parser.add_argument("--openie-api-base-url", type=str, default="")
+    parser.add_argument("--openie-api-key", type=str, default="")
+    parser.add_argument("--openie-api-timeout-sec", type=float, default=120.0)
+    parser.add_argument("--openie-parallel-workers", type=int, default=4)
+    parser.add_argument("--openie-log-every", type=int, default=200)
     return parser
 
 
@@ -46,14 +51,24 @@ def main():
     summary_path = None
     payload = {}
 
+    print(
+        "[RunIndex] "
+        f"mode={args.openie_mode} workers={int(args.openie_parallel_workers)} "
+        f"log_every={int(args.openie_log_every)} timeout={float(args.openie_api_timeout_sec):.1f}s",
+        flush=True,
+    )
+    if str(args.openie_api_base_url or "").strip():
+        print(f"[RunIndex] openie_api_base_url={str(args.openie_api_base_url).strip()}", flush=True)
+
     for stage in tqdm(
         ["build_or_load_index", "write_summary"],
         total=2,
         desc="Run index",
         unit="stage",
-        leave=False,
+        leave=True,
     ):
         if stage == "build_or_load_index":
+            print("[RunIndex] stage=build_or_load_index start", flush=True)
             graph, meta = load_or_build_global_index(
                 corpus_path=corpus_path,
                 cache_dir=args.cache_dir,
@@ -69,9 +84,20 @@ def main():
                 openie_retry_attempts=args.openie_retry_attempts,
                 openie_retry_backoff_sec=args.openie_retry_backoff_sec,
                 openie_error_sample_limit=args.openie_error_sample_limit,
+                openie_api_base_url=str(args.openie_api_base_url or ""),
+                openie_api_key=str(args.openie_api_key or ""),
+                openie_api_timeout_sec=float(args.openie_api_timeout_sec),
+                openie_parallel_workers=int(args.openie_parallel_workers),
+                openie_log_every=int(args.openie_log_every),
                 show_progress=True,
             )
+            print(
+                "[RunIndex] stage=build_or_load_index done "
+                f"(cache_hit={bool(meta.get('cache_hit', False))})",
+                flush=True,
+            )
         elif stage == "write_summary":
+            print("[RunIndex] stage=write_summary start", flush=True)
             index_dir = Path(meta.get("index_dir", args.cache_dir))
             summary_path = index_dir / "index_summary.json"
             payload = {
@@ -89,6 +115,10 @@ def main():
                 "openie_retry_attempts": int(args.openie_retry_attempts),
                 "openie_retry_backoff_sec": float(args.openie_retry_backoff_sec),
                 "openie_error_sample_limit": int(args.openie_error_sample_limit),
+                "openie_api_base_url": str(args.openie_api_base_url or ""),
+                "openie_api_timeout_sec": float(args.openie_api_timeout_sec),
+                "openie_parallel_workers": int(args.openie_parallel_workers),
+                "openie_log_every": int(args.openie_log_every),
                 "cache_hit": bool(meta.get("cache_hit", False)),
                 "memory_graph_nodes": int(graph.number_of_nodes()),
                 "memory_graph_edges": int(graph.number_of_edges()),
@@ -96,6 +126,7 @@ def main():
             }
             summary_path.parent.mkdir(parents=True, exist_ok=True)
             summary_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            print(f"[RunIndex] stage=write_summary done path={summary_path}", flush=True)
 
     print("Index ready")
     print(json.dumps(payload, ensure_ascii=False, indent=2))

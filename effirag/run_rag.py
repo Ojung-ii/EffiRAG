@@ -24,7 +24,6 @@ from .utils import (
     timestamp_for_filename,
     timestamp_iso_utc,
     write_json,
-    write_jsonl,
 )
 
 try:
@@ -134,6 +133,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--openie-retry-attempts", type=int, default=None)
     parser.add_argument("--openie-retry-backoff-sec", type=float, default=None)
     parser.add_argument("--openie-error-sample-limit", type=int, default=None)
+    parser.add_argument("--openie-api-base-url", type=str, default=None)
+    parser.add_argument("--openie-api-key", type=str, default=None)
+    parser.add_argument("--openie-api-timeout-sec", type=float, default=None)
+    parser.add_argument("--openie-parallel-workers", type=int, default=None)
+    parser.add_argument("--openie-log-every", type=int, default=None)
     parser.add_argument("--embedding-enabled", type=str, default=None)
     parser.add_argument("--embedding-model-name", type=str, default=None)
     parser.add_argument("--embedding-weight", type=float, default=None)
@@ -152,8 +156,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trim-rho", type=float, default=None)
 
     parser.add_argument("--run-qa", type=str, default=None)
-    parser.add_argument("--generator", type=str, default=None, choices=["heuristic", "oracle", "hf"])
+    parser.add_argument("--generator", type=str, default=None, choices=["heuristic", "oracle", "hf", "openai_compat", "vllm"])
     parser.add_argument("--model-name", type=str, default=None)
+    parser.add_argument("--llm-base-url", type=str, default=None)
+    parser.add_argument("--llm-api-key", type=str, default=None)
+    parser.add_argument("--llm-timeout-sec", type=float, default=None)
+    parser.add_argument("--llm-max-new-tokens", type=int, default=None)
     parser.add_argument("--max-context-sentences", type=int, default=None)
     parser.add_argument("--render-mode", type=str, default=None, choices=["flat", "corridor", "corridor_aware_flat"])
     parser.add_argument("--max-corridors-in-context", type=int, default=None)
@@ -210,6 +218,12 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
     cfg_values = asdict(cfg)
     run_stamp = timestamp_for_filename()
     run_iso = timestamp_iso_utc()
+    out_dir = Path(cfg.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    query_path = out_dir / "rag_query_results.jsonl"
+    summary_path = out_dir / "rag_summary.json"
+    # Stream per-sample outputs so progress is inspectable even before the run ends.
+    query_path.write_text("", encoding="utf-8")
     render_mode_requested = str(cfg.render_mode or "").strip()
     resolved_render_mode = render_mode_requested or ("corridor_aware_flat" if cfg.method == "effirag" else "flat")
     retrieval_source_counts = {"precomputed": 0, "on_the_fly": 0}
@@ -282,7 +296,7 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             em = 0.0
             f1 = 0.0
             if cfg.run_qa:
-                generation = generator_fn(sample, rendered, cfg.model_name)
+                generation = generator_fn(sample, rendered, cfg.model_name, cfg)
                 em = exact_match_score(generation.prediction, sample.answer)
                 f1 = token_f1_score(generation.prediction, sample.answer)
                 if _is_generation_fallback(generation):
@@ -320,39 +334,37 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                 "f1": f1,
             }
 
-            rows.append(
-                {
-                    "sample_id": sample.qid,
-                    "question": sample.question,
-                    "answer": sample.answer,
-                    "prediction": generation.prediction if generation else "",
-                    "qa_executed": bool(generation is not None),
-                    "generation_fallback": bool(_is_generation_fallback(generation)),
-                    "method": retrieval.method,
-                    "generator": cfg.generator,
-                    "metrics": metrics,
-                    "efficiency": efficiency,
-                    "retrieval": asdict(retrieval),
-                    "retrieval_selected_sentence_ids": list(retrieval.selected_sentence_ids),
-                    "rendered": asdict(rendered),
-                    "rendered_sentence_ids": list(rendered.sentence_ids),
-                    "rendered_corridor_ids": list(rendered.rendered_corridor_ids),
-                    "rendering": {
-                        "render_mode": rendered.render_mode,
-                        "render_mode_requested": render_mode_requested or "(auto)",
-                        "truncated_corridors": rendered.truncated_corridor_count,
-                        "truncated_sentences": rendered.truncated_sentence_count,
-                    },
-                    "retrieval_source": retrieval_source,
-                    "generation": asdict(generation) if generation else None,
-                }
-            )
+            row = {
+                "sample_id": sample.qid,
+                "question": sample.question,
+                "answer": sample.answer,
+                "prediction": generation.prediction if generation else "",
+                "qa_executed": bool(generation is not None),
+                "generation_fallback": bool(_is_generation_fallback(generation)),
+                "method": retrieval.method,
+                "generator": cfg.generator,
+                "metrics": metrics,
+                "efficiency": efficiency,
+                "retrieval": asdict(retrieval),
+                "retrieval_selected_sentence_ids": list(retrieval.selected_sentence_ids),
+                "rendered": asdict(rendered),
+                "rendered_sentence_ids": list(rendered.sentence_ids),
+                "rendered_corridor_ids": list(rendered.rendered_corridor_ids),
+                "rendering": {
+                    "render_mode": rendered.render_mode,
+                    "render_mode_requested": render_mode_requested or "(auto)",
+                    "truncated_corridors": rendered.truncated_corridor_count,
+                    "truncated_sentences": rendered.truncated_sentence_count,
+                },
+                "retrieval_source": retrieval_source,
+                "generation": asdict(generation) if generation else None,
+                "run_timestamp": run_stamp,
+            }
+            rows.append(row)
+            append_jsonl(query_path, row)
     finally:
         retrieval_bar.close()
         generation_bar.close()
-
-    for row in rows:
-        row["run_timestamp"] = run_stamp
 
     summary = {
         "n_samples": float(len(rows)),
@@ -401,6 +413,10 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "openie_retry_attempts": cfg.openie_retry_attempts,
             "openie_retry_backoff_sec": cfg.openie_retry_backoff_sec,
             "openie_error_sample_limit": cfg.openie_error_sample_limit,
+            "openie_api_base_url": cfg.openie_api_base_url,
+            "openie_api_timeout_sec": cfg.openie_api_timeout_sec,
+            "openie_parallel_workers": cfg.openie_parallel_workers,
+            "openie_log_every": cfg.openie_log_every,
             "embedding_enabled": cfg.embedding_enabled,
             "embedding_model_name": cfg.embedding_model_name,
             "embedding_weight": cfg.embedding_weight,
@@ -431,6 +447,11 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "anchor_diag_topn": cfg.anchor_diag_topn,
             "anchor_diag_store_full_scores": cfg.anchor_diag_store_full_scores,
             "random_seed": cfg.random_seed,
+        },
+        "generation_params": {
+            "llm_base_url": cfg.llm_base_url,
+            "llm_timeout_sec": cfg.llm_timeout_sec,
+            "llm_max_new_tokens": cfg.llm_max_new_tokens,
         },
         "render_params": {
             "max_context_sentences": cfg.max_context_sentences,
@@ -470,12 +491,6 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
     if cfg.measure_cpu_ram:
         summary["cpu_ram_peak_mb"] = mean_or_zero([r["efficiency"].get("cpu_ram_peak_mb", 0.0) for r in rows])
 
-    out_dir = Path(cfg.output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
-    query_path = out_dir / "rag_query_results.jsonl"
-    summary_path = out_dir / "rag_summary.json"
-
-    write_jsonl(query_path, rows)
     write_json(summary_path, summary)
 
     logs_dir = out_dir / "logs"

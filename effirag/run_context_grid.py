@@ -49,6 +49,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--openie-model-name", type=str, default="Qwen/Qwen2.5-7B-Instruct")
     parser.add_argument("--openie-text-max-chars", type=int, default=2200)
     parser.add_argument("--openie-max-new-tokens", type=int, default=256)
+    parser.add_argument("--openie-api-base-url", type=str, default="")
+    parser.add_argument("--openie-api-key", type=str, default="")
+    parser.add_argument("--openie-api-timeout-sec", type=float, default=120.0)
+    parser.add_argument("--openie-parallel-workers", type=int, default=4)
+    parser.add_argument("--openie-log-every", type=int, default=200)
     parser.add_argument("--embedding-enabled", type=str, default="false")
     parser.add_argument("--embedding-model-name", type=str, default="sentence-transformers/all-MiniLM-L6-v2")
     parser.add_argument("--embedding-weight", type=float, default=0.35)
@@ -58,8 +63,12 @@ def _build_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--method", type=str, default="effirag", choices=["effirag", "naive_graphrag"])
     parser.add_argument("--run-qa", type=str, default="true")
-    parser.add_argument("--generator", type=str, default="hf", choices=["heuristic", "hf", "oracle"])
+    parser.add_argument("--generator", type=str, default="hf", choices=["heuristic", "hf", "oracle", "openai_compat", "vllm"])
     parser.add_argument("--model-name", type=str, default="Qwen/Qwen2.5-7B-Instruct")
+    parser.add_argument("--llm-base-url", type=str, default="")
+    parser.add_argument("--llm-api-key", type=str, default="")
+    parser.add_argument("--llm-timeout-sec", type=float, default=120.0)
+    parser.add_argument("--llm-max-new-tokens", type=int, default=64)
 
     # Retrieval remains fixed.
     parser.add_argument("--max-anchors", type=int, default=6)
@@ -151,6 +160,11 @@ def _build_retrieval_cfg(args, output_dir: Path):
         openie_model_name=args.openie_model_name,
         openie_text_max_chars=args.openie_text_max_chars,
         openie_max_new_tokens=args.openie_max_new_tokens,
+        openie_api_base_url=args.openie_api_base_url,
+        openie_api_key=args.openie_api_key,
+        openie_api_timeout_sec=args.openie_api_timeout_sec,
+        openie_parallel_workers=args.openie_parallel_workers,
+        openie_log_every=args.openie_log_every,
         embedding_enabled=parse_bool(args.embedding_enabled),
         embedding_model_name=args.embedding_model_name,
         embedding_weight=args.embedding_weight,
@@ -188,6 +202,11 @@ def _base_rag_kwargs(args, output_dir: Path):
         openie_model_name=args.openie_model_name,
         openie_text_max_chars=args.openie_text_max_chars,
         openie_max_new_tokens=args.openie_max_new_tokens,
+        openie_api_base_url=args.openie_api_base_url,
+        openie_api_key=args.openie_api_key,
+        openie_api_timeout_sec=args.openie_api_timeout_sec,
+        openie_parallel_workers=args.openie_parallel_workers,
+        openie_log_every=args.openie_log_every,
         embedding_enabled=parse_bool(args.embedding_enabled),
         embedding_model_name=args.embedding_model_name,
         embedding_weight=args.embedding_weight,
@@ -209,7 +228,11 @@ def _base_rag_kwargs(args, output_dir: Path):
         random_seed=args.random_seed,
         run_qa=parse_bool(args.run_qa),
         generator=args.generator,
-        model_name=args.model_name if args.generator == "hf" else "",
+        model_name=args.model_name if args.generator in {"hf", "openai_compat", "vllm"} else "",
+        llm_base_url=args.llm_base_url,
+        llm_api_key=args.llm_api_key,
+        llm_timeout_sec=args.llm_timeout_sec,
+        llm_max_new_tokens=args.llm_max_new_tokens,
         max_context_sentences=args.max_context_sentences,
         max_total_sentences=args.max_total_sentences,
         measure_gpu_peak=False,

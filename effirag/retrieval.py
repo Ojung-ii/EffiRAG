@@ -46,6 +46,11 @@ def _get_global_graph(cfg):
     openie_retry_attempts = int(getattr(cfg, "openie_retry_attempts", 3))
     openie_retry_backoff_sec = float(getattr(cfg, "openie_retry_backoff_sec", 0.2))
     openie_error_sample_limit = int(getattr(cfg, "openie_error_sample_limit", 20))
+    openie_api_base_url = str(getattr(cfg, "openie_api_base_url", "") or "").strip()
+    openie_api_key = str(getattr(cfg, "openie_api_key", "") or "").strip()
+    openie_api_timeout_sec = float(getattr(cfg, "openie_api_timeout_sec", 120.0))
+    openie_parallel_workers = int(getattr(cfg, "openie_parallel_workers", 4))
+    openie_log_every = int(getattr(cfg, "openie_log_every", 200))
     memo_key = (
         str(Path(corpus_path).resolve()) if corpus_path else "",
         str(Path(prebuilt_igraph_path).resolve()) if prebuilt_igraph_path else "",
@@ -60,6 +65,11 @@ def _get_global_graph(cfg):
         openie_retry_attempts,
         openie_retry_backoff_sec,
         openie_error_sample_limit,
+        openie_api_base_url,
+        openie_api_key,
+        openie_api_timeout_sec,
+        openie_parallel_workers,
+        openie_log_every,
     )
 
     if (not force_rebuild) and memo_key in _GLOBAL_INDEX_MEMO:
@@ -83,6 +93,11 @@ def _get_global_graph(cfg):
         openie_retry_attempts=openie_retry_attempts,
         openie_retry_backoff_sec=openie_retry_backoff_sec,
         openie_error_sample_limit=openie_error_sample_limit,
+        openie_api_base_url=openie_api_base_url,
+        openie_api_key=openie_api_key,
+        openie_api_timeout_sec=openie_api_timeout_sec,
+        openie_parallel_workers=openie_parallel_workers,
+        openie_log_every=openie_log_every,
     )
     _GLOBAL_INDEX_MEMO[memo_key] = (graph, dict(meta))
     meta = dict(meta)

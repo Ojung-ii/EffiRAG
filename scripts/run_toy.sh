@@ -6,8 +6,14 @@ rag_limit=100
 retrieval_limit=100
 output_root="outputs"
 run_hf="false"
+run_vllm="false"
 run_oracle="false"
 hf_model="Qwen/Qwen3.5-2B"
+vllm_model="Qwen/Qwen2.5-7B-Instruct"
+llm_base_url="http://localhost:8011/v1"
+llm_api_key="EMPTY"
+llm_timeout_sec=120
+llm_max_new_tokens=64
 max_context_sentences=10
 methods_csv="effirag,naive_graphrag"
 run_retrieval="true"
@@ -39,12 +45,36 @@ while [[ $# -gt 0 ]]; do
       run_hf="true"
       shift
       ;;
+    --run-vllm)
+      run_vllm="true"
+      shift
+      ;;
     --run-oracle)
       run_oracle="true"
       shift
       ;;
     --hf-model)
       hf_model="$2"
+      shift 2
+      ;;
+    --vllm-model)
+      vllm_model="$2"
+      shift 2
+      ;;
+    --llm-base-url)
+      llm_base_url="$2"
+      shift 2
+      ;;
+    --llm-api-key)
+      llm_api_key="$2"
+      shift 2
+      ;;
+    --llm-timeout-sec)
+      llm_timeout_sec="$2"
+      shift 2
+      ;;
+    --llm-max-new-tokens)
+      llm_max_new_tokens="$2"
       shift 2
       ;;
     --max-context-sentences)
@@ -72,8 +102,14 @@ Options:
   --skip-retrieval                Skip retrieval-only comparison
   --skip-rag                      Skip RAG comparison
   --run-hf                        Also run HF generator comparison
+  --run-vllm                      Also run vLLM(OpenAI-compatible) generator comparison
   --run-oracle                    Also run oracle generator comparison
   --hf-model <model-name>         HF model name for --run-hf (default: Qwen/Qwen3.5-2B)
+  --vllm-model <model-name>       vLLM model name for --run-vllm (default: Qwen/Qwen2.5-7B-Instruct)
+  --llm-base-url <url>            OpenAI-compatible base URL (default: http://localhost:8011/v1)
+  --llm-api-key <key>             API key for OpenAI-compatible endpoint (default: EMPTY)
+  --llm-timeout-sec <sec>         LLM request timeout seconds (default: 120)
+  --llm-max-new-tokens <int>      Max new tokens for LLM generation (default: 64)
   --max-context-sentences <int>   Max context sentences for HF run (default: 10)
 USAGE
       exit 0
@@ -93,6 +129,9 @@ if [[ "${run_oracle}" == "true" ]]; then
 fi
 if [[ "${run_hf}" == "true" ]]; then
   generators+=("hf")
+fi
+if [[ "${run_vllm}" == "true" ]]; then
+  generators+=("vllm")
 fi
 
 run_stamp="$(date -u +%Y%m%d_%H%M%S)"
@@ -133,6 +172,15 @@ if [[ "${run_rag}" == "true" ]]; then
       if [[ "${generator}" == "hf" ]]; then
         cmd+=(
           --model-name "${hf_model}"
+          --max-context-sentences "${max_context_sentences}"
+        )
+      elif [[ "${generator}" == "vllm" ]]; then
+        cmd+=(
+          --model-name "${vllm_model}"
+          --llm-base-url "${llm_base_url}"
+          --llm-api-key "${llm_api_key}"
+          --llm-timeout-sec "${llm_timeout_sec}"
+          --llm-max-new-tokens "${llm_max_new_tokens}"
           --max-context-sentences "${max_context_sentences}"
         )
       fi
