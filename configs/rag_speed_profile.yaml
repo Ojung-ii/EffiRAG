@@ -1,0 +1,35 @@
+embedding_enabled: true
+sentence_rerank_enabled: false
+embedding_model_name: nvidia/NV-Embed-v2
+embedding_max_length: 192
+embedding_text_max_chars: 600
+
+max_anchors: 2
+samples_per_anchor: 1
+pair_shortlist_topb: 2
+
+semantic_topn_entity: 20
+semantic_topn_chunk: 10
+graph_reserve_topn: 10
+
+phase1_parallel_ppr: true
+phase2_refine_mode: bounded_local
+phase2_bidirectional_full_ppr: false
+reuse_semantic_scores_in_final: true
+run_score_semantic_weight: 0.30
+run_score_anchor_weight: 0.20
+run_score_structure_weight: 0.25
+run_score_bridge_weight: 0.15
+run_score_redundancy_weight: 0.10
+seed_score_graph_weight: 0.45
+seed_score_semantic_weight: 0.35
+seed_score_anchor_weight: 0.20
+
+llm_max_new_tokens: 64
+
+max_context_sentences: 14
+max_corridors_in_context: 3
+max_main_sentences_per_corridor: 3
+max_support_per_corridor: 2
+max_total_sentences: 14
+max_sentences: 14

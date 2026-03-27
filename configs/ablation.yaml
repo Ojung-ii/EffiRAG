@@ -3,7 +3,7 @@ split: validation
 output_dir: outputs/ablation
 limit: 100
 embedding_enabled: true
-embedding_model_name: NVIDIA/NV-Embed-v2
+embedding_model_name: nvidia/NV-Embed-v2
 embedding_text_max_chars: 600
 semantic_topn_entity: 30
 semantic_topn_chunk: 15

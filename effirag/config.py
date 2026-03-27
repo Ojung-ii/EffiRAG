@@ -33,12 +33,13 @@ class RetrievalConfig:
     openie_parallel_workers: int = 4
     openie_log_every: int = 200
     embedding_enabled: bool = True
-    embedding_model_name: str = "NVIDIA/NV-Embed-v2"
+    sentence_rerank_enabled: bool = True
+    embedding_model_name: str = "nvidia/NV-Embed-v2"
     embedding_text_max_chars: int = 600
     embedding_weight: float = 0.35
     embedding_rerank_topn: int = 80
     embedding_batch_size: int = 16
-    embedding_max_length: int = 256
+    embedding_max_length: int = 192
     semantic_topn_entity: int = 30
     semantic_topn_chunk: int = 15
     graph_reserve_topn: int = 15
@@ -98,12 +99,12 @@ class RagConfig(RetrievalConfig):
     llm_api_key: str = ""
     llm_timeout_sec: float = 120.0
     llm_max_new_tokens: int = 64
-    max_context_sentences: int = 10
+    max_context_sentences: int = 14
     render_mode: str = ""
-    max_corridors_in_context: int = 2
-    max_main_sentences_per_corridor: int = 2
-    max_support_per_corridor: int = 1
-    max_total_sentences: int = 12
+    max_corridors_in_context: int = 3
+    max_main_sentences_per_corridor: int = 3
+    max_support_per_corridor: int = 2
+    max_total_sentences: int = 14
     alpha: float = 1.0
     beta: float = 0.35
     gamma_main: float = 0.45
@@ -113,11 +114,16 @@ class RagConfig(RetrievalConfig):
     xi_locality: float = 0.08
     lambda_redundancy: float = 0.25
     top_corridors: int = 3
-    max_sentences: int = 10
+    max_sentences: int = 14
     reserve_top_corridor: bool = False
     order_strategy: str = "score"
     measure_gpu_peak: bool = False
     measure_cpu_ram: bool = False
+    profile_stages: bool = False
+    profile_output: str = ""
+    profile_limit: int = 0
+    profile_query_indices: str = ""
+    retrieval_only: bool = False
 
 
 def dataclass_from_dict(cls, values):
@@ -152,6 +158,8 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["openie_local_files_only"] = parse_bool(merged["openie_local_files_only"])
     if "embedding_enabled" in merged:
         merged["embedding_enabled"] = parse_bool(merged["embedding_enabled"])
+    if "sentence_rerank_enabled" in merged:
+        merged["sentence_rerank_enabled"] = parse_bool(merged["sentence_rerank_enabled"])
     if "semantic_candidate_union" in merged:
         merged["semantic_candidate_union"] = parse_bool(merged["semantic_candidate_union"])
     if "phase1_parallel_ppr" in merged:
@@ -164,4 +172,8 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["ppr_subgraph_enable"] = parse_bool(merged["ppr_subgraph_enable"])
     if "anchor_diag_store_full_scores" in merged:
         merged["anchor_diag_store_full_scores"] = parse_bool(merged["anchor_diag_store_full_scores"])
+    if "profile_stages" in merged:
+        merged["profile_stages"] = parse_bool(merged["profile_stages"])
+    if "retrieval_only" in merged:
+        merged["retrieval_only"] = parse_bool(merged["retrieval_only"])
     return merged

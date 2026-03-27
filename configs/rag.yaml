@@ -11,12 +11,12 @@ openie_model_name: Qwen/Qwen2.5-7B-Instruct
 openie_text_max_chars: 2200
 openie_max_new_tokens: 256
 embedding_enabled: true
-embedding_model_name: NVIDIA/NV-Embed-v2
+embedding_model_name: nvidia/NV-Embed-v2
 embedding_text_max_chars: 600
 embedding_weight: 0.35
 embedding_rerank_topn: 80
 embedding_batch_size: 16
-embedding_max_length: 256
+embedding_max_length: 192
 semantic_topn_entity: 30
 semantic_topn_chunk: 15
 graph_reserve_topn: 15
@@ -51,12 +51,13 @@ trim_rho: 0.6
 run_qa: true
 generator: heuristic
 model_name: ""
-max_context_sentences: 10
+max_context_sentences: 14
 render_mode: ""
-max_corridors_in_context: 2
-max_main_sentences_per_corridor: 2
-max_support_per_corridor: 1
-max_total_sentences: 12
+max_corridors_in_context: 3
+max_main_sentences_per_corridor: 3
+max_support_per_corridor: 2
+max_total_sentences: 14
+max_sentences: 14
 measure_gpu_peak: false
 measure_cpu_ram: true
 

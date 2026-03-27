@@ -26,6 +26,17 @@ except Exception:  # pragma: no cover
 
 SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 CODE_FENCE_RE = re.compile(r"```(?:json)?(.*?)```", re.IGNORECASE | re.DOTALL)
+SEMANTIC_TEXT_CONSTRUCTION_VERSION = "entity_alias_context_v1__chunk_title_passage_v1"
+SEMANTIC_NORMALIZATION_VERSION = "l2_unit_norm"
+SEMANTIC_DATA_ARTIFACT_NAMES = [
+    "semantic_entities_ids.json",
+    "semantic_entities_embeddings.f16.npy",
+    "semantic_chunks_ids.json",
+    "semantic_chunks_embeddings.f16.npy",
+    "entity_chunk_support_map.json",
+    "entity_topk_chunks_cache.json",
+    "chunk_topk_entities_cache.json",
+]
 
 
 def _uses_max_completion_tokens(model_name):
@@ -1140,6 +1151,227 @@ def _index_dir(source_path, cache_dir, build_config):
     return Path(cache_dir) / f"{stem}_{mode}_{key}"
 
 
+def _normalize_semantic_build_config(build_config):
+    cfg = dict(build_config or {})
+    return {
+        "embedding_enabled": bool(cfg.get("embedding_enabled", False)),
+        "embedding_model_name": str(cfg.get("embedding_model_name", "") or ""),
+        "embedding_max_length": int(cfg.get("embedding_max_length", 192)),
+        "embedding_text_max_chars": int(cfg.get("embedding_text_max_chars", 600)),
+        "text_construction_version": SEMANTIC_TEXT_CONSTRUCTION_VERSION,
+        "normalization_version": SEMANTIC_NORMALIZATION_VERSION,
+    }
+
+
+def _semantic_cache_key(source_fingerprint, semantic_build_config):
+    payload = {
+        "source_fingerprint": dict(source_fingerprint or {}),
+        "semantic_build_config": dict(semantic_build_config or {}),
+    }
+    signature = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return hashlib.sha1(signature.encode("utf-8")).hexdigest()[:16]
+
+
+def _semantic_node_signature_from_ids(entity_ids, chunk_ids):
+    h = hashlib.sha1()
+    for node_id in sorted([str(x) for x in (entity_ids or [])]):
+        h.update(node_id.encode("utf-8"))
+        h.update(b"\n")
+    h.update(b"--")
+    for node_id in sorted([str(x) for x in (chunk_ids or [])]):
+        h.update(node_id.encode("utf-8"))
+        h.update(b"\n")
+    return h.hexdigest()[:20]
+
+
+def _graph_semantic_node_signature(g):
+    entity_ids = []
+    chunk_ids = []
+    for node in g.nodes:
+        node_type = str(g.nodes[node].get("node_type", "") or "")
+        if node_type == "entity":
+            entity_ids.append(str(node))
+        elif node_type == "sentence":
+            chunk_ids.append(str(node))
+    return _semantic_node_signature_from_ids(entity_ids, chunk_ids)
+
+
+def _semantic_data_artifacts_ready(index_dir):
+    root = Path(index_dir)
+    for name in SEMANTIC_DATA_ARTIFACT_NAMES:
+        if not (root / name).exists():
+            return False
+    return True
+
+
+def _materialize_semantic_meta_paths(
+    *,
+    index_dir,
+    semantic_meta,
+    semantic_cache_key,
+    semantic_build_config,
+    graph_semantic_node_signature,
+    build_ms_override=None,
+    reused_from_index_dir="",
+):
+    root = Path(index_dir).resolve()
+    payload = dict(semantic_meta or {})
+    payload["enabled"] = bool(payload.get("enabled", True))
+    payload["index_dir"] = str(root)
+    payload["entity_ids_path"] = str((root / "semantic_entities_ids.json").resolve())
+    payload["entity_embeddings_path"] = str((root / "semantic_entities_embeddings.f16.npy").resolve())
+    payload["chunk_ids_path"] = str((root / "semantic_chunks_ids.json").resolve())
+    payload["chunk_embeddings_path"] = str((root / "semantic_chunks_embeddings.f16.npy").resolve())
+    payload["entity_chunk_support_map_path"] = str((root / "entity_chunk_support_map.json").resolve())
+    payload["entity_topk_chunks_cache_path"] = str((root / "entity_topk_chunks_cache.json").resolve())
+    payload["chunk_topk_entities_cache_path"] = str((root / "chunk_topk_entities_cache.json").resolve())
+    payload["semantic_build_config"] = dict(semantic_build_config or {})
+    payload["semantic_cache_key"] = str(semantic_cache_key or "")
+    payload["text_construction_version"] = str(
+        payload.get("text_construction_version", SEMANTIC_TEXT_CONSTRUCTION_VERSION)
+    )
+    payload["normalization_version"] = str(payload.get("normalization_version", SEMANTIC_NORMALIZATION_VERSION))
+    if graph_semantic_node_signature:
+        payload["semantic_node_signature"] = str(graph_semantic_node_signature)
+    if build_ms_override is not None:
+        payload["build_ms"] = float(build_ms_override)
+    if reused_from_index_dir:
+        payload["reused_from_index_dir"] = str(reused_from_index_dir)
+    return payload
+
+
+def _link_or_copy_file(src, dst):
+    src_p = Path(src).resolve()
+    dst_p = Path(dst).resolve()
+    if dst_p.exists():
+        dst_p.unlink()
+    try:
+        os.link(str(src_p), str(dst_p))
+    except Exception:
+        shutil.copy2(str(src_p), str(dst_p))
+
+
+def _try_reuse_semantic_artifacts(
+    *,
+    index_dir,
+    cache_dir,
+    source_id_path,
+    source_fingerprint,
+    semantic_build_config,
+    semantic_cache_key,
+    graph_semantic_node_signature,
+    show_progress=True,
+):
+    info = {
+        "semantic_reuse_attempted": bool(semantic_build_config.get("embedding_enabled", False)),
+        "semantic_reuse_applied": False,
+        "semantic_reuse_reason": "",
+        "semantic_cache_key": str(semantic_cache_key or ""),
+    }
+    if not bool(semantic_build_config.get("embedding_enabled", False)):
+        info["semantic_reuse_reason"] = "embedding_disabled"
+        return None, info
+
+    root = Path(index_dir)
+    if _semantic_data_artifacts_ready(root) and (root / "semantic_index_meta.json").exists():
+        local_meta = _read_json_obj(root / "semantic_index_meta.json")
+        local_meta = _materialize_semantic_meta_paths(
+            index_dir=root,
+            semantic_meta=local_meta,
+            semantic_cache_key=semantic_cache_key,
+            semantic_build_config=semantic_build_config,
+            graph_semantic_node_signature=graph_semantic_node_signature,
+            build_ms_override=float(local_meta.get("build_ms", 0.0) or 0.0),
+        )
+        _write_json_obj(root / "semantic_index_meta.json", local_meta)
+        info["semantic_reuse_reason"] = "already_present_locally"
+        return local_meta, info
+
+    cache_root = Path(cache_dir)
+    if not cache_root.exists():
+        info["semantic_reuse_reason"] = "cache_dir_not_found"
+        return None, info
+
+    stem = Path(str(source_id_path or "")).stem
+    if not stem:
+        info["semantic_reuse_reason"] = "empty_source_stem"
+        return None, info
+
+    candidates = []
+    pattern = f"{stem}_*_*"
+    for cand_dir in cache_root.glob(pattern):
+        if not cand_dir.is_dir():
+            continue
+        if cand_dir.resolve() == root.resolve():
+            continue
+        meta_path = cand_dir / "meta.json"
+        sem_meta_path = cand_dir / "semantic_index_meta.json"
+        if (not meta_path.exists()) or (not sem_meta_path.exists()):
+            continue
+        if not _semantic_data_artifacts_ready(cand_dir):
+            continue
+        meta = _read_json_obj(meta_path)
+        if not meta:
+            continue
+        if meta.get("fingerprint", {}) != dict(source_fingerprint or {}):
+            continue
+        sem_meta = _read_json_obj(sem_meta_path)
+        if not sem_meta or not bool(sem_meta.get("enabled", False)):
+            continue
+
+        cand_key = str(sem_meta.get("semantic_cache_key", "") or "")
+        if not cand_key:
+            cand_sem_cfg = sem_meta.get("semantic_build_config", {}) if isinstance(sem_meta, dict) else {}
+            if not cand_sem_cfg:
+                cand_sem_cfg = _normalize_semantic_build_config(meta.get("build_config", {}) or {})
+            cand_key = _semantic_cache_key(meta.get("fingerprint", {}), cand_sem_cfg)
+        if cand_key != str(semantic_cache_key):
+            continue
+
+        cand_sig = str(sem_meta.get("semantic_node_signature", "") or "")
+        if not cand_sig:
+            ent_ids = _read_json_list(cand_dir / "semantic_entities_ids.json")
+            chk_ids = _read_json_list(cand_dir / "semantic_chunks_ids.json")
+            cand_sig = _semantic_node_signature_from_ids(ent_ids, chk_ids)
+        if graph_semantic_node_signature and cand_sig != graph_semantic_node_signature:
+            continue
+
+        mtime = float(sem_meta_path.stat().st_mtime)
+        candidates.append((mtime, cand_dir, sem_meta))
+
+    if not candidates:
+        info["semantic_reuse_reason"] = "no_matching_semantic_cache"
+        return None, info
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    _, source_dir, source_sem_meta = candidates[0]
+    root.mkdir(parents=True, exist_ok=True)
+    for name in SEMANTIC_DATA_ARTIFACT_NAMES:
+        _link_or_copy_file(source_dir / name, root / name)
+
+    reused_meta = _materialize_semantic_meta_paths(
+        index_dir=root,
+        semantic_meta=source_sem_meta,
+        semantic_cache_key=semantic_cache_key,
+        semantic_build_config=semantic_build_config,
+        graph_semantic_node_signature=graph_semantic_node_signature,
+        build_ms_override=0.0,
+        reused_from_index_dir=str(source_dir.resolve()),
+    )
+    _write_json_obj(root / "semantic_index_meta.json", reused_meta)
+
+    info["semantic_reuse_applied"] = True
+    info["semantic_reuse_reason"] = "copied_matching_semantic_cache"
+    info["semantic_reuse_source"] = str(source_dir.resolve())
+    if show_progress:
+        print(
+            "[Index/Semantic] "
+            f"reuse semantic cache: {info['semantic_reuse_source']} -> {str(root.resolve())}",
+            flush=True,
+        )
+    return reused_meta, info
+
+
 def _maybe_seed_openie_cache_from_latest(
     *,
     cache_dir,
@@ -1504,6 +1736,9 @@ def _build_semantic_index_artifacts(
     batch_size,
     max_length,
     max_chars,
+    semantic_build_config=None,
+    semantic_cache_key="",
+    graph_semantic_node_signature="",
     show_progress=True,
 ):
     start = time.perf_counter()
@@ -1567,6 +1802,19 @@ def _build_semantic_index_artifacts(
         "chunk_support_count": int(len(chunk_to_entities)),
         "build_ms": float((time.perf_counter() - start) * 1000.0),
     }
+    if not graph_semantic_node_signature:
+        graph_semantic_node_signature = _semantic_node_signature_from_ids(
+            [r.get("node_id", "") for r in entity_records],
+            [r.get("node_id", "") for r in chunk_records],
+        )
+    payload = _materialize_semantic_meta_paths(
+        index_dir=index_dir,
+        semantic_meta=payload,
+        semantic_cache_key=semantic_cache_key,
+        semantic_build_config=semantic_build_config or {},
+        graph_semantic_node_signature=graph_semantic_node_signature,
+        build_ms_override=float(payload.get("build_ms", 0.0) or 0.0),
+    )
     meta_path = Path(index_dir) / "semantic_index_meta.json"
     meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     return payload
@@ -1820,9 +2068,9 @@ def load_or_build_global_index(
     prebuilt_igraph_format="hipporag_pickle",
     prebuilt_entity_token_limit=6,
     embedding_enabled=False,
-    embedding_model_name="NVIDIA/NV-Embed-v2",
+    embedding_model_name="nvidia/NV-Embed-v2",
     embedding_batch_size=8,
-    embedding_max_length=256,
+    embedding_max_length=192,
     embedding_text_max_chars=600,
     openie_mode="llm",
     openie_model_name="Qwen/Qwen2.5-7B-Instruct",
@@ -1860,6 +2108,7 @@ def load_or_build_global_index(
         openie_retry_backoff_sec=openie_retry_backoff_sec,
         openie_error_sample_limit=openie_error_sample_limit,
     )
+    semantic_build_config = _normalize_semantic_build_config(build_config)
     prebuilt_path = str(prebuilt_igraph_path or "").strip()
     source_id_path = prebuilt_path if prebuilt_path else str(corpus_path or "").strip()
     if not source_id_path:
@@ -1872,6 +2121,7 @@ def load_or_build_global_index(
     semantic_meta_path = index_dir / "semantic_index_meta.json"
     openie_sentence_cache_path = index_dir / "openie_sentence_cache.jsonl"
     fp = _fingerprint(prebuilt_path) if prebuilt_path else _fingerprint(corpus_path)
+    semantic_key = _semantic_cache_key(fp, semantic_build_config)
 
     if not force_rebuild and graph_path.exists() and meta_path.exists():
         with meta_path.open("r", encoding="utf-8") as f:
@@ -1884,20 +2134,47 @@ def load_or_build_global_index(
             out_meta_stats = dict(out_meta.get("stats", {}) or {})
             semantic_meta = dict(out_meta.get("semantic_index", {}) or {})
             semantic_build_ms = 0.0
+            semantic_reuse_info = {}
             if bool(build_config.get("embedding_enabled", False)):
-                if semantic_meta_path.exists():
-                    semantic_meta = json.loads(semantic_meta_path.read_text(encoding="utf-8"))
-                else:
-                    semantic_meta = _build_semantic_index_artifacts(
-                        g=graph,
+                graph_semantic_signature = _graph_semantic_node_signature(graph)
+                if semantic_meta_path.exists() and _semantic_data_artifacts_ready(index_dir):
+                    semantic_meta = _read_json_obj(semantic_meta_path)
+                    semantic_meta = _materialize_semantic_meta_paths(
                         index_dir=index_dir,
-                        model_name=build_config.get("embedding_model_name", "NVIDIA/NV-Embed-v2"),
-                        batch_size=int(build_config.get("embedding_batch_size", 8)),
-                        max_length=int(build_config.get("embedding_max_length", 256)),
-                        max_chars=int(build_config.get("embedding_text_max_chars", 600)),
+                        semantic_meta=semantic_meta,
+                        semantic_cache_key=semantic_key,
+                        semantic_build_config=semantic_build_config,
+                        graph_semantic_node_signature=graph_semantic_signature,
+                        build_ms_override=float(semantic_meta.get("build_ms", 0.0) or 0.0),
+                    )
+                    _write_json_obj(semantic_meta_path, semantic_meta)
+                else:
+                    semantic_meta, semantic_reuse_info = _try_reuse_semantic_artifacts(
+                        index_dir=index_dir,
+                        cache_dir=cache_dir,
+                        source_id_path=source_id_path,
+                        source_fingerprint=fp,
+                        semantic_build_config=semantic_build_config,
+                        semantic_cache_key=semantic_key,
+                        graph_semantic_node_signature=graph_semantic_signature,
                         show_progress=show_progress,
                     )
-                    semantic_build_ms = float(semantic_meta.get("build_ms", 0.0) or 0.0)
+                    if semantic_meta is None:
+                        semantic_meta = _build_semantic_index_artifacts(
+                            g=graph,
+                            index_dir=index_dir,
+                            model_name=build_config.get("embedding_model_name", "nvidia/NV-Embed-v2"),
+                            batch_size=int(build_config.get("embedding_batch_size", 8)),
+                            max_length=int(build_config.get("embedding_max_length", 192)),
+                            max_chars=int(build_config.get("embedding_text_max_chars", 600)),
+                            semantic_build_config=semantic_build_config,
+                            semantic_cache_key=semantic_key,
+                            graph_semantic_node_signature=graph_semantic_signature,
+                            show_progress=show_progress,
+                        )
+                        semantic_build_ms = float(semantic_meta.get("build_ms", 0.0) or 0.0)
+                    else:
+                        semantic_build_ms = 0.0
 
                 out_meta_stats["semantic_embedding_enabled"] = True
                 out_meta_stats["semantic_embedding_model_name"] = str(semantic_meta.get("model_name", ""))
@@ -1905,6 +2182,11 @@ def load_or_build_global_index(
                 out_meta_stats["semantic_entity_count"] = int(semantic_meta.get("entity_count", 0) or 0)
                 out_meta_stats["semantic_chunk_count"] = int(semantic_meta.get("chunk_count", 0) or 0)
                 out_meta_stats["semantic_build_ms"] = float(semantic_build_ms)
+                out_meta_stats["semantic_cache_key"] = str(semantic_key)
+                out_meta_stats["semantic_build_config"] = dict(semantic_build_config)
+                out_meta_stats["semantic_node_signature"] = str(semantic_meta.get("semantic_node_signature", "") or "")
+                if semantic_reuse_info:
+                    out_meta_stats.update(semantic_reuse_info)
             else:
                 semantic_meta = {
                     "enabled": False,
@@ -1915,6 +2197,8 @@ def load_or_build_global_index(
                     "build_ms": 0.0,
                 }
                 out_meta_stats["semantic_embedding_enabled"] = False
+                out_meta_stats["semantic_cache_key"] = str(semantic_key)
+                out_meta_stats["semantic_build_config"] = dict(semantic_build_config)
 
             out_meta["cache_hit"] = True
             out_meta["index_operation"] = "cache_hit" if semantic_build_ms <= 0.0 else "cache_hit+semantic_build"
@@ -1922,9 +2206,11 @@ def load_or_build_global_index(
             out_meta["index_build_ms"] = float(out_meta.get("index_build_ms", 0.0) or 0.0) + float(semantic_build_ms)
             out_meta["index_write_ms"] = float(out_meta.get("index_write_ms", 0.0) or 0.0)
             out_meta["semantic_index"] = semantic_meta
+            out_meta["semantic_cache_key"] = str(semantic_key)
+            out_meta["semantic_build_config"] = dict(semantic_build_config)
             out_meta["stats"] = out_meta_stats
             out_meta["index_total_ms"] = float((time.perf_counter() - index_total_start) * 1000.0)
-            if semantic_build_ms > 0.0:
+            if semantic_build_ms > 0.0 or bool(semantic_reuse_info.get("semantic_reuse_applied", False)):
                 with meta_path.open("w", encoding="utf-8") as f:
                     json.dump(out_meta, f, ensure_ascii=False, indent=2)
             return graph, out_meta
@@ -1976,17 +2262,33 @@ def load_or_build_global_index(
         "dim": 0,
         "build_ms": 0.0,
     }
+    semantic_reuse_info = {}
     if bool(build_config.get("embedding_enabled", False)):
-        semantic_meta = _build_semantic_index_artifacts(
-            g=graph,
+        graph_semantic_signature = _graph_semantic_node_signature(graph)
+        semantic_meta, semantic_reuse_info = _try_reuse_semantic_artifacts(
             index_dir=index_dir,
-            model_name=build_config.get("embedding_model_name", "NVIDIA/NV-Embed-v2"),
-            batch_size=int(build_config.get("embedding_batch_size", 8)),
-            max_length=int(build_config.get("embedding_max_length", 256)),
-            max_chars=int(build_config.get("embedding_text_max_chars", 600)),
+            cache_dir=cache_dir,
+            source_id_path=source_id_path,
+            source_fingerprint=fp,
+            semantic_build_config=semantic_build_config,
+            semantic_cache_key=semantic_key,
+            graph_semantic_node_signature=graph_semantic_signature,
             show_progress=show_progress,
         )
-        build_ms += float(semantic_meta.get("build_ms", 0.0) or 0.0)
+        if semantic_meta is None:
+            semantic_meta = _build_semantic_index_artifacts(
+                g=graph,
+                index_dir=index_dir,
+                model_name=build_config.get("embedding_model_name", "nvidia/NV-Embed-v2"),
+                batch_size=int(build_config.get("embedding_batch_size", 8)),
+                max_length=int(build_config.get("embedding_max_length", 192)),
+                max_chars=int(build_config.get("embedding_text_max_chars", 600)),
+                semantic_build_config=semantic_build_config,
+                semantic_cache_key=semantic_key,
+                graph_semantic_node_signature=graph_semantic_signature,
+                show_progress=show_progress,
+            )
+            build_ms += float(semantic_meta.get("build_ms", 0.0) or 0.0)
 
     stats = dict(stats or {})
     stats["semantic_embedding_enabled"] = bool(semantic_meta.get("enabled", False))
@@ -1995,6 +2297,11 @@ def load_or_build_global_index(
     stats["semantic_entity_count"] = int(semantic_meta.get("entity_count", 0) or 0)
     stats["semantic_chunk_count"] = int(semantic_meta.get("chunk_count", 0) or 0)
     stats["semantic_build_ms"] = float(semantic_meta.get("build_ms", 0.0) or 0.0)
+    stats["semantic_cache_key"] = str(semantic_key)
+    stats["semantic_build_config"] = dict(semantic_build_config)
+    stats["semantic_node_signature"] = str(semantic_meta.get("semantic_node_signature", "") or "")
+    if semantic_reuse_info:
+        stats.update(semantic_reuse_info)
 
     write_start = time.perf_counter()
     _write_gpickle(graph, graph_path)
@@ -2010,6 +2317,8 @@ def load_or_build_global_index(
         "built_at_utc": timestamp_iso_utc(),
         "stats": stats,
         "semantic_index": semantic_meta,
+        "semantic_cache_key": str(semantic_key),
+        "semantic_build_config": dict(semantic_build_config),
         "cache_hit": False,
         "index_operation": "build",
         "index_load_graph_ms": 0.0,

@@ -65,6 +65,7 @@ class GenerationResult:
     prediction: str
     raw_text: str
     latency_ms: float
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

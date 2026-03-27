@@ -114,6 +114,38 @@ def _extract_chat_message_content(message_obj) -> str:
     return str(content or "").strip()
 
 
+def _extract_openai_usage_metadata(response_obj) -> dict:
+    meta = {}
+    if response_obj is None:
+        return meta
+
+    usage = getattr(response_obj, "usage", None)
+    if usage is not None:
+        if isinstance(usage, dict):
+            prompt_tokens = usage.get("prompt_tokens", 0)
+            completion_tokens = usage.get("completion_tokens", 0)
+        else:
+            prompt_tokens = getattr(usage, "prompt_tokens", 0)
+            completion_tokens = getattr(usage, "completion_tokens", 0)
+        try:
+            meta["prompt_tokens"] = int(prompt_tokens or 0)
+        except Exception:
+            meta["prompt_tokens"] = 0
+        try:
+            meta["completion_tokens"] = int(completion_tokens or 0)
+        except Exception:
+            meta["completion_tokens"] = 0
+
+    choices = getattr(response_obj, "choices", None)
+    if choices:
+        first = choices[0]
+        finish_reason = getattr(first, "finish_reason", "")
+        if not finish_reason and isinstance(first, dict):
+            finish_reason = str(first.get("finish_reason", "") or "")
+        meta["finish_reason"] = str(finish_reason or "")
+    return meta
+
+
 def _prefers_text_generation(model_name: str) -> bool:
     lower = str(model_name or "").lower()
     causal_markers = ("qwen", "llama", "mistral", "deepseek", "phi", "gemma")
@@ -183,7 +215,7 @@ def _get_openai_client(base_url: str, api_key: str, timeout_sec: float):
     return client
 
 
-def _openai_http_chat_completion(base_url: str, api_key: str, params: dict, timeout_sec: float) -> str:
+def _openai_http_chat_completion(base_url: str, api_key: str, params: dict, timeout_sec: float):
     root = str(base_url or "").strip().rstrip("/")
     if not root:
         raise RuntimeError("llm_base_url is required when openai package is not installed.")
@@ -209,12 +241,19 @@ def _openai_http_chat_completion(base_url: str, api_key: str, params: dict, time
         raise RuntimeError(f"http_request_failed: {exc}") from exc
 
     choices = payload.get("choices", []) if isinstance(payload, dict) else []
+    metadata = {}
+    usage = payload.get("usage", {}) if isinstance(payload, dict) else {}
+    if isinstance(usage, dict):
+        metadata["prompt_tokens"] = int(usage.get("prompt_tokens", 0) or 0)
+        metadata["completion_tokens"] = int(usage.get("completion_tokens", 0) or 0)
     if not choices:
-        return ""
+        return "", metadata
     message = choices[0].get("message", {}) if isinstance(choices[0], dict) else {}
+    if isinstance(choices[0], dict):
+        metadata["finish_reason"] = str(choices[0].get("finish_reason", "") or "")
     content = message.get("content", "") if isinstance(message, dict) else ""
     if isinstance(content, str):
-        return content.strip()
+        return content.strip(), metadata
     if isinstance(content, list):
         parts = []
         for item in content:
@@ -222,8 +261,8 @@ def _openai_http_chat_completion(base_url: str, api_key: str, params: dict, time
                 txt = str(item.get("text", "") or "").strip()
                 if txt:
                     parts.append(txt)
-        return "\n".join(parts).strip()
-    return str(content or "").strip()
+        return "\n".join(parts).strip(), metadata
+    return str(content or "").strip(), metadata
 
 
 @register_generator("heuristic")
@@ -340,6 +379,7 @@ def generate_openai_compat(sample: Sample, rendered: RenderedContext, model_name
             "Final answer:"
         )
         messages = [{"role": "user", "content": prompt}]
+        generation_meta = {}
 
         params = _build_openai_chat_params(
             model_name=resolved_model,
@@ -355,13 +395,14 @@ def generate_openai_compat(sample: Sample, rendered: RenderedContext, model_name
                 retry_params = _retry_with_max_tokens_if_needed(params, api_exc)
                 response = client.chat.completions.create(**retry_params)
             raw_text = ""
+            generation_meta = _extract_openai_usage_metadata(response)
             if getattr(response, "choices", None):
                 raw_text = _extract_chat_message_content(getattr(response.choices[0], "message", None))
         except Exception as sdk_exc:
             if "No module named 'openai'" not in str(sdk_exc):
                 raise
             try:
-                raw_text = _openai_http_chat_completion(
+                raw_text, generation_meta = _openai_http_chat_completion(
                     base_url=base_url,
                     api_key=api_key,
                     params=params,
@@ -369,7 +410,7 @@ def generate_openai_compat(sample: Sample, rendered: RenderedContext, model_name
                 )
             except Exception as http_exc:
                 retry_params = _retry_with_max_tokens_if_needed(params, http_exc)
-                raw_text = _openai_http_chat_completion(
+                raw_text, generation_meta = _openai_http_chat_completion(
                     base_url=base_url,
                     api_key=api_key,
                     params=retry_params,
@@ -381,6 +422,12 @@ def generate_openai_compat(sample: Sample, rendered: RenderedContext, model_name
         fallback = generate_heuristic(sample, rendered, model_name=model_name, cfg=cfg)
         prediction = fallback.prediction
         text = f"OpenAI-compatible generation failed: {exc}\nFallback(heuristic): {prediction}"
+        generation_meta = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "finish_reason": "fallback_heuristic",
+            "fallback_used": True,
+        }
 
     latency_ms = (time.perf_counter() - start) * 1000.0
     return GenerationResult(
@@ -390,6 +437,7 @@ def generate_openai_compat(sample: Sample, rendered: RenderedContext, model_name
         prediction=prediction,
         raw_text=text,
         latency_ms=latency_ms,
+        metadata=generation_meta,
     )
 
 
@@ -404,4 +452,5 @@ def generate_vllm_compat(sample: Sample, rendered: RenderedContext, model_name: 
         prediction=result.prediction,
         raw_text=result.raw_text,
         latency_ms=result.latency_ms,
+        metadata=dict(result.metadata or {}),
     )
