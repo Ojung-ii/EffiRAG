@@ -1818,6 +1818,10 @@ def run_graphrag_core(
     phase1_start = time.perf_counter()
     per_anchor_runs = {a: [] for a in anchors}
     n_runs = max(1, int(getattr(cfg, "samples_per_anchor", 3)))
+    phase1_parallel_enabled = bool(getattr(cfg, "phase1_parallel_ppr", True))
+    original_ppr_parallel_workers = int(getattr(cfg, "ppr_parallel_workers", 1))
+    if not phase1_parallel_enabled:
+        setattr(cfg, "ppr_parallel_workers", 1)
     for _ in tqdm(
         range(n_runs),
         total=n_runs,
@@ -1849,6 +1853,8 @@ def run_graphrag_core(
             )
         for anchor in anchors:
             per_anchor_runs[anchor].append(run_map.get(anchor, {}))
+    if not phase1_parallel_enabled:
+        setattr(cfg, "ppr_parallel_workers", original_ppr_parallel_workers)
     stage_ms["phase1_ppr_time_ms"] = float((time.perf_counter() - phase1_start) * 1000.0)
 
     run_score_start = time.perf_counter()
