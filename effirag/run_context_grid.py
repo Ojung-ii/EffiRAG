@@ -55,11 +55,23 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--openie-parallel-workers", type=int, default=4)
     parser.add_argument("--openie-log-every", type=int, default=200)
     parser.add_argument("--embedding-enabled", type=str, default="false")
-    parser.add_argument("--embedding-model-name", type=str, default="sentence-transformers/all-MiniLM-L6-v2")
+    parser.add_argument("--embedding-model-name", type=str, default="nvidia/NV-Embed-v2")
     parser.add_argument("--embedding-weight", type=float, default=0.35)
     parser.add_argument("--embedding-rerank-topn", type=int, default=80)
     parser.add_argument("--embedding-batch-size", type=int, default=16)
     parser.add_argument("--embedding-max-length", type=int, default=256)
+    parser.add_argument("--embedding-text-max-chars", type=int, default=600)
+    parser.add_argument("--semantic-topn", type=int, default=50)
+    parser.add_argument("--semantic-candidate-union", type=str, default="true")
+    parser.add_argument("--semantic-scan-batch-size", type=int, default=8192)
+    parser.add_argument("--run-score-semantic-weight", type=float, default=0.35)
+    parser.add_argument("--run-score-anchor-weight", type=float, default=0.20)
+    parser.add_argument("--run-score-structure-weight", type=float, default=0.25)
+    parser.add_argument("--run-score-bridge-weight", type=float, default=0.15)
+    parser.add_argument("--run-score-redundancy-weight", type=float, default=0.05)
+    parser.add_argument("--seed-score-semantic-weight", type=float, default=0.30)
+    parser.add_argument("--seed-score-graph-weight", type=float, default=0.50)
+    parser.add_argument("--seed-score-anchor-weight", type=float, default=0.20)
 
     parser.add_argument("--method", type=str, default="effirag", choices=["effirag", "naive_graphrag"])
     parser.add_argument("--run-qa", type=str, default="true")
@@ -153,6 +165,7 @@ def _build_retrieval_cfg(args, output_dir: Path):
         limit=args.limit,
         method=args.method,
         output_dir=str(output_dir),
+        timestamp_output=False,
         global_corpus_path=args.global_corpus_path,
         graph_cache_dir=args.graph_cache_dir,
         force_rebuild_graph_index=parse_bool(args.force_rebuild_graph_index),
@@ -171,6 +184,18 @@ def _build_retrieval_cfg(args, output_dir: Path):
         embedding_rerank_topn=args.embedding_rerank_topn,
         embedding_batch_size=args.embedding_batch_size,
         embedding_max_length=args.embedding_max_length,
+        embedding_text_max_chars=args.embedding_text_max_chars,
+        semantic_topn=args.semantic_topn,
+        semantic_candidate_union=parse_bool(args.semantic_candidate_union),
+        semantic_scan_batch_size=args.semantic_scan_batch_size,
+        run_score_semantic_weight=args.run_score_semantic_weight,
+        run_score_anchor_weight=args.run_score_anchor_weight,
+        run_score_structure_weight=args.run_score_structure_weight,
+        run_score_bridge_weight=args.run_score_bridge_weight,
+        run_score_redundancy_weight=args.run_score_redundancy_weight,
+        seed_score_semantic_weight=args.seed_score_semantic_weight,
+        seed_score_graph_weight=args.seed_score_graph_weight,
+        seed_score_anchor_weight=args.seed_score_anchor_weight,
         max_anchors=args.max_anchors,
         samples_per_anchor=args.samples_per_anchor,
         num_workers=args.num_workers,
@@ -195,6 +220,7 @@ def _base_rag_kwargs(args, output_dir: Path):
         limit=args.limit,
         method=args.method,
         output_dir=str(output_dir),
+        timestamp_output=False,
         global_corpus_path=args.global_corpus_path,
         graph_cache_dir=args.graph_cache_dir,
         force_rebuild_graph_index=parse_bool(args.force_rebuild_graph_index),
@@ -213,6 +239,18 @@ def _base_rag_kwargs(args, output_dir: Path):
         embedding_rerank_topn=args.embedding_rerank_topn,
         embedding_batch_size=args.embedding_batch_size,
         embedding_max_length=args.embedding_max_length,
+        embedding_text_max_chars=args.embedding_text_max_chars,
+        semantic_topn=args.semantic_topn,
+        semantic_candidate_union=parse_bool(args.semantic_candidate_union),
+        semantic_scan_batch_size=args.semantic_scan_batch_size,
+        run_score_semantic_weight=args.run_score_semantic_weight,
+        run_score_anchor_weight=args.run_score_anchor_weight,
+        run_score_structure_weight=args.run_score_structure_weight,
+        run_score_bridge_weight=args.run_score_bridge_weight,
+        run_score_redundancy_weight=args.run_score_redundancy_weight,
+        seed_score_semantic_weight=args.seed_score_semantic_weight,
+        seed_score_graph_weight=args.seed_score_graph_weight,
+        seed_score_anchor_weight=args.seed_score_anchor_weight,
         max_anchors=args.max_anchors,
         samples_per_anchor=args.samples_per_anchor,
         num_workers=args.num_workers,

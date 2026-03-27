@@ -2,6 +2,19 @@ dataset: hotpotqa
 split: validation
 output_dir: outputs/ablation
 limit: 100
+embedding_enabled: true
+embedding_model_name: nvidia/NV-Embed-v2
+embedding_text_max_chars: 600
+semantic_topn: 50
+semantic_candidate_union: true
+run_score_semantic_weight: 0.35
+run_score_anchor_weight: 0.20
+run_score_structure_weight: 0.25
+run_score_bridge_weight: 0.15
+run_score_redundancy_weight: 0.05
+seed_score_semantic_weight: 0.30
+seed_score_graph_weight: 0.50
+seed_score_anchor_weight: 0.20
 
 max_anchors: 6
 samples_per_anchor: 8

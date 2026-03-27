@@ -4,6 +4,7 @@ import json
 import os
 import pickle
 import re
+import shutil
 import time
 import urllib.error
 import urllib.request
@@ -11,7 +12,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import networkx as nx
+import numpy as np
+from numpy.lib.format import open_memmap
 
+from .embedding import encode_texts
 from .utils import content_tokens, timestamp_iso_utc
 
 try:
@@ -822,7 +826,12 @@ def build_corpus_graph(
                 entity_node = _ensure_entity_node(g, tok)
                 if entity_node is None:
                     continue
-                g.add_edge(node, entity_node, edge_type="mentions")
+                g.add_edge(
+                    node,
+                    entity_node,
+                    edge_type="mentions",
+                    support_layer="entity_chunk",
+                )
 
             if effective_openie_mode == "llm" and extractor is not None:
                 sentence_records.append(
@@ -1023,6 +1032,7 @@ def build_corpus_graph(
     num_entities = sum(1 for n in g.nodes if g.nodes[n].get("node_type") == "entity")
     num_relations = sum(1 for n in g.nodes if g.nodes[n].get("node_type") == "relation")
     num_docs = len({int(row["idx"]) for row in corpus_rows})
+    num_support_edges = sum(1 for u, v in g.edges if str(g[u][v].get("support_layer", "")) == "entity_chunk")
     top_errors = sorted(llm_error_counter.items(), key=lambda x: x[1], reverse=True)[:10]
     stats = {
         "num_docs": int(num_docs),
@@ -1032,6 +1042,7 @@ def build_corpus_graph(
         "num_extracted_triples": int(num_triples),
         "num_nodes": int(g.number_of_nodes()),
         "num_edges": int(g.number_of_edges()),
+        "num_entity_chunk_support_edges": int(num_support_edges),
         "openie_mode_requested": requested_openie_mode,
         "openie_mode_effective": effective_openie_mode,
         "openie_backend_effective": openie_backend,
@@ -1073,6 +1084,11 @@ def _normalize_build_config(
     prebuilt_igraph_path,
     prebuilt_igraph_format,
     prebuilt_entity_token_limit,
+    embedding_enabled,
+    embedding_model_name,
+    embedding_batch_size,
+    embedding_max_length,
+    embedding_text_max_chars,
     openie_mode,
     openie_model_name,
     openie_text_max_chars,
@@ -1097,6 +1113,11 @@ def _normalize_build_config(
         "prebuilt_igraph_path": prebuilt_path,
         "prebuilt_igraph_format": str(prebuilt_igraph_format or "hipporag_pickle"),
         "prebuilt_entity_token_limit": int(prebuilt_entity_token_limit),
+        "embedding_enabled": bool(embedding_enabled),
+        "embedding_model_name": str(embedding_model_name or ""),
+        "embedding_batch_size": int(embedding_batch_size),
+        "embedding_max_length": int(embedding_max_length),
+        "embedding_text_max_chars": int(embedding_text_max_chars),
         "openie_mode": mode,
         "openie_model_name": str(openie_model_name or ""),
         "openie_text_max_chars": int(openie_text_max_chars),
@@ -1117,6 +1138,80 @@ def _index_dir(source_path, cache_dir, build_config):
     stem = Path(source_path).stem if str(source_path or "").strip() else "prebuilt_graph"
     mode = str(build_config.get("openie_mode", "lexical"))
     return Path(cache_dir) / f"{stem}_{mode}_{key}"
+
+
+def _maybe_seed_openie_cache_from_latest(
+    *,
+    cache_dir,
+    source_id_path,
+    target_cache_path,
+    openie_mode,
+    show_progress=True,
+):
+    mode = str(openie_mode or "").strip().lower()
+    if mode != "llm":
+        return {"openie_cache_seeded": False, "openie_cache_seed_reason": "mode_not_llm"}
+
+    target = Path(target_cache_path)
+    if target.exists() and target.stat().st_size > 0:
+        return {
+            "openie_cache_seeded": False,
+            "openie_cache_seed_reason": "target_already_exists",
+            "openie_cache_seed_target": str(target.resolve()),
+        }
+
+    root = Path(cache_dir)
+    if not root.exists():
+        return {"openie_cache_seeded": False, "openie_cache_seed_reason": "cache_dir_not_found"}
+
+    stem = Path(str(source_id_path or "")).stem
+    if not stem:
+        return {"openie_cache_seeded": False, "openie_cache_seed_reason": "empty_source_stem"}
+
+    pattern = f"{stem}_llm_*"
+    candidates = []
+    for idx_dir in root.glob(pattern):
+        if not idx_dir.is_dir():
+            continue
+        cand = idx_dir / "openie_sentence_cache.jsonl"
+        if not cand.exists():
+            continue
+        try:
+            st = cand.stat()
+        except Exception:
+            continue
+        if st.st_size <= 0:
+            continue
+        if cand.resolve() == target.resolve():
+            continue
+        candidates.append((int(st.st_size), float(st.st_mtime), cand))
+
+    if not candidates:
+        return {
+            "openie_cache_seeded": False,
+            "openie_cache_seed_reason": "no_candidate_cache_found",
+            "openie_cache_seed_pattern": pattern,
+        }
+
+    candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+    _, _, source = candidates[0]
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(str(source), str(target))
+    info = {
+        "openie_cache_seeded": True,
+        "openie_cache_seed_reason": "copied_latest_dataset_cache",
+        "openie_cache_seed_source": str(source.resolve()),
+        "openie_cache_seed_target": str(target.resolve()),
+        "openie_cache_seed_pattern": pattern,
+    }
+    if show_progress:
+        print(
+            "[Index/OpenIE] "
+            f"seed cache from latest dataset cache: {info['openie_cache_seed_source']} -> {info['openie_cache_seed_target']}",
+            flush=True,
+        )
+    return info
 
 
 def _read_gpickle(path):
@@ -1141,6 +1236,315 @@ def _clean_prebuilt_entity_content(text):
         return ""
     raw = re.sub(r"^\s*\d+\s+\d+\s*", "", raw)
     return raw.strip()
+
+
+def _node_label(node_id):
+    raw = str(node_id or "")
+    if "::" in raw:
+        return raw.split("::", 1)[1]
+    if "-" in raw:
+        return raw.split("-", 1)[1]
+    return raw
+
+
+def _collect_entity_support_texts(g, node_id, limit=2):
+    texts = []
+    seen = set()
+    max_items = max(0, int(limit))
+    if max_items <= 0:
+        return texts
+
+    def _push_sentence(sent_node):
+        if sent_node not in g:
+            return
+        data = g.nodes[sent_node]
+        if data.get("node_type") != "sentence":
+            return
+        text = str(data.get("text", data.get("content", "")) or "").strip()
+        if not text or text in seen:
+            return
+        seen.add(text)
+        texts.append(text)
+
+    for nbr in g.neighbors(node_id):
+        if len(texts) >= max_items:
+            break
+        nbr_type = g.nodes[nbr].get("node_type")
+        if nbr_type == "sentence":
+            _push_sentence(nbr)
+        elif nbr_type == "relation":
+            for nbr2 in g.neighbors(nbr):
+                if len(texts) >= max_items:
+                    break
+                _push_sentence(nbr2)
+
+    return texts[:max_items]
+
+
+def _build_entity_semantic_text(g, node_id, support_limit=2):
+    data = g.nodes[node_id]
+    token = str(data.get("token", "") or "").strip()
+    content = str(data.get("content", "") or "").strip()
+    label = token or _clean_prebuilt_entity_content(content) or _node_label(node_id)
+    label = str(label or "").strip()
+    if not label:
+        return ""
+
+    aliases = []
+    alias_seen = set()
+    for nbr in g.neighbors(node_id):
+        nbr_data = g.nodes[nbr]
+        if nbr_data.get("node_type") != "entity":
+            continue
+        alias = str(nbr_data.get("token", "") or nbr_data.get("content", "") or _node_label(nbr)).strip()
+        if not alias or alias == label or alias in alias_seen:
+            continue
+        alias_seen.add(alias)
+        aliases.append(alias)
+        if len(aliases) >= 4:
+            break
+
+    support = _collect_entity_support_texts(g, node_id, limit=support_limit)
+    parts = [f"Entity: {label}"]
+    if aliases:
+        parts.append("Aliases: " + ", ".join(aliases))
+    if support:
+        parts.append("Context: " + " ".join(support))
+    return "\n".join(parts).strip()
+
+
+def _build_chunk_semantic_text(g, node_id):
+    data = g.nodes[node_id]
+    title = str(data.get("title", "") or "").strip()
+    text = str(data.get("text", data.get("content", "")) or "").strip()
+    if not text and not title:
+        text = _node_label(node_id)
+    if title:
+        return f"Title: {title}\nPassage: {text}".strip()
+    return str(text or "").strip()
+
+
+def _collect_semantic_records(g):
+    entity_records = []
+    chunk_records = []
+    for node_id in g.nodes:
+        node_type = str(g.nodes[node_id].get("node_type", "") or "")
+        if node_type == "entity":
+            text = _build_entity_semantic_text(g, node_id)
+            if text:
+                entity_records.append({"node_id": str(node_id), "text": text})
+        elif node_type == "sentence":
+            text = _build_chunk_semantic_text(g, node_id)
+            if text:
+                chunk_records.append({"node_id": str(node_id), "text": text})
+    return entity_records, chunk_records
+
+
+def _write_json_list(path, items):
+    with Path(path).open("w", encoding="utf-8") as f:
+        json.dump(list(items), f, ensure_ascii=False)
+
+
+def _read_json_list(path):
+    p = Path(path)
+    if not p.exists():
+        return []
+    with p.open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if isinstance(payload, list):
+        return payload
+    return []
+
+
+def _encode_records_to_files(
+    records,
+    index_dir,
+    prefix,
+    model_name,
+    batch_size,
+    max_length,
+    max_chars,
+    show_progress=True,
+):
+    ids_path = Path(index_dir) / f"{prefix}_ids.json"
+    emb_path = Path(index_dir) / f"{prefix}_embeddings.f16.npy"
+    ids = [str(r.get("node_id", "")) for r in records]
+    texts = [str(r.get("text", "")) for r in records]
+
+    if not records:
+        np.save(emb_path, np.zeros((0, 0), dtype=np.float16))
+        _write_json_list(ids_path, ids)
+        return {
+            "count": 0,
+            "dim": 0,
+            "ids_path": str(ids_path.resolve()),
+            "embeddings_path": str(emb_path.resolve()),
+        }
+
+    bs = max(1, int(batch_size))
+    first_end = min(len(texts), bs)
+    first = encode_texts(
+        texts=texts[:first_end],
+        model_name=model_name,
+        batch_size=bs,
+        max_length=max_length,
+        max_chars=max_chars,
+        instruction="",
+    )
+    if not first.get("ok", False):
+        raise RuntimeError(str(first.get("error", "semantic_embedding_encode_failed")))
+
+    first_vecs = np.asarray(first.get("vectors", []), dtype=np.float32)
+    if first_vecs.ndim != 2 or first_vecs.shape[0] <= 0:
+        raise RuntimeError("semantic_embedding_empty_first_batch")
+    dim = int(first_vecs.shape[1])
+    mmap = open_memmap(str(emb_path), mode="w+", dtype=np.float16, shape=(len(records), dim))
+    mmap[:first_vecs.shape[0], :] = first_vecs.astype(np.float16)
+
+    starts = range(first_end, len(texts), bs)
+    for start in tqdm(
+        starts,
+        total=(max(0, len(texts) - first_end) + bs - 1) // bs,
+        desc=f"Encode {prefix}",
+        unit="batch",
+        leave=True,
+        disable=not show_progress,
+    ):
+        end = min(len(texts), start + bs)
+        out = encode_texts(
+            texts=texts[start:end],
+            model_name=model_name,
+            batch_size=bs,
+            max_length=max_length,
+            max_chars=max_chars,
+            instruction="",
+        )
+        if not out.get("ok", False):
+            raise RuntimeError(str(out.get("error", "semantic_embedding_encode_failed")))
+        vecs = np.asarray(out.get("vectors", []), dtype=np.float32)
+        if vecs.ndim != 2 or vecs.shape[0] != (end - start):
+            raise RuntimeError("semantic_embedding_batch_shape_mismatch")
+        mmap[start:end, :] = vecs.astype(np.float16)
+
+    del mmap
+    _write_json_list(ids_path, ids)
+    return {
+        "count": int(len(records)),
+        "dim": int(dim),
+        "ids_path": str(ids_path.resolve()),
+        "embeddings_path": str(emb_path.resolve()),
+    }
+
+
+def _build_semantic_index_artifacts(
+    g,
+    index_dir,
+    model_name,
+    batch_size,
+    max_length,
+    max_chars,
+    show_progress=True,
+):
+    start = time.perf_counter()
+    entity_records, chunk_records = _collect_semantic_records(g)
+    entity_info = _encode_records_to_files(
+        records=entity_records,
+        index_dir=index_dir,
+        prefix="semantic_entities",
+        model_name=model_name,
+        batch_size=batch_size,
+        max_length=max_length,
+        max_chars=max_chars,
+        show_progress=show_progress,
+    )
+    chunk_info = _encode_records_to_files(
+        records=chunk_records,
+        index_dir=index_dir,
+        prefix="semantic_chunks",
+        model_name=model_name,
+        batch_size=batch_size,
+        max_length=max_length,
+        max_chars=max_chars,
+        show_progress=show_progress,
+    )
+
+    dim = int(entity_info.get("dim", 0) or chunk_info.get("dim", 0))
+    if entity_info.get("count", 0) > 0 and chunk_info.get("count", 0) > 0:
+        if int(entity_info.get("dim", 0)) != int(chunk_info.get("dim", 0)):
+            raise RuntimeError("semantic_embedding_dimension_mismatch_between_entity_and_chunk")
+
+    payload = {
+        "enabled": True,
+        "index_dir": str(Path(index_dir).resolve()),
+        "model_name": str(model_name or ""),
+        "normalized": True,
+        "dtype": "float16",
+        "dim": int(dim),
+        "entity_count": int(entity_info.get("count", 0)),
+        "chunk_count": int(chunk_info.get("count", 0)),
+        "entity_ids_path": str(entity_info.get("ids_path", "")),
+        "entity_embeddings_path": str(entity_info.get("embeddings_path", "")),
+        "chunk_ids_path": str(chunk_info.get("ids_path", "")),
+        "chunk_embeddings_path": str(chunk_info.get("embeddings_path", "")),
+        "build_ms": float((time.perf_counter() - start) * 1000.0),
+    }
+    meta_path = Path(index_dir) / "semantic_index_meta.json"
+    meta_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return payload
+
+
+def load_semantic_index(semantic_meta, mmap_mode="r"):
+    meta = dict(semantic_meta or {})
+    if not bool(meta.get("enabled", False)):
+        return None
+
+    root_dir = str(meta.get("index_dir", "") or "").strip()
+    root = Path(root_dir) if root_dir else None
+
+    def _resolve(path_hint):
+        raw = str(path_hint or "").strip()
+        if not raw:
+            return ""
+        p = Path(raw)
+        if p.exists():
+            return str(p.resolve())
+        if root is not None:
+            q = (root / raw).resolve()
+            if q.exists():
+                return str(q)
+        return raw
+
+    entity_ids_path = _resolve(meta.get("entity_ids_path", ""))
+    chunk_ids_path = _resolve(meta.get("chunk_ids_path", ""))
+    entity_emb_path = _resolve(meta.get("entity_embeddings_path", ""))
+    chunk_emb_path = _resolve(meta.get("chunk_embeddings_path", ""))
+
+    if not Path(entity_ids_path).exists() or not Path(chunk_ids_path).exists():
+        return None
+    if not Path(entity_emb_path).exists() or not Path(chunk_emb_path).exists():
+        return None
+
+    entity_ids = _read_json_list(entity_ids_path)
+    chunk_ids = _read_json_list(chunk_ids_path)
+    entity_embeddings = np.load(entity_emb_path, mmap_mode=mmap_mode)
+    chunk_embeddings = np.load(chunk_emb_path, mmap_mode=mmap_mode)
+
+    if int(len(entity_ids)) != int(len(entity_embeddings)):
+        raise RuntimeError("semantic_entity_id_embedding_count_mismatch")
+    if int(len(chunk_ids)) != int(len(chunk_embeddings)):
+        raise RuntimeError("semantic_chunk_id_embedding_count_mismatch")
+
+    entity_id_to_idx = {str(node_id): idx for idx, node_id in enumerate(entity_ids)}
+    chunk_id_to_idx = {str(node_id): idx for idx, node_id in enumerate(chunk_ids)}
+    return {
+        "meta": meta,
+        "entity_ids": entity_ids,
+        "chunk_ids": chunk_ids,
+        "entity_embeddings": entity_embeddings,
+        "chunk_embeddings": chunk_embeddings,
+        "entity_id_to_idx": entity_id_to_idx,
+        "chunk_id_to_idx": chunk_id_to_idx,
+    }
 
 
 def _build_graph_from_prebuilt_igraph(
@@ -1233,6 +1637,10 @@ def _build_graph_from_prebuilt_igraph(
             g[u][v]["weight"] = max(prev, weight)
         else:
             g.add_edge(u, v, edge_type="hipporag_link", weight=weight)
+        u_type = g.nodes[u].get("node_type")
+        v_type = g.nodes[v].get("node_type")
+        if {u_type, v_type} == {"sentence", "entity"}:
+            g[u][v]["support_layer"] = "entity_chunk"
 
     alias_nodes_added = 0
     alias_edges_added = 0
@@ -1259,8 +1667,39 @@ def _build_graph_from_prebuilt_igraph(
                 g.add_edge(alias, entity_node, edge_type="entity_alias", weight=1.0)
                 alias_edges_added += 1
 
+    token_to_entities = {}
+    for node in g.nodes:
+        if g.nodes[node].get("node_type") != "entity":
+            continue
+        token = str(g.nodes[node].get("token", "") or "").strip().lower()
+        if not token:
+            continue
+        token_to_entities.setdefault(token, set()).add(node)
+
+    support_edges_added = 0
+    for chunk_node in tqdm(
+        chunk_nodes,
+        total=len(chunk_nodes),
+        desc="Build entity-chunk support edges",
+        unit="chunk",
+        leave=True,
+        disable=not show_progress,
+    ):
+        text = str(g.nodes[chunk_node].get("text", "") or "")
+        toks = content_tokens(text)
+        if alias_limit > 0:
+            toks = toks[: max(alias_limit * 2, alias_limit)]
+        for tok in toks:
+            for ent in token_to_entities.get(tok, set()):
+                if g.has_edge(chunk_node, ent):
+                    g[chunk_node][ent]["support_layer"] = "entity_chunk"
+                    continue
+                g.add_edge(chunk_node, ent, edge_type="entity_chunk_support", support_layer="entity_chunk", weight=1.0)
+                support_edges_added += 1
+
     num_entities = sum(1 for n in g.nodes if g.nodes[n].get("node_type") == "entity")
     num_sentences = sum(1 for n in g.nodes if g.nodes[n].get("node_type") == "sentence")
+    num_support_edges = sum(1 for u, v in g.edges if str(g[u][v].get("support_layer", "")) == "entity_chunk")
     stats = {
         "source_type": "prebuilt_igraph",
         "prebuilt_igraph_path": str(src.resolve()),
@@ -1272,10 +1711,12 @@ def _build_graph_from_prebuilt_igraph(
         "prebuilt_entity_token_limit": int(alias_limit),
         "prebuilt_alias_nodes_added": int(alias_nodes_added),
         "prebuilt_alias_edges_added": int(alias_edges_added),
+        "prebuilt_support_edges_added": int(support_edges_added),
         "num_nodes": int(g.number_of_nodes()),
         "num_edges": int(g.number_of_edges()),
         "num_entities": int(num_entities),
         "num_sentences": int(num_sentences),
+        "num_entity_chunk_support_edges": int(num_support_edges),
     }
     return g, stats
 
@@ -1287,6 +1728,11 @@ def load_or_build_global_index(
     prebuilt_igraph_path="",
     prebuilt_igraph_format="hipporag_pickle",
     prebuilt_entity_token_limit=6,
+    embedding_enabled=False,
+    embedding_model_name="nvidia/NV-Embed-v2",
+    embedding_batch_size=8,
+    embedding_max_length=256,
+    embedding_text_max_chars=600,
     openie_mode="llm",
     openie_model_name="Qwen/Qwen2.5-7B-Instruct",
     openie_text_max_chars=2200,
@@ -1302,10 +1748,16 @@ def load_or_build_global_index(
     openie_error_sample_limit=20,
     show_progress=True,
 ):
+    index_total_start = time.perf_counter()
     build_config = _normalize_build_config(
         prebuilt_igraph_path=prebuilt_igraph_path,
         prebuilt_igraph_format=prebuilt_igraph_format,
         prebuilt_entity_token_limit=prebuilt_entity_token_limit,
+        embedding_enabled=embedding_enabled,
+        embedding_model_name=embedding_model_name,
+        embedding_batch_size=embedding_batch_size,
+        embedding_max_length=embedding_max_length,
+        embedding_text_max_chars=embedding_text_max_chars,
         openie_mode=openie_mode,
         openie_model_name=openie_model_name,
         openie_text_max_chars=openie_text_max_chars,
@@ -1326,6 +1778,7 @@ def load_or_build_global_index(
     index_dir.mkdir(parents=True, exist_ok=True)
     graph_path = index_dir / "graph.gpickle"
     meta_path = index_dir / "meta.json"
+    semantic_meta_path = index_dir / "semantic_index_meta.json"
     openie_sentence_cache_path = index_dir / "openie_sentence_cache.jsonl"
     fp = _fingerprint(prebuilt_path) if prebuilt_path else _fingerprint(corpus_path)
 
@@ -1333,11 +1786,59 @@ def load_or_build_global_index(
         with meta_path.open("r", encoding="utf-8") as f:
             meta = json.load(f)
         if meta.get("fingerprint", {}) == fp and meta.get("build_config", {}) == build_config:
+            load_start = time.perf_counter()
             graph = _read_gpickle(graph_path)
+            load_ms = (time.perf_counter() - load_start) * 1000.0
             out_meta = dict(meta)
+            out_meta_stats = dict(out_meta.get("stats", {}) or {})
+            semantic_meta = dict(out_meta.get("semantic_index", {}) or {})
+            semantic_build_ms = 0.0
+            if bool(build_config.get("embedding_enabled", False)):
+                if semantic_meta_path.exists():
+                    semantic_meta = json.loads(semantic_meta_path.read_text(encoding="utf-8"))
+                else:
+                    semantic_meta = _build_semantic_index_artifacts(
+                        g=graph,
+                        index_dir=index_dir,
+                        model_name=build_config.get("embedding_model_name", "nvidia/NV-Embed-v2"),
+                        batch_size=int(build_config.get("embedding_batch_size", 8)),
+                        max_length=int(build_config.get("embedding_max_length", 256)),
+                        max_chars=int(build_config.get("embedding_text_max_chars", 600)),
+                        show_progress=show_progress,
+                    )
+                    semantic_build_ms = float(semantic_meta.get("build_ms", 0.0) or 0.0)
+
+                out_meta_stats["semantic_embedding_enabled"] = True
+                out_meta_stats["semantic_embedding_model_name"] = str(semantic_meta.get("model_name", ""))
+                out_meta_stats["semantic_embedding_dim"] = int(semantic_meta.get("dim", 0) or 0)
+                out_meta_stats["semantic_entity_count"] = int(semantic_meta.get("entity_count", 0) or 0)
+                out_meta_stats["semantic_chunk_count"] = int(semantic_meta.get("chunk_count", 0) or 0)
+                out_meta_stats["semantic_build_ms"] = float(semantic_build_ms)
+            else:
+                semantic_meta = {
+                    "enabled": False,
+                    "model_name": str(build_config.get("embedding_model_name", "")),
+                    "entity_count": 0,
+                    "chunk_count": 0,
+                    "dim": 0,
+                    "build_ms": 0.0,
+                }
+                out_meta_stats["semantic_embedding_enabled"] = False
+
             out_meta["cache_hit"] = True
+            out_meta["index_operation"] = "cache_hit" if semantic_build_ms <= 0.0 else "cache_hit+semantic_build"
+            out_meta["index_load_graph_ms"] = float(load_ms)
+            out_meta["index_build_ms"] = float(out_meta.get("index_build_ms", 0.0) or 0.0) + float(semantic_build_ms)
+            out_meta["index_write_ms"] = float(out_meta.get("index_write_ms", 0.0) or 0.0)
+            out_meta["semantic_index"] = semantic_meta
+            out_meta["stats"] = out_meta_stats
+            out_meta["index_total_ms"] = float((time.perf_counter() - index_total_start) * 1000.0)
+            if semantic_build_ms > 0.0:
+                with meta_path.open("w", encoding="utf-8") as f:
+                    json.dump(out_meta, f, ensure_ascii=False, indent=2)
             return graph, out_meta
 
+    build_start = time.perf_counter()
     if prebuilt_path:
         graph, stats = _build_graph_from_prebuilt_igraph(
             prebuilt_igraph_path=prebuilt_path,
@@ -1346,6 +1847,13 @@ def load_or_build_global_index(
             show_progress=show_progress,
         )
     else:
+        openie_cache_seed_info = _maybe_seed_openie_cache_from_latest(
+            cache_dir=cache_dir,
+            source_id_path=source_id_path,
+            target_cache_path=str(openie_sentence_cache_path),
+            openie_mode=build_config["openie_mode"],
+            show_progress=show_progress,
+        )
         rows = load_corpus_rows(corpus_path, show_progress=show_progress)
         graph, stats = build_corpus_graph(
             rows,
@@ -1365,8 +1873,41 @@ def load_or_build_global_index(
             openie_sentence_cache_path=str(openie_sentence_cache_path),
             show_progress=show_progress,
         )
+        stats = dict(stats or {})
+        stats.update(openie_cache_seed_info)
+    build_ms = (time.perf_counter() - build_start) * 1000.0
 
+    semantic_meta = {
+        "enabled": False,
+        "model_name": str(build_config.get("embedding_model_name", "")),
+        "entity_count": 0,
+        "chunk_count": 0,
+        "dim": 0,
+        "build_ms": 0.0,
+    }
+    if bool(build_config.get("embedding_enabled", False)):
+        semantic_meta = _build_semantic_index_artifacts(
+            g=graph,
+            index_dir=index_dir,
+            model_name=build_config.get("embedding_model_name", "nvidia/NV-Embed-v2"),
+            batch_size=int(build_config.get("embedding_batch_size", 8)),
+            max_length=int(build_config.get("embedding_max_length", 256)),
+            max_chars=int(build_config.get("embedding_text_max_chars", 600)),
+            show_progress=show_progress,
+        )
+        build_ms += float(semantic_meta.get("build_ms", 0.0) or 0.0)
+
+    stats = dict(stats or {})
+    stats["semantic_embedding_enabled"] = bool(semantic_meta.get("enabled", False))
+    stats["semantic_embedding_model_name"] = str(semantic_meta.get("model_name", ""))
+    stats["semantic_embedding_dim"] = int(semantic_meta.get("dim", 0) or 0)
+    stats["semantic_entity_count"] = int(semantic_meta.get("entity_count", 0) or 0)
+    stats["semantic_chunk_count"] = int(semantic_meta.get("chunk_count", 0) or 0)
+    stats["semantic_build_ms"] = float(semantic_meta.get("build_ms", 0.0) or 0.0)
+
+    write_start = time.perf_counter()
     _write_gpickle(graph, graph_path)
+    write_ms = (time.perf_counter() - write_start) * 1000.0
     meta = {
         "index_dir": str(index_dir),
         "graph_path": str(graph_path),
@@ -1377,7 +1918,13 @@ def load_or_build_global_index(
         "build_config": build_config,
         "built_at_utc": timestamp_iso_utc(),
         "stats": stats,
+        "semantic_index": semantic_meta,
         "cache_hit": False,
+        "index_operation": "build",
+        "index_load_graph_ms": 0.0,
+        "index_build_ms": float(build_ms),
+        "index_write_ms": float(write_ms),
+        "index_total_ms": float((time.perf_counter() - index_total_start) * 1000.0),
     }
     with meta_path.open("w", encoding="utf-8") as f:
         json.dump(meta, f, ensure_ascii=False, indent=2)

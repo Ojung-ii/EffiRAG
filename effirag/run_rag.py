@@ -1,7 +1,10 @@
 import argparse
 import json
+import os
 from dataclasses import asdict
 from pathlib import Path
+
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from .config import RagConfig, apply_cli_overrides, dataclass_from_dict
 from .efficiency import Timer, gpu_peak_mb, process_rss_mb, reset_gpu_peak
@@ -110,6 +113,14 @@ def _is_generation_fallback(generation) -> bool:
     return ("HF generation failed" in raw) or ("Fallback(heuristic)" in raw)
 
 
+def _extract_global_index_diag_from_retrieval(retrieval_payload: dict) -> dict:
+    diagnostics = (retrieval_payload or {}).get("diagnostics", {}) or {}
+    payload = diagnostics.get("global_index", {}) or {}
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run end-to-end EffiRAG QA experiments.")
     parser.add_argument("--config", type=str, default=None)
@@ -119,6 +130,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--method", type=str, default=None, choices=["effirag", "naive_graphrag"])
     parser.add_argument("--output-dir", type=str, default=None)
+    parser.add_argument("--timestamp-output", type=str, default=None)
     parser.add_argument("--global-corpus-path", type=str, default=None)
     parser.add_argument("--graph-cache-dir", type=str, default=None)
     parser.add_argument("--force-rebuild-graph-index", type=str, default=None)
@@ -144,6 +156,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--embedding-rerank-topn", type=int, default=None)
     parser.add_argument("--embedding-batch-size", type=int, default=None)
     parser.add_argument("--embedding-max-length", type=int, default=None)
+    parser.add_argument("--embedding-text-max-chars", type=int, default=None)
+    parser.add_argument("--semantic-topn", type=int, default=None)
+    parser.add_argument("--semantic-candidate-union", type=str, default=None)
+    parser.add_argument("--semantic-scan-batch-size", type=int, default=None)
+    parser.add_argument("--run-score-semantic-weight", type=float, default=None)
+    parser.add_argument("--run-score-anchor-weight", type=float, default=None)
+    parser.add_argument("--run-score-structure-weight", type=float, default=None)
+    parser.add_argument("--run-score-bridge-weight", type=float, default=None)
+    parser.add_argument("--run-score-redundancy-weight", type=float, default=None)
+    parser.add_argument("--seed-score-semantic-weight", type=float, default=None)
+    parser.add_argument("--seed-score-graph-weight", type=float, default=None)
+    parser.add_argument("--seed-score-anchor-weight", type=float, default=None)
 
     parser.add_argument("--max-anchors", type=int, default=None)
     parser.add_argument("--samples-per-anchor", type=int, default=None)
@@ -218,7 +242,10 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
     cfg_values = asdict(cfg)
     run_stamp = timestamp_for_filename()
     run_iso = timestamp_iso_utc()
-    out_dir = Path(cfg.output_dir)
+    if bool(getattr(cfg, "timestamp_output", True)):
+        out_dir = Path(cfg.output_dir) / str(cfg.dataset) / run_stamp
+    else:
+        out_dir = Path(cfg.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     query_path = out_dir / "rag_query_results.jsonl"
     summary_path = out_dir / "rag_summary.json"
@@ -371,6 +398,7 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         "dataset": cfg.dataset,
         "method": cfg.method,
         "generator": cfg.generator,
+        "generator_display": str(cfg.model_name or cfg.generator),
         "run_qa": bool(cfg.run_qa),
         "qa_executed_samples": float(sum(1 for r in rows if r.get("qa_executed"))),
         "qa_skipped_samples": float(sum(1 for r in rows if not r.get("qa_executed"))),
@@ -423,6 +451,18 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "embedding_rerank_topn": cfg.embedding_rerank_topn,
             "embedding_batch_size": cfg.embedding_batch_size,
             "embedding_max_length": cfg.embedding_max_length,
+            "embedding_text_max_chars": cfg.embedding_text_max_chars,
+            "semantic_topn": cfg.semantic_topn,
+            "semantic_candidate_union": cfg.semantic_candidate_union,
+            "semantic_scan_batch_size": cfg.semantic_scan_batch_size,
+            "run_score_semantic_weight": cfg.run_score_semantic_weight,
+            "run_score_anchor_weight": cfg.run_score_anchor_weight,
+            "run_score_structure_weight": cfg.run_score_structure_weight,
+            "run_score_bridge_weight": cfg.run_score_bridge_weight,
+            "run_score_redundancy_weight": cfg.run_score_redundancy_weight,
+            "seed_score_semantic_weight": cfg.seed_score_semantic_weight,
+            "seed_score_graph_weight": cfg.seed_score_graph_weight,
+            "seed_score_anchor_weight": cfg.seed_score_anchor_weight,
             "max_anchors": cfg.max_anchors,
             "samples_per_anchor": cfg.samples_per_anchor,
             "candidate_top_t": cfg.candidate_top_t,
@@ -449,6 +489,7 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "random_seed": cfg.random_seed,
         },
         "generation_params": {
+            "model_name": cfg.model_name,
             "llm_base_url": cfg.llm_base_url,
             "llm_timeout_sec": cfg.llm_timeout_sec,
             "llm_max_new_tokens": cfg.llm_max_new_tokens,
@@ -485,6 +526,21 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
 
     if cfg.run_qa:
         summary["generation_latency_ms"] = mean_or_zero([r["efficiency"]["generation_latency_ms"] for r in rows])
+
+    index_diags = []
+    for row in rows:
+        diag = _extract_global_index_diag_from_retrieval(row.get("retrieval", {}))
+        if diag:
+            index_diags.append(diag)
+    summary["index_timed_samples"] = int(len(index_diags))
+    summary["index_total_ms"] = mean_or_zero([float(d.get("index_total_ms", 0.0)) for d in index_diags])
+    summary["index_build_ms"] = mean_or_zero([float(d.get("index_build_ms", 0.0)) for d in index_diags])
+    summary["index_load_graph_ms"] = mean_or_zero([float(d.get("index_load_graph_ms", 0.0)) for d in index_diags])
+    summary["index_write_ms"] = mean_or_zero([float(d.get("index_write_ms", 0.0)) for d in index_diags])
+    summary["index_cache_hit_rate"] = mean_or_zero(
+        [1.0 if bool(d.get("cache_hit", False)) else 0.0 for d in index_diags]
+    )
+    summary["output_dir"] = str(out_dir.resolve())
 
     if cfg.measure_gpu_peak:
         summary["gpu_peak_mb"] = mean_or_zero([r["efficiency"].get("gpu_peak_mb", 0.0) for r in rows])
@@ -525,10 +581,10 @@ def main() -> None:
     _, summary = execute_rag_experiment(cfg)
 
     print("RAG run complete")
+    print(f"Output dir: {summary.get('output_dir', '')}")
     print(
         markdown_table(
             [
-                "run_timestamp",
                 "method",
                 "generator",
                 "samples",
@@ -540,15 +596,17 @@ def main() -> None:
                 "EM",
                 "F1",
                 "retrieval_ms",
+                "generation_ms",
                 "total_ms",
+                "index_total_ms",
                 "trunc_corr_avg",
                 "trunc_sent_avg",
+                "run_timestamp",
             ],
             [
                 [
-                    summary["run_timestamp"],
                     summary["method"],
-                    summary["generator"],
+                    summary.get("generator_display", summary["generator"]),
                     int(summary["n_samples"]),
                     "%.4f" % summary["supporting_fact_recall"],
                     "%.4f" % summary.get("supporting_fact_recall_at_1", 0.0),
@@ -558,9 +616,12 @@ def main() -> None:
                     "%.4f" % summary["em"],
                     "%.4f" % summary["f1"],
                     "%.2f" % summary["retrieval_latency_ms"],
+                    "%.2f" % summary.get("generation_latency_ms", 0.0),
                     "%.2f" % summary["total_latency_ms"],
+                    "%.2f" % summary.get("index_total_ms", 0.0),
                     "%.2f" % summary.get("truncated_corridors_avg", 0.0),
                     "%.2f" % summary.get("truncated_sentences_avg", 0.0),
+                    summary["run_timestamp"],
                 ]
             ],
         )

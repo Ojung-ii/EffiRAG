@@ -150,6 +150,7 @@ if [[ "${run_retrieval}" == "true" ]]; then
       --dataset "${dataset}" \
       --limit "${retrieval_limit}" \
       --method "${method}" \
+      --timestamp-output false \
       --output-dir "${out_dir}"
   done
 fi
@@ -167,6 +168,7 @@ if [[ "${run_rag}" == "true" ]]; then
         --method "${method}"
         --generator "${generator}"
         --run-qa true
+        --timestamp-output false
         --output-dir "${out_dir}"
       )
       if [[ "${generator}" == "hf" ]]; then

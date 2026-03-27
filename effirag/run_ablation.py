@@ -46,6 +46,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--embedding-rerank-topn", type=int, default=None)
     parser.add_argument("--embedding-batch-size", type=int, default=None)
     parser.add_argument("--embedding-max-length", type=int, default=None)
+    parser.add_argument("--embedding-text-max-chars", type=int, default=None)
+    parser.add_argument("--semantic-topn", type=int, default=None)
+    parser.add_argument("--semantic-candidate-union", type=str, default=None)
+    parser.add_argument("--semantic-scan-batch-size", type=int, default=None)
+    parser.add_argument("--run-score-semantic-weight", type=float, default=None)
+    parser.add_argument("--run-score-anchor-weight", type=float, default=None)
+    parser.add_argument("--run-score-structure-weight", type=float, default=None)
+    parser.add_argument("--run-score-bridge-weight", type=float, default=None)
+    parser.add_argument("--run-score-redundancy-weight", type=float, default=None)
+    parser.add_argument("--seed-score-semantic-weight", type=float, default=None)
+    parser.add_argument("--seed-score-graph-weight", type=float, default=None)
+    parser.add_argument("--seed-score-anchor-weight", type=float, default=None)
 
     parser.add_argument("--max-anchors", type=int, default=None)
     parser.add_argument("--samples-per-anchor", type=int, default=None)
@@ -88,14 +100,35 @@ def execute_ablation(cfg):
     cfg_values = cfg.__dict__.copy()
 
     variants = [
-        ("effirag_trim", replace(cfg, method="effirag", trim_on=True, output_dir=str(Path(cfg.output_dir) / "effirag_trim"))),
+        (
+            "effirag_trim",
+            replace(
+                cfg,
+                method="effirag",
+                trim_on=True,
+                output_dir=str(Path(cfg.output_dir) / "effirag_trim"),
+                timestamp_output=False,
+            ),
+        ),
         (
             "effirag_no_trim",
-            replace(cfg, method="effirag", trim_on=False, output_dir=str(Path(cfg.output_dir) / "effirag_no_trim")),
+            replace(
+                cfg,
+                method="effirag",
+                trim_on=False,
+                output_dir=str(Path(cfg.output_dir) / "effirag_no_trim"),
+                timestamp_output=False,
+            ),
         ),
         (
             "naive_graphrag",
-            replace(cfg, method="naive_graphrag", trim_on=False, output_dir=str(Path(cfg.output_dir) / "naive_graphrag")),
+            replace(
+                cfg,
+                method="naive_graphrag",
+                trim_on=False,
+                output_dir=str(Path(cfg.output_dir) / "naive_graphrag"),
+                timestamp_output=False,
+            ),
         ),
     ]
 

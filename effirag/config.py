@@ -12,6 +12,7 @@ class RetrievalConfig:
     limit: int = None
     method: str = "effirag"
     output_dir: str = "outputs/retrieval"
+    timestamp_output: bool = True
     global_corpus_path: str = ""
     graph_cache_dir: str = "outputs/index_cache"
     force_rebuild_graph_index: bool = False
@@ -32,11 +33,23 @@ class RetrievalConfig:
     openie_parallel_workers: int = 4
     openie_log_every: int = 200
     embedding_enabled: bool = False
-    embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+    embedding_model_name: str = "nvidia/NV-Embed-v2"
+    embedding_text_max_chars: int = 600
     embedding_weight: float = 0.35
     embedding_rerank_topn: int = 80
     embedding_batch_size: int = 16
     embedding_max_length: int = 256
+    semantic_topn: int = 50
+    semantic_candidate_union: bool = True
+    semantic_scan_batch_size: int = 8192
+    run_score_semantic_weight: float = 0.35
+    run_score_anchor_weight: float = 0.20
+    run_score_structure_weight: float = 0.25
+    run_score_bridge_weight: float = 0.15
+    run_score_redundancy_weight: float = 0.05
+    seed_score_semantic_weight: float = 0.30
+    seed_score_graph_weight: float = 0.50
+    seed_score_anchor_weight: float = 0.20
 
     max_anchors: int = 6
     samples_per_anchor: int = 8
@@ -124,10 +137,14 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["reserve_top_corridor"] = parse_bool(merged["reserve_top_corridor"])
     if "force_rebuild_graph_index" in merged:
         merged["force_rebuild_graph_index"] = parse_bool(merged["force_rebuild_graph_index"])
+    if "timestamp_output" in merged:
+        merged["timestamp_output"] = parse_bool(merged["timestamp_output"])
     if "openie_local_files_only" in merged:
         merged["openie_local_files_only"] = parse_bool(merged["openie_local_files_only"])
     if "embedding_enabled" in merged:
         merged["embedding_enabled"] = parse_bool(merged["embedding_enabled"])
+    if "semantic_candidate_union" in merged:
+        merged["semantic_candidate_union"] = parse_bool(merged["semantic_candidate_union"])
     if "ppr_subgraph_enable" in merged:
         merged["ppr_subgraph_enable"] = parse_bool(merged["ppr_subgraph_enable"])
     if "anchor_diag_store_full_scores" in merged:

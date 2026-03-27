@@ -10,12 +10,24 @@ openie_mode: llm
 openie_model_name: Qwen/Qwen2.5-7B-Instruct
 openie_text_max_chars: 2200
 openie_max_new_tokens: 256
-embedding_enabled: false
-embedding_model_name: sentence-transformers/all-MiniLM-L6-v2
+embedding_enabled: true
+embedding_model_name: nvidia/NV-Embed-v2
+embedding_text_max_chars: 600
 embedding_weight: 0.35
 embedding_rerank_topn: 80
 embedding_batch_size: 16
 embedding_max_length: 256
+semantic_topn: 50
+semantic_candidate_union: true
+semantic_scan_batch_size: 8192
+run_score_semantic_weight: 0.35
+run_score_anchor_weight: 0.20
+run_score_structure_weight: 0.25
+run_score_bridge_weight: 0.15
+run_score_redundancy_weight: 0.05
+seed_score_semantic_weight: 0.30
+seed_score_graph_weight: 0.50
+seed_score_anchor_weight: 0.20
 
 max_anchors: 6
 samples_per_anchor: 8

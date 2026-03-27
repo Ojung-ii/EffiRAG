@@ -1,7 +1,10 @@
 import argparse
+import os
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import asdict
 from pathlib import Path
+
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from .config import RetrievalConfig, apply_cli_overrides, dataclass_from_dict
 from .metrics import (
@@ -16,6 +19,7 @@ from .utils import (
     append_jsonl,
     load_yaml,
     markdown_table,
+    mean_or_zero,
     timestamp_for_filename,
     timestamp_iso_utc,
     write_json,
@@ -38,6 +42,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--limit", type=int, default=None)
     parser.add_argument("--method", type=str, default=None, choices=["effirag", "naive_graphrag"])
     parser.add_argument("--output-dir", type=str, default=None)
+    parser.add_argument("--timestamp-output", type=str, default=None)
     parser.add_argument("--global-corpus-path", type=str, default=None)
     parser.add_argument("--graph-cache-dir", type=str, default=None)
     parser.add_argument("--force-rebuild-graph-index", type=str, default=None)
@@ -63,6 +68,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--embedding-rerank-topn", type=int, default=None)
     parser.add_argument("--embedding-batch-size", type=int, default=None)
     parser.add_argument("--embedding-max-length", type=int, default=None)
+    parser.add_argument("--embedding-text-max-chars", type=int, default=None)
+    parser.add_argument("--semantic-topn", type=int, default=None)
+    parser.add_argument("--semantic-candidate-union", type=str, default=None)
+    parser.add_argument("--semantic-scan-batch-size", type=int, default=None)
+    parser.add_argument("--run-score-semantic-weight", type=float, default=None)
+    parser.add_argument("--run-score-anchor-weight", type=float, default=None)
+    parser.add_argument("--run-score-structure-weight", type=float, default=None)
+    parser.add_argument("--run-score-bridge-weight", type=float, default=None)
+    parser.add_argument("--run-score-redundancy-weight", type=float, default=None)
+    parser.add_argument("--seed-score-semantic-weight", type=float, default=None)
+    parser.add_argument("--seed-score-graph-weight", type=float, default=None)
+    parser.add_argument("--seed-score-anchor-weight", type=float, default=None)
 
     parser.add_argument("--max-anchors", type=int, default=None)
     parser.add_argument("--samples-per-anchor", type=int, default=None)
@@ -120,6 +137,15 @@ def _worker(sample, cfg_values: dict):
         "selected_sentence_count": len(retrieval.selected_sentence_ids),
         "retrieval": asdict(retrieval),
     }
+
+
+def _extract_global_index_diag(row: dict) -> dict:
+    retrieval = (row or {}).get("retrieval", {}) or {}
+    diagnostics = retrieval.get("diagnostics", {}) or {}
+    payload = diagnostics.get("global_index", {}) or {}
+    if isinstance(payload, dict):
+        return payload
+    return {}
 
 
 def execute_retrieval_experiment(cfg, show_progress: bool = True):
@@ -202,6 +228,18 @@ def execute_retrieval_experiment(cfg, show_progress: bool = True):
     summary["embedding_rerank_topn"] = int(cfg.embedding_rerank_topn)
     summary["embedding_batch_size"] = int(cfg.embedding_batch_size)
     summary["embedding_max_length"] = int(cfg.embedding_max_length)
+    summary["embedding_text_max_chars"] = int(cfg.embedding_text_max_chars)
+    summary["semantic_topn"] = int(cfg.semantic_topn)
+    summary["semantic_candidate_union"] = bool(cfg.semantic_candidate_union)
+    summary["semantic_scan_batch_size"] = int(cfg.semantic_scan_batch_size)
+    summary["run_score_semantic_weight"] = float(cfg.run_score_semantic_weight)
+    summary["run_score_anchor_weight"] = float(cfg.run_score_anchor_weight)
+    summary["run_score_structure_weight"] = float(cfg.run_score_structure_weight)
+    summary["run_score_bridge_weight"] = float(cfg.run_score_bridge_weight)
+    summary["run_score_redundancy_weight"] = float(cfg.run_score_redundancy_weight)
+    summary["seed_score_semantic_weight"] = float(cfg.seed_score_semantic_weight)
+    summary["seed_score_graph_weight"] = float(cfg.seed_score_graph_weight)
+    summary["seed_score_anchor_weight"] = float(cfg.seed_score_anchor_weight)
     summary["ppr_engine"] = str(cfg.ppr_engine)
     summary["ppr_power_max_iter"] = int(cfg.ppr_power_max_iter)
     summary["ppr_power_tol"] = float(cfg.ppr_power_tol)
@@ -217,10 +255,28 @@ def execute_retrieval_experiment(cfg, show_progress: bool = True):
     summary["run_timestamp"] = run_stamp
     summary["run_timestamp_utc"] = run_iso
 
-    out_dir = Path(cfg.output_dir)
+    index_diags = []
+    for row in rows:
+        diag = _extract_global_index_diag(row)
+        if diag:
+            index_diags.append(diag)
+    summary["index_timed_samples"] = int(len(index_diags))
+    summary["index_total_ms"] = mean_or_zero([float(d.get("index_total_ms", 0.0)) for d in index_diags])
+    summary["index_build_ms"] = mean_or_zero([float(d.get("index_build_ms", 0.0)) for d in index_diags])
+    summary["index_load_graph_ms"] = mean_or_zero([float(d.get("index_load_graph_ms", 0.0)) for d in index_diags])
+    summary["index_write_ms"] = mean_or_zero([float(d.get("index_write_ms", 0.0)) for d in index_diags])
+    summary["index_cache_hit_rate"] = mean_or_zero(
+        [1.0 if bool(d.get("cache_hit", False)) else 0.0 for d in index_diags]
+    )
+
+    if bool(getattr(cfg, "timestamp_output", True)):
+        out_dir = Path(cfg.output_dir) / str(cfg.dataset) / run_stamp
+    else:
+        out_dir = Path(cfg.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     query_path = out_dir / "retrieval_query_results.jsonl"
     summary_path = out_dir / "retrieval_summary.json"
+    summary["output_dir"] = str(out_dir.resolve())
     write_jsonl(query_path, rows)
     write_json(summary_path, summary)
 
@@ -256,10 +312,10 @@ def main() -> None:
     _, summary = execute_retrieval_experiment(cfg)
 
     print("Retrieval run complete")
+    print(f"Output dir: {summary.get('output_dir', '')}")
     print(
         markdown_table(
             [
-                "run_timestamp",
                 "method",
                 "samples",
                 "supporting_fact_recall",
@@ -268,10 +324,11 @@ def main() -> None:
                 "recall@5",
                 "recall@20",
                 "retrieval_latency_ms",
+                "index_total_ms",
+                "run_timestamp",
             ],
             [
                 [
-                    summary["run_timestamp"],
                     summary["method"],
                     int(summary["n_samples"]),
                     "%.4f" % summary["supporting_fact_recall"],
@@ -280,6 +337,8 @@ def main() -> None:
                     "%.4f" % summary.get("supporting_fact_recall_at_5", 0.0),
                     "%.4f" % summary.get("supporting_fact_recall_at_20", 0.0),
                     "%.2f" % summary["retrieval_latency_ms"],
+                    "%.2f" % summary.get("index_total_ms", 0.0),
+                    summary["run_timestamp"],
                 ]
             ],
         )
