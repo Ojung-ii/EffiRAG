@@ -21,7 +21,7 @@ def _build_parser():
     parser.add_argument("--prebuilt-igraph-format", type=str, default="hipporag_pickle")
     parser.add_argument("--prebuilt-entity-token-limit", type=int, default=6)
     parser.add_argument("--embedding-enabled", type=str, default="true")
-    parser.add_argument("--embedding-model-name", type=str, default="nvidia/NV-Embed-v2")
+    parser.add_argument("--embedding-model-name", type=str, default="NVIDIA/NV-Embed-v2")
     parser.add_argument("--embedding-batch-size", type=int, default=8)
     parser.add_argument("--embedding-max-length", type=int, default=256)
     parser.add_argument("--embedding-text-max-chars", type=int, default=600)
@@ -94,7 +94,7 @@ def main():
                 prebuilt_igraph_format=str(args.prebuilt_igraph_format or "hipporag_pickle"),
                 prebuilt_entity_token_limit=int(args.prebuilt_entity_token_limit),
                 embedding_enabled=embedding_enabled,
-                embedding_model_name=str(args.embedding_model_name or "nvidia/NV-Embed-v2"),
+                embedding_model_name=str(args.embedding_model_name or "NVIDIA/NV-Embed-v2"),
                 embedding_batch_size=int(args.embedding_batch_size),
                 embedding_max_length=int(args.embedding_max_length),
                 embedding_text_max_chars=int(args.embedding_text_max_chars),

@@ -32,32 +32,41 @@ class RetrievalConfig:
     openie_api_timeout_sec: float = 120.0
     openie_parallel_workers: int = 4
     openie_log_every: int = 200
-    embedding_enabled: bool = False
-    embedding_model_name: str = "nvidia/NV-Embed-v2"
+    embedding_enabled: bool = True
+    embedding_model_name: str = "NVIDIA/NV-Embed-v2"
     embedding_text_max_chars: int = 600
     embedding_weight: float = 0.35
     embedding_rerank_topn: int = 80
     embedding_batch_size: int = 16
     embedding_max_length: int = 256
+    semantic_topn_entity: int = 30
+    semantic_topn_chunk: int = 15
+    graph_reserve_topn: int = 15
     semantic_topn: int = 50
     semantic_candidate_union: bool = True
     semantic_scan_batch_size: int = 8192
-    run_score_semantic_weight: float = 0.35
+    run_score_semantic_weight: float = 0.30
     run_score_anchor_weight: float = 0.20
     run_score_structure_weight: float = 0.25
     run_score_bridge_weight: float = 0.15
-    run_score_redundancy_weight: float = 0.05
-    seed_score_semantic_weight: float = 0.30
-    seed_score_graph_weight: float = 0.50
+    run_score_redundancy_weight: float = 0.10
+    seed_score_semantic_weight: float = 0.35
+    seed_score_graph_weight: float = 0.45
     seed_score_anchor_weight: float = 0.20
 
-    max_anchors: int = 6
-    samples_per_anchor: int = 8
+    max_anchors: int = 5
+    samples_per_anchor: int = 3
     num_workers: int = 1
     candidate_top_t: int = 20
     seed_k: int = 4
     pair_top_lp: int = 3
     corridor_top_bc: int = 20
+    phase1_parallel_ppr: bool = True
+    phase1_run_shortlist_topk: int = 2
+    pair_shortlist_topb: int = 6
+    phase2_refine_mode: str = "bounded_local"
+    phase2_bidirectional_full_ppr: bool = False
+    reuse_semantic_scores_in_final: bool = True
     trim_on: bool = True
     trim_rho: float = 0.6
 
@@ -145,6 +154,12 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["embedding_enabled"] = parse_bool(merged["embedding_enabled"])
     if "semantic_candidate_union" in merged:
         merged["semantic_candidate_union"] = parse_bool(merged["semantic_candidate_union"])
+    if "phase1_parallel_ppr" in merged:
+        merged["phase1_parallel_ppr"] = parse_bool(merged["phase1_parallel_ppr"])
+    if "phase2_bidirectional_full_ppr" in merged:
+        merged["phase2_bidirectional_full_ppr"] = parse_bool(merged["phase2_bidirectional_full_ppr"])
+    if "reuse_semantic_scores_in_final" in merged:
+        merged["reuse_semantic_scores_in_final"] = parse_bool(merged["reuse_semantic_scores_in_final"])
     if "ppr_subgraph_enable" in merged:
         merged["ppr_subgraph_enable"] = parse_bool(merged["ppr_subgraph_enable"])
     if "anchor_diag_store_full_scores" in merged:

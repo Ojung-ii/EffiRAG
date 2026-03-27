@@ -157,6 +157,9 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--embedding-batch-size", type=int, default=None)
     parser.add_argument("--embedding-max-length", type=int, default=None)
     parser.add_argument("--embedding-text-max-chars", type=int, default=None)
+    parser.add_argument("--semantic-topn-entity", type=int, default=None)
+    parser.add_argument("--semantic-topn-chunk", type=int, default=None)
+    parser.add_argument("--graph-reserve-topn", type=int, default=None)
     parser.add_argument("--semantic-topn", type=int, default=None)
     parser.add_argument("--semantic-candidate-union", type=str, default=None)
     parser.add_argument("--semantic-scan-batch-size", type=int, default=None)
@@ -176,6 +179,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--seed-k", type=int, default=None)
     parser.add_argument("--pair-top-lp", type=int, default=None)
     parser.add_argument("--corridor-top-bc", type=int, default=None)
+    parser.add_argument("--phase1-parallel-ppr", type=str, default=None)
+    parser.add_argument("--phase1-run-shortlist-topk", type=int, default=None)
+    parser.add_argument("--pair-shortlist-topb", type=int, default=None)
+    parser.add_argument("--phase2-refine-mode", type=str, default=None)
+    parser.add_argument("--phase2-bidirectional-full-ppr", type=str, default=None)
+    parser.add_argument("--reuse-semantic-scores-in-final", type=str, default=None)
     parser.add_argument("--trim-on", type=str, default=None)
     parser.add_argument("--trim-rho", type=float, default=None)
 
@@ -452,6 +461,9 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "embedding_batch_size": cfg.embedding_batch_size,
             "embedding_max_length": cfg.embedding_max_length,
             "embedding_text_max_chars": cfg.embedding_text_max_chars,
+            "semantic_topn_entity": cfg.semantic_topn_entity,
+            "semantic_topn_chunk": cfg.semantic_topn_chunk,
+            "graph_reserve_topn": cfg.graph_reserve_topn,
             "semantic_topn": cfg.semantic_topn,
             "semantic_candidate_union": cfg.semantic_candidate_union,
             "semantic_scan_batch_size": cfg.semantic_scan_batch_size,
@@ -469,6 +481,12 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "seed_k": cfg.seed_k,
             "pair_top_lp": cfg.pair_top_lp,
             "corridor_top_bc": cfg.corridor_top_bc,
+            "phase1_parallel_ppr": cfg.phase1_parallel_ppr,
+            "phase1_run_shortlist_topk": cfg.phase1_run_shortlist_topk,
+            "pair_shortlist_topb": cfg.pair_shortlist_topb,
+            "phase2_refine_mode": cfg.phase2_refine_mode,
+            "phase2_bidirectional_full_ppr": cfg.phase2_bidirectional_full_ppr,
+            "reuse_semantic_scores_in_final": cfg.reuse_semantic_scores_in_final,
             "trim_on": cfg.trim_on,
             "trim_rho": cfg.trim_rho,
             "ppr_alpha": cfg.ppr_alpha,

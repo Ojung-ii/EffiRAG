@@ -57,7 +57,7 @@ def _get_global_graph(cfg):
     openie_parallel_workers = int(getattr(cfg, "openie_parallel_workers", 4))
     openie_log_every = int(getattr(cfg, "openie_log_every", 200))
     embedding_enabled = bool(getattr(cfg, "embedding_enabled", False))
-    embedding_model_name = str(getattr(cfg, "embedding_model_name", "nvidia/NV-Embed-v2") or "nvidia/NV-Embed-v2")
+    embedding_model_name = str(getattr(cfg, "embedding_model_name", "NVIDIA/NV-Embed-v2") or "NVIDIA/NV-Embed-v2")
     embedding_batch_size = int(getattr(cfg, "embedding_batch_size", 16))
     embedding_max_length = int(getattr(cfg, "embedding_max_length", 256))
     embedding_text_max_chars = int(getattr(cfg, "embedding_text_max_chars", 600))
@@ -552,7 +552,7 @@ def _get_global_semantic_state(global_index_meta):
 
 
 def _query_embedding(question, cfg):
-    model_name = str(getattr(cfg, "embedding_model_name", "nvidia/NV-Embed-v2") or "nvidia/NV-Embed-v2")
+    model_name = str(getattr(cfg, "embedding_model_name", "NVIDIA/NV-Embed-v2") or "NVIDIA/NV-Embed-v2")
     out = encode_texts(
         texts=[question],
         model_name=model_name,
@@ -609,6 +609,65 @@ def _semantic_top_candidates(query_vec, semantic_state, cfg):
     return [node for node, _ in ranked], {node: float(score) for node, score in ranked}
 
 
+def _semantic_topk_candidates_by_type(query_vec, semantic_state, cfg):
+    if semantic_state is None or query_vec is None:
+        return {}, {}
+
+    topn_entity = max(
+        0,
+        int(
+            getattr(
+                cfg,
+                "semantic_topn_entity",
+                getattr(cfg, "semantic_topn", 50),
+            )
+        ),
+    )
+    topn_chunk = max(
+        0,
+        int(
+            getattr(
+                cfg,
+                "semantic_topn_chunk",
+                max(1, int(getattr(cfg, "semantic_topn", 50)) // 2),
+            )
+        ),
+    )
+    scan_bs = max(128, int(getattr(cfg, "semantic_scan_batch_size", 8192)))
+
+    entity_scores = {}
+    if topn_entity > 0:
+        ent_idx, ent_scores = topk_cosine_similarity(
+            query_vector=query_vec,
+            matrix=semantic_state.get("entity_embeddings"),
+            topn=topn_entity,
+            scan_batch_size=scan_bs,
+        )
+        for idx, score in zip(ent_idx.tolist(), ent_scores.tolist()):
+            if idx < 0 or idx >= len(semantic_state.get("entity_ids", [])):
+                continue
+            node = str(semantic_state["entity_ids"][idx])
+            entity_scores[node] = max(float(score), float(entity_scores.get(node, -1.0)))
+
+    chunk_scores = {}
+    if topn_chunk > 0:
+        chunk_idx, chunk_scores_arr = topk_cosine_similarity(
+            query_vector=query_vec,
+            matrix=semantic_state.get("chunk_embeddings"),
+            topn=topn_chunk,
+            scan_batch_size=scan_bs,
+        )
+        for idx, score in zip(chunk_idx.tolist(), chunk_scores_arr.tolist()):
+            if idx < 0 or idx >= len(semantic_state.get("chunk_ids", [])):
+                continue
+            node = str(semantic_state["chunk_ids"][idx])
+            chunk_scores[node] = max(float(score), float(chunk_scores.get(node, -1.0)))
+
+    entity_scores = dict(sorted(entity_scores.items(), key=lambda x: x[1], reverse=True)[:topn_entity])
+    chunk_scores = dict(sorted(chunk_scores.items(), key=lambda x: x[1], reverse=True)[:topn_chunk])
+    return entity_scores, chunk_scores
+
+
 def _load_candidate_vectors(nodes, g, cfg, semantic_state):
     vectors = {}
     pending_nodes = []
@@ -639,7 +698,7 @@ def _load_candidate_vectors(nodes, g, cfg, semantic_state):
     if pending_nodes:
         out = encode_texts(
             texts=pending_texts,
-            model_name=str(getattr(cfg, "embedding_model_name", "nvidia/NV-Embed-v2") or "nvidia/NV-Embed-v2"),
+            model_name=str(getattr(cfg, "embedding_model_name", "NVIDIA/NV-Embed-v2") or "NVIDIA/NV-Embed-v2"),
             batch_size=int(getattr(cfg, "embedding_batch_size", 16)),
             max_length=int(getattr(cfg, "embedding_max_length", 256)),
             max_chars=int(getattr(cfg, "embedding_text_max_chars", 600)),
@@ -1145,6 +1204,460 @@ def _build_sentence_feature_table(sample, selected_sentence_ids, sentence_texts,
     return feature_table
 
 
+def _shortest_distance_with_cap(g, src, dst, cap):
+    max_hops = max(1, int(cap))
+    if src not in g or dst not in g:
+        return max_hops
+    try:
+        d = nx.shortest_path_length(g, src, dst)
+        return min(max_hops, int(d))
+    except Exception:
+        return max_hops
+
+
+def _anchor_graph_reserve_candidates(g, anchor, topn, max_hops):
+    k = max(0, int(topn))
+    if k <= 0 or anchor not in g:
+        return []
+
+    cutoff = max(1, int(max_hops))
+    try:
+        dmap = nx.single_source_shortest_path_length(g, anchor, cutoff=cutoff)
+    except Exception:
+        dmap = {anchor: 0}
+
+    scores = []
+    for node, dist in dmap.items():
+        if node == anchor:
+            continue
+        ntype = g.nodes[node].get("node_type")
+        if ntype not in {"entity", "sentence"}:
+            continue
+        dist_term = 1.0 / float(1 + int(dist))
+        degree_term = min(1.0, float(g.degree(node)) / 20.0)
+        scores.append((node, 0.80 * dist_term + 0.20 * degree_term))
+
+    scores.sort(key=lambda x: x[1], reverse=True)
+    return [node for node, _ in scores[:k]]
+
+
+def _build_anchor_proposals(g, anchors, semantic_entity_scores, semantic_chunk_scores, cfg):
+    topn_entity = max(0, int(getattr(cfg, "semantic_topn_entity", getattr(cfg, "semantic_topn", 50))))
+    topn_chunk = max(0, int(getattr(cfg, "semantic_topn_chunk", max(1, topn_entity // 2))))
+    reserve_topn = max(0, int(getattr(cfg, "graph_reserve_topn", 15)))
+    dist_cap = max(1, int(getattr(cfg, "tau", 4)))
+
+    proposal_by_anchor = {}
+    proposal_scores = {}
+    semantic_scores = {}
+    semantic_scores.update({str(k): float(v) for k, v in (semantic_entity_scores or {}).items()})
+    semantic_scores.update({str(k): float(v) for k, v in (semantic_chunk_scores or {}).items()})
+
+    semantic_entities = list((semantic_entity_scores or {}).items())
+    semantic_chunks = list((semantic_chunk_scores or {}).items())
+
+    for anchor in anchors:
+        try:
+            dmap = nx.single_source_shortest_path_length(g, anchor, cutoff=dist_cap)
+        except Exception:
+            dmap = {}
+
+        ent_ranked = []
+        for node, raw_score in semantic_entities:
+            if node not in g:
+                continue
+            bonus = 0.0
+            if node in dmap:
+                bonus = 1.0 - (float(min(dist_cap, int(dmap[node]))) / float(dist_cap))
+            ent_ranked.append((node, 0.90 * float(raw_score) + 0.10 * bonus))
+
+        chunk_ranked = []
+        for node, raw_score in semantic_chunks:
+            if node not in g:
+                continue
+            bonus = 0.0
+            if node in dmap:
+                bonus = 1.0 - (float(min(dist_cap, int(dmap[node]))) / float(dist_cap))
+            chunk_ranked.append((node, 0.90 * float(raw_score) + 0.10 * bonus))
+
+        ent_ranked.sort(key=lambda x: x[1], reverse=True)
+        chunk_ranked.sort(key=lambda x: x[1], reverse=True)
+        semantic_nodes = [n for n, _ in ent_ranked[:topn_entity]] + [n for n, _ in chunk_ranked[:topn_chunk]]
+        reserve_nodes = _anchor_graph_reserve_candidates(
+            g=g,
+            anchor=anchor,
+            topn=reserve_topn,
+            max_hops=max(2, int(getattr(cfg, "tau", 4))),
+        )
+        merged = _ordered_unique([anchor] + semantic_nodes + reserve_nodes)
+        proposal_by_anchor[anchor] = merged
+
+        for rank, node in enumerate(merged):
+            base = float(semantic_scores.get(node, 0.0))
+            if node in reserve_nodes:
+                base = max(base, 0.05)
+            rank_decay = 1.0 / float(rank + 1)
+            proposal_scores[node] = max(float(proposal_scores.get(node, -1.0e9)), base + 0.02 * rank_decay)
+
+    proposal_nodes = set()
+    for vals in proposal_by_anchor.values():
+        proposal_nodes.update(vals)
+    proposal_nodes = {node for node in proposal_nodes if node in g}
+    return proposal_by_anchor, proposal_nodes, proposal_scores, semantic_scores
+
+
+def _build_reduced_subgraph_from_proposals(g, anchors, proposal_by_anchor, proposal_scores, cfg):
+    if g is None or g.number_of_nodes() <= 0:
+        return g, {"applied": False, "reason": "empty_graph"}
+
+    reduced_max_nodes = max(200, int(getattr(cfg, "ppr_subgraph_max_nodes", 30000)))
+    path_hops = max(2, int(getattr(cfg, "tau", 4)) + 1)
+    path_links_per_anchor = max(1, int(getattr(cfg, "graph_reserve_topn", 15)) // 2)
+
+    keep = set()
+    for anchor in anchors:
+        keep.add(anchor)
+        anchor_props = list(proposal_by_anchor.get(anchor, []) or [])
+        keep.update(anchor_props)
+        for node in anchor_props[:path_links_per_anchor]:
+            if node == anchor or anchor not in g or node not in g:
+                continue
+            dist = _shortest_distance_with_cap(g, anchor, node, path_hops)
+            if dist >= path_hops:
+                continue
+            try:
+                path = nx.shortest_path(g, anchor, node)
+            except Exception:
+                path = []
+            if path:
+                keep.update(path)
+
+    # Keep lightweight connector coverage for relation nodes.
+    connector = set()
+    for node in list(keep):
+        if node not in g:
+            continue
+        for nbr in g.neighbors(node):
+            if g.nodes[nbr].get("node_type") == "relation":
+                connector.add(nbr)
+    keep.update(connector)
+    keep = {node for node in keep if node in g}
+
+    if len(keep) > reduced_max_nodes:
+        mandatory = {a for a in anchors if a in g}
+        budget = max(0, reduced_max_nodes - len(mandatory))
+        ranked = []
+        for node in keep:
+            if node in mandatory:
+                continue
+            base = float(proposal_scores.get(node, 0.0))
+            degree_term = min(1.0, float(g.degree(node)) / 25.0)
+            ranked.append((node, base + 0.02 * degree_term))
+        ranked.sort(key=lambda x: x[1], reverse=True)
+        keep = set(mandatory)
+        keep.update([node for node, _ in ranked[:budget]])
+
+    if not keep:
+        return g, {"applied": False, "reason": "empty_keep_set"}
+    if len(keep) >= g.number_of_nodes():
+        return g, {"applied": False, "reason": "no_reduction"}
+
+    reduced = g.subgraph(sorted(keep)).copy()
+    return reduced, {
+        "applied": True,
+        "nodes_before": int(g.number_of_nodes()),
+        "edges_before": int(g.number_of_edges()),
+        "nodes_after": int(reduced.number_of_nodes()),
+        "edges_after": int(reduced.number_of_edges()),
+        "max_nodes": int(reduced_max_nodes),
+    }
+
+
+def _phase2_pair_shortlist(shortlisted_runs, anchors, g, query_sim_map, support_sim_map, cfg):
+    topb = max(1, int(getattr(cfg, "pair_shortlist_topb", 6)))
+    cap = max(2, int(getattr(cfg, "tau", 4)) + 1)
+    pair_scores = {}
+
+    for run in shortlisted_runs:
+        run_id = int(run.get("run_id", 0))
+        seeds = list(run.get("seeds", []) or [])
+        if not seeds:
+            continue
+        seed_scores = run.get("seed_score_map", {}) or {}
+        for anchor in anchors:
+            anchor_scores = (run.get("anchor_scores", {}) or {}).get(anchor, {}) or {}
+            for seed in seeds:
+                if anchor not in g or seed not in g:
+                    continue
+                dist = _shortest_distance_with_cap(g, anchor, seed, cap)
+                dist_score = 1.0 - (float(dist) / float(cap))
+                anchor_align = float(anchor_scores.get(seed, 0.0))
+                seed_strength = float(seed_scores.get(seed, 0.0))
+                semantic_rel = 0.5 * (
+                    max(float(query_sim_map.get(seed, 0.0)), float(support_sim_map.get(seed, 0.0))) + 1.0
+                )
+
+                bridge_hits = 0
+                for other_anchor in anchors:
+                    if other_anchor == anchor:
+                        continue
+                    d_other = _shortest_distance_with_cap(g, other_anchor, seed, cap)
+                    if d_other < cap:
+                        bridge_hits += 1
+                bridge_potential = float(bridge_hits) / float(max(1, len(anchors) - 1))
+
+                score = (
+                    0.30 * float(anchor_align)
+                    + 0.25 * float(seed_strength)
+                    + 0.20 * float(semantic_rel)
+                    + 0.15 * float(dist_score)
+                    + 0.10 * float(bridge_potential)
+                )
+                pair = (anchor, seed)
+                prev = pair_scores.get(pair)
+                payload = {
+                    "anchor": anchor,
+                    "seed": seed,
+                    "run_id": run_id,
+                    "pair_proxy_score": float(score),
+                    "distance": int(dist),
+                    "anchor_alignment": float(anchor_align),
+                    "seed_strength": float(seed_strength),
+                    "semantic_relevance": float(semantic_rel),
+                    "bridge_potential": float(bridge_potential),
+                }
+                if prev is None or float(payload["pair_proxy_score"]) > float(prev["pair_proxy_score"]):
+                    pair_scores[pair] = payload
+
+    ranked = sorted(pair_scores.values(), key=lambda x: x["pair_proxy_score"], reverse=True)
+    return ranked[:topb]
+
+
+def _phase2_refine_pair_bounded_local(g, pair_item, run_by_id, query_sim_map, support_sim_map, cfg):
+    anchor = pair_item["anchor"]
+    seed = pair_item["seed"]
+    run_id = int(pair_item.get("run_id", 0))
+    run = run_by_id.get(run_id, {})
+    anchor_scores = (run.get("anchor_scores", {}) or {}).get(anchor, {}) or {}
+
+    local_hops = max(2, int(getattr(cfg, "tau", 4)) + 1)
+    max_local_nodes = max(80, int(getattr(cfg, "corridor_top_bc", 20)) * 8)
+    corridor_top_bc = max(1, int(getattr(cfg, "corridor_top_bc", 20)))
+
+    a_nodes = {}
+    z_nodes = {}
+    try:
+        a_nodes = nx.single_source_shortest_path_length(g, anchor, cutoff=local_hops)
+    except Exception:
+        a_nodes = {anchor: 0}
+    try:
+        z_nodes = nx.single_source_shortest_path_length(g, seed, cutoff=local_hops)
+    except Exception:
+        z_nodes = {seed: 0}
+
+    local_nodes = set(a_nodes.keys()).union(z_nodes.keys())
+    if anchor in g and seed in g:
+        try:
+            sp = nx.shortest_path(g, anchor, seed)
+        except Exception:
+            sp = []
+        local_nodes.update(sp)
+    local_nodes.add(anchor)
+    local_nodes.add(seed)
+
+    if len(local_nodes) > max_local_nodes:
+        rank = []
+        for node in local_nodes:
+            da = a_nodes.get(node, local_hops)
+            dz = z_nodes.get(node, local_hops)
+            dist_term = 1.0 / float(1 + min(da, dz))
+            sem_term = 0.5 * (
+                max(float(query_sim_map.get(node, 0.0)), float(support_sim_map.get(node, 0.0))) + 1.0
+            )
+            rank.append((node, 0.70 * dist_term + 0.30 * sem_term))
+        rank.sort(key=lambda x: x[1], reverse=True)
+        kept = [node for node, _ in rank[: max_local_nodes]]
+        local_nodes = set(kept)
+        local_nodes.update([anchor, seed])
+
+    local_nodes = {node for node in local_nodes if node in g}
+    local_subgraph = g.subgraph(sorted(local_nodes)).copy()
+    if local_subgraph.number_of_nodes() <= 0:
+        return None
+
+    local_ppr = _personalized_pagerank(
+        local_subgraph,
+        source=anchor,
+        alpha=float(getattr(cfg, "ppr_alpha", 0.15)),
+        max_iter=min(80, int(getattr(cfg, "ppr_power_max_iter", 100))),
+        tol=max(1.0e-6, float(getattr(cfg, "ppr_power_tol", 1.0e-6))),
+        min_score=max(0.0, float(getattr(cfg, "ppr_min_score", 0.0))),
+    )
+    local_ppr_norm = _normalize_map(local_ppr)
+    anchor_graph_norm = _normalize_map(anchor_scores)
+
+    reverse_raw = {}
+    for node in local_subgraph.nodes:
+        d = _shortest_distance_with_cap(local_subgraph, node, seed, local_hops)
+        reverse_raw[node] = 1.0 - (float(d) / float(local_hops))
+    reverse_norm = _normalize_map(reverse_raw)
+
+    semantic_raw = {}
+    for node in local_subgraph.nodes:
+        semantic_raw[node] = 0.5 * (
+            max(float(query_sim_map.get(node, 0.0)), float(support_sim_map.get(node, 0.0))) + 1.0
+        )
+    semantic_norm = _normalize_map(semantic_raw)
+
+    node_scores = {}
+    for node in local_subgraph.nodes:
+        node_scores[node] = (
+            0.40 * float(local_ppr_norm.get(node, 0.0))
+            + 0.25 * float(reverse_norm.get(node, 0.0))
+            + 0.20 * float(anchor_graph_norm.get(node, 0.0))
+            + 0.15 * float(semantic_norm.get(node, 0.0))
+        )
+
+    ranked = sorted(node_scores.items(), key=lambda x: x[1], reverse=True)
+    top_node_scores = ranked[:corridor_top_bc]
+    if not top_node_scores:
+        return None
+
+    payload = _build_single_corridor_payload(
+        g=g,
+        anchor=anchor,
+        seed=seed,
+        corridor_id=f"c{int(run_id):02d}_{anchor}_{seed}",
+        corridor_score=float(pair_item.get("pair_proxy_score", 0.0)),
+        node_scores=top_node_scores,
+    )
+    payload["pair_proxy_score"] = float(pair_item.get("pair_proxy_score", 0.0))
+    payload["refine_mode"] = str(getattr(cfg, "phase2_refine_mode", "bounded_local") or "bounded_local")
+    return {
+        "pair": (anchor, seed),
+        "payload": payload,
+        "node_scores": top_node_scores,
+    }
+
+
+def _phase2_local_refinement(g, shortlisted_pairs, shortlisted_runs, query_sim_map, support_sim_map, cfg):
+    run_by_id = {int(r.get("run_id", 0)): r for r in (shortlisted_runs or [])}
+    sentence_scores = {}
+    corridor_nodes = set()
+    corridor_payloads = []
+    retained_pairs = []
+
+    for pair_item in shortlisted_pairs:
+        refined = _phase2_refine_pair_bounded_local(
+            g=g,
+            pair_item=pair_item,
+            run_by_id=run_by_id,
+            query_sim_map=query_sim_map,
+            support_sim_map=support_sim_map,
+            cfg=cfg,
+        )
+        if refined is None:
+            continue
+
+        anchor, seed = refined["pair"]
+        retained_pairs.append((anchor, seed))
+        corridor_payloads.append(refined["payload"])
+        corridor_nodes.update([anchor, seed])
+        for node, score in refined["node_scores"]:
+            corridor_nodes.add(node)
+            if g.nodes[node].get("node_type") == "sentence":
+                sentence_scores[node] = max(float(sentence_scores.get(node, 0.0)), float(score))
+
+    if not corridor_nodes:
+        corridor_nodes = set()
+        for pair_item in shortlisted_pairs:
+            corridor_nodes.add(pair_item["anchor"])
+            corridor_nodes.add(pair_item["seed"])
+        corridor_nodes = {node for node in corridor_nodes if node in g}
+
+    if corridor_nodes:
+        corridor_graph = g.subgraph(sorted(corridor_nodes)).copy()
+    else:
+        corridor_graph = g.subgraph([]).copy()
+    return corridor_graph, retained_pairs, sentence_scores, corridor_payloads
+
+
+def _rerank_corridors_hybrid(corridors, g, query_sim_map, support_sim_map, cfg):
+    if not corridors:
+        return []
+
+    sid_to_node = {}
+    for node in g.nodes:
+        if g.nodes[node].get("node_type") != "sentence":
+            continue
+        sid = str(g.nodes[node].get("sentence_id", node))
+        sid_to_node[sid] = node
+
+    reuse_semantic = bool(getattr(cfg, "reuse_semantic_scores_in_final", True))
+    redundancy_w = max(0.0, float(getattr(cfg, "run_score_redundancy_weight", 0.10)))
+
+    base_rows = []
+    for corridor in corridors:
+        main_ids = list(corridor.get("main_path_sentence_ids", []) or [])
+        support_ids = list(corridor.get("support_sentence_ids", []) or [])
+        sent_ids = _ordered_unique(main_ids + support_ids)
+
+        structural = 0.0
+        if main_ids:
+            structural += 0.6
+        structural += 0.2 * min(1.0, float(len(main_ids)) / 2.0)
+        structural += 0.2 * min(1.0, float(len(support_ids)) / 2.0)
+
+        sem_vals = []
+        support_vals = []
+        for sid in sent_ids:
+            node = sid_to_node.get(sid)
+            if node is None:
+                continue
+            if reuse_semantic:
+                sem = 0.5 * (float(query_sim_map.get(node, 0.0)) + 1.0)
+            else:
+                sem = 0.0
+            sup = 0.5 * (float(support_sim_map.get(node, 0.0)) + 1.0)
+            sem_vals.append(sem)
+            support_vals.append(sup)
+        semantic_rel = float(sum(sem_vals) / max(len(sem_vals), 1)) if sem_vals else 0.0
+        answer_support = float(sum(support_vals) / max(len(support_vals), 1)) if support_vals else 0.0
+
+        pair_proxy = float(corridor.get("pair_proxy_score", corridor.get("corridor_score", 0.0)) or 0.0)
+        base_score = 0.45 * structural + 0.25 * semantic_rel + 0.20 * answer_support + 0.10 * pair_proxy
+        base_rows.append(
+            {
+                "corridor": dict(corridor),
+                "base_score": float(base_score),
+                "sentence_set": set(sent_ids),
+            }
+        )
+
+    base_rows.sort(key=lambda x: x["base_score"], reverse=True)
+    selected_sets = []
+    reranked = []
+    for item in base_rows:
+        overlap_penalty = 0.0
+        for prev in selected_sets:
+            inter = len(item["sentence_set"].intersection(prev))
+            union = len(item["sentence_set"].union(prev))
+            if union > 0:
+                overlap_penalty = max(overlap_penalty, float(inter) / float(union))
+        final_score = float(item["base_score"]) - float(redundancy_w) * float(overlap_penalty)
+        payload = dict(item["corridor"])
+        payload["corridor_score"] = float(final_score)
+        payload["final_score_components"] = {
+            "base_score": float(item["base_score"]),
+            "redundancy_penalty": float(overlap_penalty),
+        }
+        reranked.append(payload)
+        selected_sets.append(set(item["sentence_set"]))
+
+    reranked.sort(key=lambda x: float(x.get("corridor_score", 0.0)), reverse=True)
+    return reranked
+
+
 def run_graphrag_core(
     sample,
     cfg,
@@ -1153,6 +1666,13 @@ def run_graphrag_core(
     enable_trim,
 ):
     start = time.perf_counter()
+    stage_ms = {
+        "proposal_time_ms": 0.0,
+        "phase1_ppr_time_ms": 0.0,
+        "run_scoring_time_ms": 0.0,
+        "phase2_refinement_time_ms": 0.0,
+        "final_render_time_ms": 0.0,
+    }
     graph_scope = "query_context"
     global_index_meta = {}
     g = None
@@ -1166,91 +1686,52 @@ def run_graphrag_core(
         artifacts = build_document_entity_graph(sample)
         g = artifacts.graph
 
-    anchors = select_lexical_anchors(sample, g, cfg.max_anchors)
-
+    anchors = select_lexical_anchors(sample, g, int(getattr(cfg, "max_anchors", 5)))
     if not anchors:
         entities = [n for n in g.nodes if g.nodes[n].get("node_type") == "entity"]
         entities.sort(key=lambda n: g.degree(n), reverse=True)
-        anchors = entities[: cfg.max_anchors]
+        anchors = entities[: int(getattr(cfg, "max_anchors", 5))]
 
-    rng = random.Random(cfg.random_seed)
-    per_anchor_runs = {a: [] for a in anchors}
+    rng = random.Random(int(getattr(cfg, "random_seed", 42)))
     show_inner_progress = bool(getattr(cfg, "show_inner_progress", True))
     if int(getattr(cfg, "num_workers", 1)) > 1:
         show_inner_progress = False
 
     ppr_engine = _resolve_ppr_engine(cfg, graph_scope=graph_scope, graph=g)
-    ppr_graph = g
-    ppr_subgraph_applied = False
-    if (
-        bool(getattr(cfg, "ppr_subgraph_enable", True))
-        and graph_scope in {"global_corpus", "prebuilt_igraph"}
-        and anchors
-    ):
-        maybe_sub = _build_anchor_subgraph(
-            g=g,
-            anchors=anchors,
-            hops=int(getattr(cfg, "ppr_subgraph_hops", 2)),
-            max_nodes=int(getattr(cfg, "ppr_subgraph_max_nodes", 30000)),
-        )
-        if maybe_sub is not g:
-            ppr_graph = maybe_sub
-            ppr_subgraph_applied = True
-            anchors = [a for a in anchors if a in ppr_graph]
-            per_anchor_runs = {a: [] for a in anchors}
-
-    n_runs = max(1, cfg.samples_per_anchor)
-    for _ in tqdm(
-        range(n_runs),
-        total=n_runs,
-        desc="PPR perturb",
-        leave=False,
-        disable=not show_inner_progress,
-    ):
-        run_seed = int(rng.random() * 10**9)
-        if ppr_engine == "power":
-            h = _stochastic_perturb_graph(ppr_graph, rng, cfg.edge_drop_prob)
-            run_map = _compute_ppr_batch(
-                g=h,
-                sources=anchors,
-                cfg=cfg,
-                engine="power",
-                run_seed=run_seed,
-                show_progress=show_inner_progress,
-                desc="Anchor PPR",
-            )
-        else:
-            run_map = _compute_ppr_batch(
-                g=ppr_graph,
-                sources=anchors,
-                cfg=cfg,
-                engine="mc",
-                run_seed=run_seed,
-                show_progress=show_inner_progress,
-                desc="Anchor PPR",
-            )
-
-        for anchor in anchors:
-            per_anchor_runs[anchor].append(run_map.get(anchor, {}))
+    proposal_start = time.perf_counter()
 
     semantic_diag = {
         "enabled": bool(getattr(cfg, "embedding_enabled", False)),
         "applied": False,
         "error": "",
         "model_name": str(getattr(cfg, "embedding_model_name", "") or ""),
-        "semantic_topn": int(getattr(cfg, "semantic_topn", 50)),
-        "semantic_candidate_union": bool(getattr(cfg, "semantic_candidate_union", True)),
+        "semantic_topn_entity": int(
+            getattr(cfg, "semantic_topn_entity", getattr(cfg, "semantic_topn", 50))
+        ),
+        "semantic_topn_chunk": int(
+            getattr(
+                cfg,
+                "semantic_topn_chunk",
+                max(1, int(getattr(cfg, "semantic_topn", 50)) // 2),
+            )
+        ),
+        "graph_reserve_topn": int(getattr(cfg, "graph_reserve_topn", 15)),
         "index_available": False,
-        "semantic_candidates": [],
-        "semantic_candidate_scores": {},
         "query_embedding_dim": 0,
+        "semantic_entity_candidates": [],
+        "semantic_chunk_candidates": [],
+        "semantic_entity_scores": {},
+        "semantic_chunk_scores": {},
+        "proposal_by_anchor": {},
+        "proposal_candidate_count": 0,
         "candidate_vector_count": 0,
     }
 
     query_vec = None
     semantic_state = None
-    semantic_candidates = []
-    semantic_candidate_scores = {}
+    semantic_entity_scores = {}
+    semantic_chunk_scores = {}
+
     if semantic_diag["enabled"]:
         query_vec, qerr = _query_embedding(sample.question, cfg)
         if query_vec is None:
@@ -1260,50 +1741,127 @@ def run_graphrag_core(
             if graph_scope in {"global_corpus", "prebuilt_igraph"}:
                 semantic_state = _get_global_semantic_state(global_index_meta)
                 semantic_diag["index_available"] = semantic_state is not None
+
             if semantic_state is not None:
-                semantic_candidates, semantic_candidate_scores = _semantic_top_candidates(query_vec, semantic_state, cfg)
+                semantic_entity_scores, semantic_chunk_scores = _semantic_topk_candidates_by_type(
+                    query_vec=query_vec,
+                    semantic_state=semantic_state,
+                    cfg=cfg,
+                )
+                # Reuse offline support cache to cheaply expand entity proposals into chunk proposals.
+                support_cache = semantic_state.get("entity_topk_chunks_cache", {}) if isinstance(semantic_state, dict) else {}
+                if isinstance(support_cache, dict):
+                    for ent_node, ent_score in list(semantic_entity_scores.items()):
+                        linked_chunks = list(support_cache.get(str(ent_node), []) or [])
+                        for rank, chunk_node in enumerate(linked_chunks[: int(getattr(cfg, "semantic_topn_chunk", 15))]):
+                            bonus = float(ent_score) * (0.85 - 0.03 * float(rank))
+                            if chunk_node in g:
+                                semantic_chunk_scores[chunk_node] = max(
+                                    float(semantic_chunk_scores.get(chunk_node, -1.0)),
+                                    float(bonus),
+                                )
                 semantic_diag["applied"] = True
-            elif ppr_graph.number_of_nodes() <= 5000:
-                local_nodes = [
-                    n
-                    for n in ppr_graph.nodes
-                    if ppr_graph.nodes[n].get("node_type") in {"entity", "sentence"}
-                ]
-                local_vectors, local_err = _load_candidate_vectors(local_nodes, ppr_graph, cfg, semantic_state=None)
+            elif g.number_of_nodes() <= 5000:
+                local_nodes = [n for n in g.nodes if g.nodes[n].get("node_type") in {"entity", "sentence"}]
+                local_vectors, local_err = _load_candidate_vectors(local_nodes, g, cfg, semantic_state=None)
                 if local_err:
                     semantic_diag["error"] = local_err
                 else:
                     local_scores = {n: cosine_similarity(query_vec, vec) for n, vec in local_vectors.items()}
-                    ranked = sorted(local_scores.items(), key=lambda x: x[1], reverse=True)
-                    topn = max(0, int(getattr(cfg, "semantic_topn", 50)))
-                    ranked = ranked[:topn]
-                    semantic_candidates = [n for n, _ in ranked]
-                    semantic_candidate_scores = {n: float(s) for n, s in ranked}
+                    ent = [(n, s) for n, s in local_scores.items() if g.nodes[n].get("node_type") == "entity"]
+                    chk = [(n, s) for n, s in local_scores.items() if g.nodes[n].get("node_type") == "sentence"]
+                    ent.sort(key=lambda x: x[1], reverse=True)
+                    chk.sort(key=lambda x: x[1], reverse=True)
+                    t_ent = max(0, int(getattr(cfg, "semantic_topn_entity", getattr(cfg, "semantic_topn", 50))))
+                    t_chk = max(0, int(getattr(cfg, "semantic_topn_chunk", max(1, t_ent // 2))))
+                    semantic_entity_scores = {n: float(s) for n, s in ent[:t_ent]}
+                    semantic_chunk_scores = {n: float(s) for n, s in chk[:t_chk]}
                     semantic_diag["applied"] = True
             else:
                 semantic_diag["error"] = "semantic_index_unavailable_for_large_graph"
-    semantic_diag["semantic_candidates"] = [str(n) for n in semantic_candidates]
-    semantic_diag["semantic_candidate_scores"] = {str(k): float(v) for k, v in semantic_candidate_scores.items()}
 
-    run_base = []
-    num_runs = n_runs
-    for run_id in tqdm(
-        range(num_runs),
-        total=num_runs,
-        desc="Seed selection",
+    proposal_by_anchor, proposal_nodes, proposal_scores, semantic_scores = _build_anchor_proposals(
+        g=g,
+        anchors=anchors,
+        semantic_entity_scores=semantic_entity_scores,
+        semantic_chunk_scores=semantic_chunk_scores,
+        cfg=cfg,
+    )
+    reduced_graph, reduced_diag = _build_reduced_subgraph_from_proposals(
+        g=g,
+        anchors=anchors,
+        proposal_by_anchor=proposal_by_anchor,
+        proposal_scores=proposal_scores,
+        cfg=cfg,
+    )
+    if reduced_graph is None or reduced_graph.number_of_nodes() <= 0:
+        reduced_graph = g
+        reduced_diag = {"applied": False, "reason": "fallback_to_full_graph"}
+
+    anchors = [a for a in anchors if a in reduced_graph]
+    if not anchors:
+        entities = [n for n in reduced_graph.nodes if reduced_graph.nodes[n].get("node_type") == "entity"]
+        entities.sort(key=lambda n: reduced_graph.degree(n), reverse=True)
+        anchors = entities[: int(getattr(cfg, "max_anchors", 5))]
+
+    semantic_diag["semantic_entity_candidates"] = [str(n) for n in semantic_entity_scores.keys()]
+    semantic_diag["semantic_chunk_candidates"] = [str(n) for n in semantic_chunk_scores.keys()]
+    semantic_diag["semantic_entity_scores"] = {str(k): float(v) for k, v in semantic_entity_scores.items()}
+    semantic_diag["semantic_chunk_scores"] = {str(k): float(v) for k, v in semantic_chunk_scores.items()}
+    semantic_diag["proposal_by_anchor"] = {
+        str(anchor): [str(n) for n in list(nodes or [])]
+        for anchor, nodes in proposal_by_anchor.items()
+    }
+    semantic_diag["proposal_candidate_count"] = int(len(proposal_nodes))
+    stage_ms["proposal_time_ms"] = float((time.perf_counter() - proposal_start) * 1000.0)
+
+    phase1_start = time.perf_counter()
+    per_anchor_runs = {a: [] for a in anchors}
+    n_runs = max(1, int(getattr(cfg, "samples_per_anchor", 3)))
+    for _ in tqdm(
+        range(n_runs),
+        total=n_runs,
+        desc="Phase1 stochastic PPR",
         leave=False,
         disable=not show_inner_progress,
     ):
+        run_seed = int(rng.random() * 10**9)
+        if ppr_engine == "power":
+            h = _stochastic_perturb_graph(reduced_graph, rng, float(getattr(cfg, "edge_drop_prob", 0.1)))
+            run_map = _compute_ppr_batch(
+                g=h,
+                sources=anchors,
+                cfg=cfg,
+                engine="power",
+                run_seed=run_seed,
+                show_progress=show_inner_progress,
+                desc="Phase1 Anchor PPR",
+            )
+        else:
+            run_map = _compute_ppr_batch(
+                g=reduced_graph,
+                sources=anchors,
+                cfg=cfg,
+                engine="mc",
+                run_seed=run_seed,
+                show_progress=show_inner_progress,
+                desc="Phase1 Anchor PPR",
+            )
+        for anchor in anchors:
+            per_anchor_runs[anchor].append(run_map.get(anchor, {}))
+    stage_ms["phase1_ppr_time_ms"] = float((time.perf_counter() - phase1_start) * 1000.0)
+
+    run_score_start = time.perf_counter()
+    run_base = []
+    for run_id in range(n_runs):
         agg_scores = {}
         anchor_scores = {}
-
         for anchor in anchors:
-            scores = per_anchor_runs[anchor][run_id]
+            scores = per_anchor_runs.get(anchor, [{}])[run_id]
             anchor_scores[anchor] = scores
             for node, score in scores.items():
-                agg_scores[node] = agg_scores.get(node, 0.0) + score
-
-        graph_candidates = [n for n in _topk_nodes(agg_scores, cfg.candidate_top_t) if n in ppr_graph]
+                agg_scores[node] = agg_scores.get(node, 0.0) + float(score)
+        graph_candidates = [n for n in _topk_nodes(agg_scores, int(getattr(cfg, "candidate_top_t", 20))) if n in reduced_graph]
         run_base.append(
             {
                 "run_id": run_id,
@@ -1313,20 +1871,16 @@ def run_graphrag_core(
             }
         )
 
-    semantic_union_enabled = bool(getattr(cfg, "semantic_candidate_union", True))
-    candidate_universe = set(anchors)
+    candidate_universe = set(anchors).union(set(proposal_nodes))
     for run in run_base:
         candidate_universe.update(run.get("graph_candidates", []))
-    if semantic_union_enabled:
-        candidate_universe.update(semantic_candidates)
-    candidate_universe = {node for node in candidate_universe if node in ppr_graph}
+    candidate_universe = {node for node in candidate_universe if node in reduced_graph}
 
     node_vectors = {}
-    vector_err = ""
     if semantic_diag["enabled"] and query_vec is not None and candidate_universe:
         node_vectors, vector_err = _load_candidate_vectors(
             nodes=sorted(candidate_universe),
-            g=ppr_graph,
+            g=reduced_graph,
             cfg=cfg,
             semantic_state=semantic_state,
         )
@@ -1335,11 +1889,10 @@ def run_graphrag_core(
     semantic_diag["candidate_vector_count"] = int(len(node_vectors))
 
     query_sim_map = {}
-    for node, vec in node_vectors.items():
-        if query_vec is None:
-            break
-        query_sim_map[node] = cosine_similarity(query_vec, vec)
-    for node, score in semantic_candidate_scores.items():
+    if query_vec is not None:
+        for node, vec in node_vectors.items():
+            query_sim_map[node] = cosine_similarity(query_vec, vec)
+    for node, score in semantic_scores.items():
         query_sim_map[node] = max(float(score), float(query_sim_map.get(node, -1.0)))
 
     anchor_vecs = {anchor: node_vectors[anchor] for anchor in anchors if anchor in node_vectors}
@@ -1353,16 +1906,22 @@ def run_graphrag_core(
 
     support_sim_map = {}
     for node in candidate_universe:
-        support_sim_map[node] = _entity_support_similarity(ppr_graph, node, query_sim_map)
+        support_sim_map[node] = _entity_support_similarity(reduced_graph, node, query_sim_map)
 
+    semantic_union_enabled = bool(getattr(cfg, "semantic_candidate_union", True))
     run_results = []
     for run in run_base:
         graph_candidates = list(run.get("graph_candidates", []))
+        proposal_candidates = []
+        for anchor in anchors:
+            proposal_candidates.extend(list(proposal_by_anchor.get(anchor, []) or []))
         if semantic_union_enabled:
-            candidates = _ordered_unique(graph_candidates + list(semantic_candidates))
+            candidates = _ordered_unique(graph_candidates + proposal_candidates)
         else:
             candidates = list(graph_candidates)
-        candidates = [node for node in candidates if node in ppr_graph]
+        candidates = [node for node in candidates if node in reduced_graph]
+        if not candidates:
+            candidates = list(anchors)
 
         if semantic_diag["enabled"] and query_vec is not None:
             seed_score_map, graph_norm, semantic_norm, anchor_norm = _seed_hybrid_scores(
@@ -1378,20 +1937,30 @@ def run_graphrag_core(
             graph_norm = _normalize_map(seed_score_map)
             semantic_norm = {node: 0.0 for node in candidates}
             anchor_norm = {node: 0.0 for node in candidates}
+
         objective_weights = {node: float(seed_score_map.get(node, 0.0)) for node in candidates}
         if max(objective_weights.values(), default=0.0) <= 0.0:
             objective_weights = {node: float(run["agg_scores"].get(node, 0.0)) for node in candidates}
+        seeds = _greedy_seed_set(
+            reduced_graph,
+            candidates,
+            objective_weights,
+            int(getattr(cfg, "seed_k", 4)),
+            int(getattr(cfg, "tau", 4)),
+        )
+        if not seeds and candidates:
+            fallback = sorted(candidates, key=lambda n: float(seed_score_map.get(n, 0.0)), reverse=True)
+            seeds = set(fallback[: max(1, int(getattr(cfg, "seed_k", 4)))])
 
-        seeds = _greedy_seed_set(ppr_graph, candidates, objective_weights, cfg.seed_k, cfg.tau)
         run_results.append(
             {
-                "run_id": run["run_id"],
+                "run_id": int(run["run_id"]),
                 "anchor_scores": run["anchor_scores"],
                 "agg_scores": run["agg_scores"],
                 "graph_candidates": graph_candidates,
-                "semantic_candidates": list(semantic_candidates),
+                "semantic_candidates": proposal_candidates,
                 "candidates": candidates,
-                "seeds": seeds,
+                "seeds": set(seeds),
                 "seed_score_map": seed_score_map,
                 "seed_score_components": {
                     "graph": graph_norm,
@@ -1404,7 +1973,7 @@ def run_graphrag_core(
     if stable_seed_selection and run_results:
         surrogate_universe = set(anchors)
         for run in run_results:
-            surrogate_universe.update(run["candidates"])
+            surrogate_universe.update(run.get("candidates", []))
 
         surrogate_weights = {}
         for node in surrogate_universe:
@@ -1415,126 +1984,173 @@ def run_graphrag_core(
                 vals = [r["agg_scores"].get(node, 0.0) for r in run_results]
                 surrogate_weights[node] = sum(float(v) for v in vals) / max(len(vals), 1)
 
-        if (not semantic_diag["enabled"]) or query_vec is None:
-            best = None
-            best_loss = float("inf")
-            for run in run_results:
-                seeds = run.get("seeds", set())
-                loss = 0.0
-                for node in surrogate_universe:
-                    loss += surrogate_weights[node] * _min_set_distance(ppr_graph, node, seeds, cfg.tau)
-                run["global_loss"] = float(loss)
-                run["surrogate_loss"] = float(loss)
-                run["hybrid_run_score"] = float(-loss)
-                if loss < best_loss:
-                    best_loss = loss
-                    best = run
-            chosen = best if best is not None else run_results[0]
-        else:
-            w_sem = max(0.0, float(getattr(cfg, "run_score_semantic_weight", 0.35)))
-            w_anchor = max(0.0, float(getattr(cfg, "run_score_anchor_weight", 0.20)))
-            w_struct = max(0.0, float(getattr(cfg, "run_score_structure_weight", 0.25)))
-            w_bridge = max(0.0, float(getattr(cfg, "run_score_bridge_weight", 0.15)))
-            w_redundancy = max(0.0, float(getattr(cfg, "run_score_redundancy_weight", 0.05)))
-            total = w_sem + w_anchor + w_struct + w_bridge + w_redundancy
-            if total <= 0.0:
-                w_sem, w_anchor, w_struct, w_bridge, w_redundancy = 0.35, 0.20, 0.25, 0.15, 0.05
-                total = 1.0
-            w_sem /= total
-            w_anchor /= total
-            w_struct /= total
-            w_bridge /= total
-            w_redundancy /= total
+        w_sem = max(0.0, float(getattr(cfg, "run_score_semantic_weight", 0.30)))
+        w_anchor = max(0.0, float(getattr(cfg, "run_score_anchor_weight", 0.20)))
+        w_struct = max(0.0, float(getattr(cfg, "run_score_structure_weight", 0.25)))
+        w_bridge = max(0.0, float(getattr(cfg, "run_score_bridge_weight", 0.15)))
+        w_redundancy = max(0.0, float(getattr(cfg, "run_score_redundancy_weight", 0.10)))
+        total = w_sem + w_anchor + w_struct + w_bridge + w_redundancy
+        if total <= 0.0:
+            w_sem, w_anchor, w_struct, w_bridge, w_redundancy = 0.30, 0.20, 0.25, 0.15, 0.10
+            total = 1.0
+        w_sem /= total
+        w_anchor /= total
+        w_struct /= total
+        w_bridge /= total
+        w_redundancy /= total
 
-            best = None
-            best_score = float("-inf")
-            for run in run_results:
-                run_nodes = _ordered_unique(list(run.get("candidates", [])) + list(run.get("seeds", [])))
-                node_weights = {n: float(run["seed_score_map"].get(n, run["agg_scores"].get(n, 0.0))) for n in run_nodes}
+        best = None
+        best_score = float("-inf")
+        for run in run_results:
+            run_nodes = _ordered_unique(list(run.get("candidates", [])) + list(run.get("seeds", [])))
+            node_weights = {n: float(run["seed_score_map"].get(n, run["agg_scores"].get(n, 0.0))) for n in run_nodes}
 
-                semantic_raw = _weighted_mean(query_sim_map, run_nodes, node_weights)
-                anchor_raw = _weighted_mean(anchor_sim_map, run_nodes, node_weights)
-                semantic_cov = max(0.0, min(1.0, 0.5 * (semantic_raw + 1.0)))
-                anchor_align = max(0.0, min(1.0, 0.5 * (anchor_raw + 1.0)))
-                structural_conn, dispersion_penalty, structural_loss = _run_structural_connectivity(
-                    ppr_graph,
-                    surrogate_universe=surrogate_universe,
-                    surrogate_weights=surrogate_weights,
-                    seeds=run.get("seeds", set()),
-                    tau=cfg.tau,
-                )
-                bridge = _bridge_utility(ppr_graph, anchors=anchors, nodes=run_nodes, tau=cfg.tau)
-                redundancy = _semantic_redundancy_penalty(run.get("seeds", set()), node_vectors=node_vectors)
-
-                run_score = (
-                    w_sem * semantic_cov
-                    + w_anchor * anchor_align
-                    + w_struct * structural_conn
-                    + w_bridge * bridge
-                    - w_redundancy * redundancy
-                )
-                surrogate_loss = (
-                    w_sem * (1.0 - semantic_cov)
-                    + w_anchor * (1.0 - anchor_align)
-                    + w_struct * (1.0 - structural_conn)
-                    + w_bridge * (1.0 - bridge)
-                    + w_redundancy * redundancy
-                    + 0.25 * dispersion_penalty
-                )
-
-                run["run_score_components"] = {
-                    "semantic_coverage": float(semantic_cov),
-                    "anchor_alignment": float(anchor_align),
-                    "structural_connectivity": float(structural_conn),
-                    "bridge_utility": float(bridge),
-                    "redundancy_penalty": float(redundancy),
-                    "dispersion_penalty": float(dispersion_penalty),
-                }
-                run["hybrid_run_score"] = float(run_score)
-                run["surrogate_loss"] = float(surrogate_loss)
-                run["global_loss"] = float(structural_loss)
-                if run_score > best_score:
-                    best_score = run_score
-                    best = run
-
-            chosen = best if best is not None else run_results[0]
-    else:
-        chosen = (
-            run_results[0]
-            if run_results
-            else {
-                "run_id": 0,
-                "anchor_scores": {},
-                "graph_candidates": [],
-                "semantic_candidates": [],
-                "candidates": [],
-                "seeds": set(),
-                "agg_scores": {},
-                "seed_score_map": {},
-                "seed_score_components": {"graph": {}, "semantic": {}, "anchor": {}},
+            semantic_raw = _weighted_mean(query_sim_map, run_nodes, node_weights)
+            anchor_raw = _weighted_mean(anchor_sim_map, run_nodes, node_weights)
+            semantic_cov = max(0.0, min(1.0, 0.5 * (semantic_raw + 1.0)))
+            anchor_align = max(0.0, min(1.0, 0.5 * (anchor_raw + 1.0)))
+            structural_conn, dispersion_penalty, structural_loss = _run_structural_connectivity(
+                reduced_graph,
+                surrogate_universe=surrogate_universe,
+                surrogate_weights=surrogate_weights,
+                seeds=run.get("seeds", set()),
+                tau=int(getattr(cfg, "tau", 4)),
+            )
+            bridge = _bridge_utility(
+                reduced_graph,
+                anchors=anchors,
+                nodes=run_nodes,
+                tau=int(getattr(cfg, "tau", 4)),
+            )
+            redundancy = _semantic_redundancy_penalty(run.get("seeds", set()), node_vectors=node_vectors)
+            run_score = (
+                w_sem * semantic_cov
+                + w_anchor * anchor_align
+                + w_struct * structural_conn
+                + w_bridge * bridge
+                - w_redundancy * redundancy
+            )
+            surrogate_loss = (
+                w_sem * (1.0 - semantic_cov)
+                + w_anchor * (1.0 - anchor_align)
+                + w_struct * (1.0 - structural_conn)
+                + w_bridge * (1.0 - bridge)
+                + w_redundancy * redundancy
+                + 0.25 * dispersion_penalty
+            )
+            run["run_score_components"] = {
+                "semantic_coverage": float(semantic_cov),
+                "anchor_alignment": float(anchor_align),
+                "structural_connectivity": float(structural_conn),
+                "bridge_utility": float(bridge),
+                "redundancy_penalty": float(redundancy),
+                "dispersion_penalty": float(dispersion_penalty),
             }
-        )
+            run["hybrid_run_score"] = float(run_score)
+            run["surrogate_loss"] = float(surrogate_loss)
+            run["global_loss"] = float(structural_loss)
+            if run_score > best_score:
+                best_score = run_score
+                best = run
+        chosen = best if best is not None else run_results[0]
+    else:
+        for run in run_results:
+            run["hybrid_run_score"] = float(sum(run.get("seed_score_map", {}).values()))
+            run["surrogate_loss"] = float(-run["hybrid_run_score"])
+            run["global_loss"] = 0.0
+            run["run_score_components"] = {}
+        chosen = run_results[0] if run_results else {
+            "run_id": 0,
+            "anchor_scores": {},
+            "graph_candidates": [],
+            "semantic_candidates": [],
+            "candidates": [],
+            "seeds": set(),
+            "agg_scores": {},
+            "seed_score_map": {},
+            "seed_score_components": {"graph": {}, "semantic": {}, "anchor": {}},
+            "run_score_components": {},
+            "hybrid_run_score": 0.0,
+            "surrogate_loss": 0.0,
+            "global_loss": 0.0,
+        }
 
-    corridor, retained_pairs, sentence_scores, corridor_payloads = _build_corridor(
-        g=ppr_graph,
+    shortlist_k = max(1, int(getattr(cfg, "phase1_run_shortlist_topk", 2)))
+    ranked_runs = sorted(run_results, key=lambda r: float(r.get("hybrid_run_score", 0.0)), reverse=True)
+    shortlisted_runs = ranked_runs[:shortlist_k] if ranked_runs else [chosen]
+    chosen = shortlisted_runs[0]
+    stage_ms["run_scoring_time_ms"] = float((time.perf_counter() - run_score_start) * 1000.0)
+
+    phase2_start = time.perf_counter()
+    pair_shortlist = _phase2_pair_shortlist(
+        shortlisted_runs=shortlisted_runs,
         anchors=anchors,
-        seeds=chosen["seeds"],
-        anchor_scores_by_node=chosen["anchor_scores"],
+        g=reduced_graph,
+        query_sim_map=query_sim_map,
+        support_sim_map=support_sim_map,
         cfg=cfg,
-        ppr_engine=ppr_engine,
-        pair_top_lp=cfg.pair_top_lp,
-        corridor_top_bc=cfg.corridor_top_bc,
-        show_progress=show_inner_progress,
+    )
+    if not pair_shortlist and chosen.get("seeds"):
+        fallback = []
+        for anchor in anchors:
+            for seed in list(chosen.get("seeds", [])):
+                fallback.append(
+                    {
+                        "anchor": anchor,
+                        "seed": seed,
+                        "run_id": int(chosen.get("run_id", 0)),
+                        "pair_proxy_score": float(chosen.get("seed_score_map", {}).get(seed, 0.0)),
+                        "distance": int(_shortest_distance_with_cap(reduced_graph, anchor, seed, int(getattr(cfg, "tau", 4)) + 1)),
+                        "anchor_alignment": float((chosen.get("anchor_scores", {}).get(anchor, {}) or {}).get(seed, 0.0)),
+                        "seed_strength": float(chosen.get("seed_score_map", {}).get(seed, 0.0)),
+                        "semantic_relevance": float(
+                            0.5
+                            * (
+                                max(float(query_sim_map.get(seed, 0.0)), float(support_sim_map.get(seed, 0.0)))
+                                + 1.0
+                            )
+                        ),
+                        "bridge_potential": 0.0,
+                    }
+                )
+        fallback.sort(key=lambda x: x["pair_proxy_score"], reverse=True)
+        pair_shortlist = fallback[: max(1, int(getattr(cfg, "pair_shortlist_topb", 6)))]
+
+    corridor, retained_pairs, sentence_scores, corridor_payloads = _phase2_local_refinement(
+        g=reduced_graph,
+        shortlisted_pairs=pair_shortlist,
+        shortlisted_runs=shortlisted_runs,
+        query_sim_map=query_sim_map,
+        support_sim_map=support_sim_map,
+        cfg=cfg,
+    )
+    stage_ms["phase2_refinement_time_ms"] = float((time.perf_counter() - phase2_start) * 1000.0)
+
+    final_start = time.perf_counter()
+    corridor_payloads = _rerank_corridors_hybrid(
+        corridors=corridor_payloads,
+        g=reduced_graph,
+        query_sim_map=query_sim_map,
+        support_sim_map=support_sim_map,
+        cfg=cfg,
     )
 
     final_graph = corridor
-    if enable_trim and cfg.trim_on:
-        final_graph = _greedy_trim(corridor.copy(), anchors=anchors, seeds=chosen["seeds"], rho=cfg.trim_rho)
+    if enable_trim and bool(getattr(cfg, "trim_on", True)):
+        final_graph = _greedy_trim(
+            corridor.copy(),
+            anchors=anchors,
+            seeds=set(chosen.get("seeds", set())),
+            rho=float(getattr(cfg, "trim_rho", 0.6)),
+        )
 
     selected_nodes = set(final_graph.nodes())
     selected_sentence_ids, selected_sentences, selected_sentence_score_map = _extract_sentence_payload(
-        g, selected_nodes, sentence_scores
+        g,
+        selected_nodes,
+        sentence_scores,
     )
+
     embedding_diag = {
         "enabled": bool(getattr(cfg, "embedding_enabled", False)),
         "applied": False,
@@ -1576,17 +2192,12 @@ def run_graphrag_core(
         sentence_score_map=selected_sentence_score_map,
         corridors=filtered_corridors,
     )
+    stage_ms["final_render_time_ms"] = float((time.perf_counter() - final_start) * 1000.0)
 
     anchor_results = []
     diag_topn = max(1, int(getattr(cfg, "anchor_diag_topn", 10)))
     diag_full = bool(getattr(cfg, "anchor_diag_store_full_scores", False))
-    for anchor in tqdm(
-        anchors,
-        total=len(anchors),
-        desc="Anchor diagnostics",
-        leave=False,
-        disable=not show_inner_progress,
-    ):
+    for anchor in anchors:
         for sample_idx, scores in enumerate(per_anchor_runs.get(anchor, [])):
             top_candidates = _topk_nodes(scores, diag_topn)
             if diag_full:
@@ -1608,7 +2219,7 @@ def run_graphrag_core(
         sample_id=sample.qid,
         method=method_name,
         anchors=anchors,
-        seeds=sorted(chosen["seeds"]),
+        seeds=sorted(chosen.get("seeds", set())),
         selected_nodes=sorted(selected_nodes),
         selected_sentence_ids=selected_sentence_ids,
         selected_sentences=selected_sentences,
@@ -1619,21 +2230,26 @@ def run_graphrag_core(
             "global_index": global_index_meta if graph_scope in {"global_corpus", "prebuilt_igraph"} else {},
             "ppr_engine_requested": str(getattr(cfg, "ppr_engine", "auto")),
             "ppr_engine_effective": ppr_engine,
-            "ppr_subgraph_applied": bool(ppr_subgraph_applied),
-            "ppr_graph_nodes": int(ppr_graph.number_of_nodes()),
-            "ppr_graph_edges": int(ppr_graph.number_of_edges()),
-            "best_run_id": chosen.get("run_id", 0),
+            "phase1_parallel_ppr": bool(getattr(cfg, "phase1_parallel_ppr", True)),
+            "phase2_refine_mode": str(getattr(cfg, "phase2_refine_mode", "bounded_local") or "bounded_local"),
+            "phase2_bidirectional_full_ppr": bool(getattr(cfg, "phase2_bidirectional_full_ppr", False)),
+            "reuse_semantic_scores_in_final": bool(getattr(cfg, "reuse_semantic_scores_in_final", True)),
+            "ppr_graph_nodes": int(reduced_graph.number_of_nodes()),
+            "ppr_graph_edges": int(reduced_graph.number_of_edges()),
+            "proposal_reduced_subgraph": reduced_diag,
+            "best_run_id": int(chosen.get("run_id", 0)),
             "best_run_score": float(chosen.get("hybrid_run_score", 0.0) or 0.0),
             "best_run_score_components": chosen.get("run_score_components", {}) or {},
             "best_seed_score_components": chosen.get("seed_score_components", {}) or {},
-            "num_seeds": len(chosen["seeds"]),
-            "num_candidates_graph": len(chosen.get("graph_candidates", []) or []),
-            "num_candidates_semantic": len(chosen.get("semantic_candidates", []) or []),
-            "num_candidates_union": len(chosen.get("candidates", []) or []),
+            "num_seeds": int(len(chosen.get("seeds", set()))),
+            "num_candidates_graph": int(len(chosen.get("graph_candidates", []) or [])),
+            "num_candidates_semantic": int(len(chosen.get("semantic_candidates", []) or [])),
+            "num_candidates_union": int(len(chosen.get("candidates", []) or [])),
             "retained_pairs": [[a, z] for a, z in retained_pairs],
-            "num_corridors": len(filtered_corridors),
-            "corridor_nodes_before_trim": corridor.number_of_nodes(),
-            "corridor_nodes_after_trim": final_graph.number_of_nodes(),
+            "pair_shortlist": pair_shortlist,
+            "num_corridors": int(len(filtered_corridors)),
+            "corridor_nodes_before_trim": int(corridor.number_of_nodes()),
+            "corridor_nodes_after_trim": int(final_graph.number_of_nodes()),
             "sentence_scores": sentence_scores,
             "sentence_feature_table": sentence_feature_table,
             "semantic_selection": semantic_diag,
@@ -1656,11 +2272,13 @@ def run_graphrag_core(
                 }
                 for r in run_results
             ],
+            "shortlisted_run_ids": [int(r.get("run_id", 0)) for r in shortlisted_runs],
             "embedding_rerank": embedding_diag,
             "stable_seed_selection": stable_seed_selection,
-            "trim_enabled": enable_trim and cfg.trim_on,
+            "trim_enabled": bool(enable_trim and getattr(cfg, "trim_on", True)),
             "anchor_diag_topn": int(diag_topn),
             "anchor_diag_store_full_scores": bool(diag_full),
+            "latency_breakdown_ms": stage_ms,
         },
         latency_ms=latency_ms,
     )

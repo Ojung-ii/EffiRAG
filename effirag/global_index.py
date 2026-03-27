@@ -1356,6 +1356,67 @@ def _read_json_list(path):
     return []
 
 
+def _write_json_obj(path, payload):
+    with Path(path).open("w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
+
+
+def _read_json_obj(path):
+    p = Path(path)
+    if not p.exists():
+        return {}
+    with p.open("r", encoding="utf-8") as f:
+        payload = json.load(f)
+    if isinstance(payload, dict):
+        return payload
+    return {}
+
+
+def _build_entity_chunk_support_mapping(g):
+    entity_to_chunks = {}
+    chunk_to_entities = {}
+
+    for u, v in g.edges:
+        u_type = str(g.nodes[u].get("node_type", "") or "")
+        v_type = str(g.nodes[v].get("node_type", "") or "")
+        support_layer = str(g[u][v].get("support_layer", "") or "")
+
+        is_support_edge = (support_layer == "entity_chunk") or ({u_type, v_type} == {"entity", "sentence"})
+        if not is_support_edge:
+            continue
+
+        if u_type == "entity" and v_type == "sentence":
+            entity = str(u)
+            chunk = str(v)
+        elif v_type == "entity" and u_type == "sentence":
+            entity = str(v)
+            chunk = str(u)
+        else:
+            continue
+
+        entity_to_chunks.setdefault(entity, set()).add(chunk)
+        chunk_to_entities.setdefault(chunk, set()).add(entity)
+
+    entity_to_chunks = {
+        key: sorted(list(vals))
+        for key, vals in entity_to_chunks.items()
+    }
+    chunk_to_entities = {
+        key: sorted(list(vals))
+        for key, vals in chunk_to_entities.items()
+    }
+    return entity_to_chunks, chunk_to_entities
+
+
+def _build_support_lookup_cache(mapping, topk=32):
+    k = max(1, int(topk))
+    cache = {}
+    for key, values in (mapping or {}).items():
+        seq = [str(v) for v in list(values or []) if str(v).strip()]
+        cache[str(key)] = seq[:k]
+    return cache
+
+
 def _encode_records_to_files(
     records,
     index_dir,
@@ -1468,6 +1529,19 @@ def _build_semantic_index_artifacts(
         show_progress=show_progress,
     )
 
+    entity_to_chunks, chunk_to_entities = _build_entity_chunk_support_mapping(g)
+    support_map_path = Path(index_dir) / "entity_chunk_support_map.json"
+    support_map_payload = {
+        "entity_to_chunks": entity_to_chunks,
+        "chunk_to_entities": chunk_to_entities,
+    }
+    _write_json_obj(support_map_path, support_map_payload)
+
+    entity_topk_cache_path = Path(index_dir) / "entity_topk_chunks_cache.json"
+    chunk_topk_cache_path = Path(index_dir) / "chunk_topk_entities_cache.json"
+    _write_json_obj(entity_topk_cache_path, _build_support_lookup_cache(entity_to_chunks, topk=32))
+    _write_json_obj(chunk_topk_cache_path, _build_support_lookup_cache(chunk_to_entities, topk=32))
+
     dim = int(entity_info.get("dim", 0) or chunk_info.get("dim", 0))
     if entity_info.get("count", 0) > 0 and chunk_info.get("count", 0) > 0:
         if int(entity_info.get("dim", 0)) != int(chunk_info.get("dim", 0)):
@@ -1486,6 +1560,11 @@ def _build_semantic_index_artifacts(
         "entity_embeddings_path": str(entity_info.get("embeddings_path", "")),
         "chunk_ids_path": str(chunk_info.get("ids_path", "")),
         "chunk_embeddings_path": str(chunk_info.get("embeddings_path", "")),
+        "entity_chunk_support_map_path": str(support_map_path.resolve()),
+        "entity_topk_chunks_cache_path": str(entity_topk_cache_path.resolve()),
+        "chunk_topk_entities_cache_path": str(chunk_topk_cache_path.resolve()),
+        "entity_support_count": int(len(entity_to_chunks)),
+        "chunk_support_count": int(len(chunk_to_entities)),
         "build_ms": float((time.perf_counter() - start) * 1000.0),
     }
     meta_path = Path(index_dir) / "semantic_index_meta.json"
@@ -1518,6 +1597,9 @@ def load_semantic_index(semantic_meta, mmap_mode="r"):
     chunk_ids_path = _resolve(meta.get("chunk_ids_path", ""))
     entity_emb_path = _resolve(meta.get("entity_embeddings_path", ""))
     chunk_emb_path = _resolve(meta.get("chunk_embeddings_path", ""))
+    support_map_path = _resolve(meta.get("entity_chunk_support_map_path", ""))
+    entity_topk_cache_path = _resolve(meta.get("entity_topk_chunks_cache_path", ""))
+    chunk_topk_cache_path = _resolve(meta.get("chunk_topk_entities_cache_path", ""))
 
     if not Path(entity_ids_path).exists() or not Path(chunk_ids_path).exists():
         return None
@@ -1536,6 +1618,11 @@ def load_semantic_index(semantic_meta, mmap_mode="r"):
 
     entity_id_to_idx = {str(node_id): idx for idx, node_id in enumerate(entity_ids)}
     chunk_id_to_idx = {str(node_id): idx for idx, node_id in enumerate(chunk_ids)}
+    support_map_payload = _read_json_obj(support_map_path) if support_map_path else {}
+    entity_to_chunks = support_map_payload.get("entity_to_chunks", {}) if isinstance(support_map_payload, dict) else {}
+    chunk_to_entities = support_map_payload.get("chunk_to_entities", {}) if isinstance(support_map_payload, dict) else {}
+    entity_topk_cache = _read_json_obj(entity_topk_cache_path) if entity_topk_cache_path else {}
+    chunk_topk_cache = _read_json_obj(chunk_topk_cache_path) if chunk_topk_cache_path else {}
     return {
         "meta": meta,
         "entity_ids": entity_ids,
@@ -1544,6 +1631,10 @@ def load_semantic_index(semantic_meta, mmap_mode="r"):
         "chunk_embeddings": chunk_embeddings,
         "entity_id_to_idx": entity_id_to_idx,
         "chunk_id_to_idx": chunk_id_to_idx,
+        "entity_to_chunks": entity_to_chunks if isinstance(entity_to_chunks, dict) else {},
+        "chunk_to_entities": chunk_to_entities if isinstance(chunk_to_entities, dict) else {},
+        "entity_topk_chunks_cache": entity_topk_cache if isinstance(entity_topk_cache, dict) else {},
+        "chunk_topk_entities_cache": chunk_topk_cache if isinstance(chunk_topk_cache, dict) else {},
     }
 
 
@@ -1729,7 +1820,7 @@ def load_or_build_global_index(
     prebuilt_igraph_format="hipporag_pickle",
     prebuilt_entity_token_limit=6,
     embedding_enabled=False,
-    embedding_model_name="nvidia/NV-Embed-v2",
+    embedding_model_name="NVIDIA/NV-Embed-v2",
     embedding_batch_size=8,
     embedding_max_length=256,
     embedding_text_max_chars=600,
@@ -1800,7 +1891,7 @@ def load_or_build_global_index(
                     semantic_meta = _build_semantic_index_artifacts(
                         g=graph,
                         index_dir=index_dir,
-                        model_name=build_config.get("embedding_model_name", "nvidia/NV-Embed-v2"),
+                        model_name=build_config.get("embedding_model_name", "NVIDIA/NV-Embed-v2"),
                         batch_size=int(build_config.get("embedding_batch_size", 8)),
                         max_length=int(build_config.get("embedding_max_length", 256)),
                         max_chars=int(build_config.get("embedding_text_max_chars", 600)),
@@ -1889,7 +1980,7 @@ def load_or_build_global_index(
         semantic_meta = _build_semantic_index_artifacts(
             g=graph,
             index_dir=index_dir,
-            model_name=build_config.get("embedding_model_name", "nvidia/NV-Embed-v2"),
+            model_name=build_config.get("embedding_model_name", "NVIDIA/NV-Embed-v2"),
             batch_size=int(build_config.get("embedding_batch_size", 8)),
             max_length=int(build_config.get("embedding_max_length", 256)),
             max_chars=int(build_config.get("embedding_text_max_chars", 600)),
