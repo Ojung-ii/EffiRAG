@@ -2648,6 +2648,11 @@ def _phase2_refine_pair_bounded_local(g, pair_item, run_by_id, query_sim_map, su
         node_scores=top_node_scores,
     )
     payload["pair_proxy_score"] = float(pair_item.get("pair_proxy_score", 0.0))
+    payload["anchor_alignment"] = float(pair_item.get("anchor_alignment", 0.0))
+    payload["seed_strength"] = float(pair_item.get("seed_strength", 0.0))
+    payload["semantic_relevance"] = float(pair_item.get("semantic_relevance", 0.0))
+    payload["bridge_potential"] = float(pair_item.get("bridge_potential", 0.0))
+    payload["distance"] = int(pair_item.get("distance", max(1, int(getattr(cfg, "tau", 4)) + 1)))
     payload["refine_mode"] = str(getattr(cfg, "phase2_refine_mode", "bounded_local") or "bounded_local")
     return {
         "pair": (anchor, seed),
@@ -2739,6 +2744,9 @@ def _rerank_corridors_hybrid(corridors, g, query_sim_map, support_sim_map, cfg):
             support_vals.append(sup)
         semantic_rel = float(sum(sem_vals) / max(len(sem_vals), 1)) if sem_vals else 0.0
         answer_support = float(sum(support_vals) / max(len(support_vals), 1)) if support_vals else 0.0
+        support_density = float(len(support_ids)) / float(max(1, len(sent_ids)))
+        anchor_alignment = float(corridor.get("anchor_alignment", 0.0) or 0.0)
+        bridge_utility = float(corridor.get("bridge_potential", 0.0) or 0.0)
 
         pair_proxy = float(corridor.get("pair_proxy_score", corridor.get("corridor_score", 0.0)) or 0.0)
         base_score = 0.45 * structural + 0.25 * semantic_rel + 0.20 * answer_support + 0.10 * pair_proxy
@@ -2747,6 +2755,15 @@ def _rerank_corridors_hybrid(corridors, g, query_sim_map, support_sim_map, cfg):
                 "corridor": dict(corridor),
                 "base_score": float(base_score),
                 "sentence_set": set(sent_ids),
+                "components": {
+                    "structural_connectivity": float(structural),
+                    "semantic_relevance": float(semantic_rel),
+                    "answer_support": float(answer_support),
+                    "support_density": float(support_density),
+                    "pair_proxy_score": float(pair_proxy),
+                    "anchor_alignment": float(anchor_alignment),
+                    "bridge_utility": float(bridge_utility),
+                },
             }
         )
 
@@ -2765,13 +2782,202 @@ def _rerank_corridors_hybrid(corridors, g, query_sim_map, support_sim_map, cfg):
         payload["corridor_score"] = float(final_score)
         payload["final_score_components"] = {
             "base_score": float(item["base_score"]),
+            "base_final_score": float(final_score),
             "redundancy_penalty": float(overlap_penalty),
+            **(item.get("components", {}) or {}),
         }
         reranked.append(payload)
         selected_sets.append(set(item["sentence_set"]))
 
     reranked.sort(key=lambda x: float(x.get("corridor_score", 0.0)), reverse=True)
     return reranked
+
+
+def _normalize_small_vector(values):
+    arr = np.asarray(list(values or []), dtype=np.float32)
+    if arr.size <= 0:
+        return []
+    vmin = float(np.min(arr))
+    vmax = float(np.max(arr))
+    if (vmax - vmin) <= 1.0e-12:
+        if vmax <= 0.0:
+            return [0.0 for _ in arr]
+        return [1.0 for _ in arr]
+    out = (arr - vmin) / (vmax - vmin)
+    return [float(x) for x in out.tolist()]
+
+
+def _apply_lightweight_corridor_top1_correction(reranked_corridors, cfg):
+    enabled = bool(getattr(cfg, "top1_correction_enabled", False))
+    topk = max(1, int(getattr(cfg, "top1_correction_topk", 3)))
+    diag = {
+        "enabled": bool(enabled),
+        "applied": False,
+        "head_size": 0,
+    }
+    if (not enabled) or (not reranked_corridors) or len(reranked_corridors) <= 1:
+        return reranked_corridors, diag
+
+    head_size = min(len(reranked_corridors), topk)
+    if head_size <= 1:
+        diag["head_size"] = int(head_size)
+        return reranked_corridors, diag
+
+    head = [dict(item) for item in reranked_corridors[:head_size]]
+    tail = list(reranked_corridors[head_size:])
+    diag["head_size"] = int(head_size)
+
+    base_vals = []
+    anchor_vals = []
+    support_vals = []
+    bridge_vals = []
+    semantic_vals = []
+    redundancy_vals = []
+    for payload in head:
+        comp = (payload.get("final_score_components", {}) or {})
+        base_vals.append(float(payload.get("corridor_score", comp.get("base_final_score", 0.0)) or 0.0))
+        anchor_vals.append(float(comp.get("anchor_alignment", payload.get("anchor_alignment", 0.0)) or 0.0))
+        support_vals.append(float(comp.get("support_density", 0.0) or 0.0))
+        bridge_vals.append(float(comp.get("bridge_utility", payload.get("bridge_potential", 0.0)) or 0.0))
+        semantic_vals.append(float(comp.get("semantic_relevance", 0.0) or 0.0))
+        redundancy_vals.append(float(comp.get("redundancy_penalty", 0.0) or 0.0))
+
+    base_norm = _normalize_small_vector(base_vals)
+    anchor_norm = _normalize_small_vector(anchor_vals)
+    support_norm = _normalize_small_vector(support_vals)
+    bridge_norm = _normalize_small_vector(bridge_vals)
+    semantic_norm = _normalize_small_vector(semantic_vals)
+    redundancy_norm = _normalize_small_vector(redundancy_vals)
+
+    w_base = float(getattr(cfg, "top1_correction_corridor_weight_base", 0.75))
+    w_anchor = float(getattr(cfg, "top1_correction_corridor_weight_anchor", 0.10))
+    w_support = float(getattr(cfg, "top1_correction_corridor_weight_support", 0.06))
+    w_bridge = float(getattr(cfg, "top1_correction_corridor_weight_bridge", 0.05))
+    w_sem = float(getattr(cfg, "top1_correction_corridor_weight_semantic", 0.04))
+    w_red = max(0.0, float(getattr(cfg, "top1_correction_corridor_weight_redundancy", 0.05)))
+
+    for idx, payload in enumerate(head):
+        corrected = (
+            w_base * float(base_norm[idx])
+            + w_anchor * float(anchor_norm[idx])
+            + w_support * float(support_norm[idx])
+            + w_bridge * float(bridge_norm[idx])
+            + w_sem * float(semantic_norm[idx])
+            - w_red * float(redundancy_norm[idx])
+        )
+        payload["corridor_score"] = float(corrected)
+        comp = dict(payload.get("final_score_components", {}) or {})
+        comp["top1_corr_corrected_score"] = float(corrected)
+        payload["final_score_components"] = comp
+
+    head.sort(key=lambda x: float(x.get("corridor_score", 0.0)), reverse=True)
+    diag["applied"] = True
+    return head + tail, diag
+
+
+def _apply_lightweight_sentence_top1_correction(
+    selected_sentence_ids,
+    selected_sentences,
+    sentence_feature_table,
+    cfg,
+):
+    enabled = bool(getattr(cfg, "top1_correction_enabled", False))
+    topk = max(1, int(getattr(cfg, "top1_correction_topk", 3)))
+    diag = {
+        "enabled": bool(enabled),
+        "applied": False,
+        "head_size": 0,
+        "reordered": 0,
+    }
+    if (not enabled) or (not selected_sentence_ids) or len(selected_sentence_ids) <= 1:
+        return selected_sentence_ids, selected_sentences, diag
+
+    head_size = min(len(selected_sentence_ids), topk)
+    if head_size <= 1:
+        diag["head_size"] = int(head_size)
+        return selected_sentence_ids, selected_sentences, diag
+
+    head_ids = list(selected_sentence_ids[:head_size])
+    tail_ids = list(selected_sentence_ids[head_size:])
+    order_map = {sid: idx for idx, sid in enumerate(head_ids)}
+    diag["head_size"] = int(head_size)
+
+    base_vals = []
+    corridor_vals = []
+    query_vals = []
+    locality_vals = []
+    main_vals = []
+    support_vals = []
+    for sid in head_ids:
+        feat = (sentence_feature_table.get(sid, {}) or {})
+        base_vals.append(float(feat.get("base_retrieval_score", 0.0) or 0.0))
+        corridor_vals.append(float(feat.get("best_corridor_score", 0.0) or 0.0))
+        query_vals.append(float(feat.get("query_overlap_score", 0.0) or 0.0))
+        locality_vals.append(float(feat.get("locality_score", 0.0) or 0.0))
+        main_vals.append(1.0 if bool(feat.get("is_main_candidate", False)) else 0.0)
+        support_vals.append(1.0 if bool(feat.get("is_support_candidate", False)) else 0.0)
+
+    base_norm = _normalize_small_vector(base_vals)
+    corridor_norm = _normalize_small_vector(corridor_vals)
+    query_norm = _normalize_small_vector(query_vals)
+    locality_norm = _normalize_small_vector(locality_vals)
+
+    w_base = float(getattr(cfg, "top1_correction_sentence_weight_base", 0.60))
+    w_corr = float(getattr(cfg, "top1_correction_sentence_weight_corridor", 0.20))
+    w_main = float(getattr(cfg, "top1_correction_sentence_weight_main", 0.08))
+    w_support = float(getattr(cfg, "top1_correction_sentence_weight_support", 0.04))
+    w_query = float(getattr(cfg, "top1_correction_sentence_weight_query", 0.04))
+    w_locality = float(getattr(cfg, "top1_correction_sentence_weight_locality", 0.04))
+    w_redundancy = max(0.0, float(getattr(cfg, "top1_correction_sentence_weight_redundancy", 0.04)))
+
+    pre_score_map = {}
+    for idx, sid in enumerate(head_ids):
+        pre_score_map[sid] = (
+            w_base * float(base_norm[idx])
+            + w_corr * float(corridor_norm[idx])
+            + w_main * float(main_vals[idx])
+            + w_support * float(support_vals[idx])
+            + w_query * float(query_norm[idx])
+            + w_locality * float(locality_norm[idx])
+        )
+
+    text_map = {sid: text for sid, text in zip(selected_sentence_ids, selected_sentences)}
+    token_map = {sid: set(content_tokens(text_map.get(sid, ""))) for sid in head_ids}
+
+    reordered_head = []
+    remaining = list(head_ids)
+    while remaining:
+        best_sid = None
+        best_score = None
+        for sid in remaining:
+            redundancy = 0.0
+            sid_tokens = token_map.get(sid, set())
+            if reordered_head:
+                for prev_sid in reordered_head:
+                    prev_tokens = token_map.get(prev_sid, set())
+                    union = len(sid_tokens.union(prev_tokens))
+                    if union <= 0:
+                        continue
+                    inter = len(sid_tokens.intersection(prev_tokens))
+                    redundancy = max(redundancy, float(inter) / float(union))
+            score = float(pre_score_map.get(sid, 0.0)) - w_redundancy * float(redundancy)
+            if (best_score is None) or (score > best_score) or (
+                abs(score - best_score) <= 1.0e-12
+                and order_map.get(sid, 10**9) < order_map.get(best_sid, 10**9)
+            ):
+                best_sid = sid
+                best_score = score
+        reordered_head.append(best_sid)
+        remaining.remove(best_sid)
+
+    reordered_ids = reordered_head + tail_ids
+    if reordered_ids == list(selected_sentence_ids):
+        return selected_sentence_ids, selected_sentences, diag
+
+    reordered_texts = [text_map.get(sid, "") for sid in reordered_ids]
+    diag["applied"] = True
+    diag["reordered"] = int(sum(1 for i, sid in enumerate(head_ids) if reordered_head[i] != sid))
+    return reordered_ids, reordered_texts, diag
 
 
 def run_graphrag_core(
@@ -2793,6 +2999,7 @@ def run_graphrag_core(
         "phase1_run_scoring_ms": 0.0,
         "phase2_pair_shortlist_ms": 0.0,
         "phase2_refine_ms": 0.0,
+        "top1_correction_ms": 0.0,
         "sentence_rerank_ms": 0.0,
         "render_ms": 0.0,
         # backward-compatible aliases
@@ -3503,6 +3710,12 @@ def run_graphrag_core(
         support_sim_map=support_sim_map,
         cfg=cfg,
     )
+    top1_corridor_start = time.perf_counter()
+    corridor_payloads, top1_corridor_diag = _apply_lightweight_corridor_top1_correction(
+        reranked_corridors=corridor_payloads,
+        cfg=cfg,
+    )
+    stage_ms["top1_correction_ms"] += float((time.perf_counter() - top1_corridor_start) * 1000.0)
 
     final_graph = corridor
     if enable_trim and bool(getattr(cfg, "trim_on", True)):
@@ -3571,8 +3784,29 @@ def run_graphrag_core(
         sentence_score_map=selected_sentence_score_map,
         corridors=filtered_corridors,
     )
+    top1_sentence_start = time.perf_counter()
+    selected_sentence_ids, selected_sentences, top1_sentence_diag = _apply_lightweight_sentence_top1_correction(
+        selected_sentence_ids=selected_sentence_ids,
+        selected_sentences=selected_sentences,
+        sentence_feature_table=sentence_feature_table,
+        cfg=cfg,
+    )
+    stage_ms["top1_correction_ms"] += float((time.perf_counter() - top1_sentence_start) * 1000.0)
+    if bool(top1_sentence_diag.get("applied", False)):
+        sentence_feature_table = _build_sentence_feature_table(
+            sample=sample,
+            selected_sentence_ids=selected_sentence_ids,
+            sentence_texts=selected_sentences,
+            sentence_score_map=selected_sentence_score_map,
+            corridors=filtered_corridors,
+        )
     final_total_ms = float((time.perf_counter() - final_start) * 1000.0)
-    stage_ms["render_ms"] = max(0.0, float(final_total_ms) - float(stage_ms.get("sentence_rerank_ms", 0.0)))
+    stage_ms["render_ms"] = max(
+        0.0,
+        float(final_total_ms)
+        - float(stage_ms.get("sentence_rerank_ms", 0.0))
+        - float(stage_ms.get("top1_correction_ms", 0.0)),
+    )
     stage_ms["final_render_time_ms"] = float(stage_ms["render_ms"])
 
     anchor_results = []
@@ -3657,6 +3891,12 @@ def run_graphrag_core(
             "candidate_similarity_recomputed_count": int(candidate_similarity_recomputed_count),
             "semantic_scores_reused_in_final": bool(getattr(cfg, "reuse_semantic_scores_in_final", True)),
             "sentence_rerank_semantic_calls": int(sentence_rerank_semantic_calls),
+            "top1_correction": {
+                "enabled": bool(getattr(cfg, "top1_correction_enabled", False)),
+                "topk": int(getattr(cfg, "top1_correction_topk", 3)),
+                "corridor": top1_corridor_diag,
+                "sentence": top1_sentence_diag,
+            },
             "run_selection_mode": (
                 "semantic_hybrid"
                 if (stable_seed_selection and semantic_diag["enabled"] and query_vec is not None)

@@ -28,15 +28,18 @@ SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 CODE_FENCE_RE = re.compile(r"```(?:json)?(.*?)```", re.IGNORECASE | re.DOTALL)
 SEMANTIC_TEXT_CONSTRUCTION_VERSION = "entity_alias_context_v1__chunk_title_passage_v1"
 SEMANTIC_NORMALIZATION_VERSION = "l2_unit_norm"
-SEMANTIC_DATA_ARTIFACT_NAMES = [
+SEMANTIC_CORE_ARTIFACT_NAMES = [
     "semantic_entities_ids.json",
     "semantic_entities_embeddings.f16.npy",
     "semantic_chunks_ids.json",
     "semantic_chunks_embeddings.f16.npy",
+]
+SEMANTIC_SUPPORT_ARTIFACT_NAMES = [
     "entity_chunk_support_map.json",
     "entity_topk_chunks_cache.json",
     "chunk_topk_entities_cache.json",
 ]
+SEMANTIC_DATA_ARTIFACT_NAMES = SEMANTIC_CORE_ARTIFACT_NAMES + SEMANTIC_SUPPORT_ARTIFACT_NAMES
 
 
 def _uses_max_completion_tokens(model_name):
@@ -1196,12 +1199,40 @@ def _graph_semantic_node_signature(g):
     return _semantic_node_signature_from_ids(entity_ids, chunk_ids)
 
 
-def _semantic_data_artifacts_ready(index_dir):
+def _semantic_data_artifacts_ready(index_dir, require_support=False):
     root = Path(index_dir)
-    for name in SEMANTIC_DATA_ARTIFACT_NAMES:
+    required = SEMANTIC_CORE_ARTIFACT_NAMES + (SEMANTIC_SUPPORT_ARTIFACT_NAMES if require_support else [])
+    for name in required:
         if not (root / name).exists():
             return False
     return True
+
+
+def _ensure_semantic_support_artifacts(index_dir, g, show_progress=True):
+    root = Path(index_dir)
+    map_path = root / "entity_chunk_support_map.json"
+    e2c_path = root / "entity_topk_chunks_cache.json"
+    c2e_path = root / "chunk_topk_entities_cache.json"
+
+    if map_path.exists() and e2c_path.exists() and c2e_path.exists():
+        return
+    if g is None:
+        return
+
+    entity_to_chunks, chunk_to_entities = _build_entity_chunk_support_mapping(g)
+    support_map_payload = {
+        "entity_to_chunks": entity_to_chunks,
+        "chunk_to_entities": chunk_to_entities,
+    }
+    _write_json_obj(map_path, support_map_payload)
+    _write_json_obj(e2c_path, _build_support_lookup_cache(entity_to_chunks, topk=32))
+    _write_json_obj(c2e_path, _build_support_lookup_cache(chunk_to_entities, topk=32))
+    if show_progress:
+        print(
+            "[Index/Semantic] backfilled legacy support artifacts "
+            f"at {str(root.resolve())}",
+            flush=True,
+        )
 
 
 def _materialize_semantic_meta_paths(
@@ -1325,8 +1356,6 @@ def _try_reuse_semantic_artifacts(
             if not cand_sem_cfg:
                 cand_sem_cfg = _normalize_semantic_build_config(meta.get("build_config", {}) or {})
             cand_key = _semantic_cache_key(meta.get("fingerprint", {}), cand_sem_cfg)
-        if cand_key != str(semantic_cache_key):
-            continue
 
         cand_sig = str(sem_meta.get("semantic_node_signature", "") or "")
         if not cand_sig:
@@ -1337,23 +1366,65 @@ def _try_reuse_semantic_artifacts(
             continue
 
         mtime = float(sem_meta_path.stat().st_mtime)
-        candidates.append((mtime, cand_dir, sem_meta))
+        candidates.append(
+            {
+                "mtime": mtime,
+                "dir": cand_dir,
+                "semantic_meta": sem_meta,
+                "cand_key": str(cand_key),
+                "cand_sig": str(cand_sig),
+                "cand_model_name": str(sem_meta.get("model_name", "") or ""),
+            }
+        )
 
     if not candidates:
         info["semantic_reuse_reason"] = "no_matching_semantic_cache"
         return None, info
 
-    candidates.sort(key=lambda x: x[0], reverse=True)
-    _, source_dir, source_sem_meta = candidates[0]
+    requested_model_name = str(semantic_build_config.get("embedding_model_name", "") or "")
+    requested_key = str(semantic_cache_key or "")
+    exact_candidates = [c for c in candidates if str(c.get("cand_key", "")) == requested_key]
+    fallback_candidates = list(candidates)
+
+    selected = None
+    reuse_mode = ""
+    if exact_candidates:
+        exact_candidates.sort(key=lambda x: float(x.get("mtime", 0.0)), reverse=True)
+        selected = exact_candidates[0]
+        reuse_mode = "exact_key"
+    else:
+        # Latest compatible fallback: same corpus fingerprint + same node signature.
+        # Prefer same embedding model name, then newest artifact.
+        same_model = [c for c in fallback_candidates if str(c.get("cand_model_name", "")) == requested_model_name]
+        pool = same_model if same_model else fallback_candidates
+        pool.sort(key=lambda x: float(x.get("mtime", 0.0)), reverse=True)
+        selected = pool[0]
+        reuse_mode = "latest_fallback"
+
+    source_dir = Path(selected["dir"]).resolve()
+    source_sem_meta = dict(selected["semantic_meta"] or {})
+    selected_key = str(selected.get("cand_key", "") or "")
     root.mkdir(parents=True, exist_ok=True)
-    for name in SEMANTIC_DATA_ARTIFACT_NAMES:
+    for name in SEMANTIC_CORE_ARTIFACT_NAMES:
         _link_or_copy_file(source_dir / name, root / name)
+    for name in SEMANTIC_SUPPORT_ARTIFACT_NAMES:
+        src = source_dir / name
+        if src.exists():
+            _link_or_copy_file(src, root / name)
+
+    target_semantic_cache_key = requested_key
+    target_semantic_build_config = dict(semantic_build_config or {})
+    if reuse_mode == "latest_fallback":
+        source_sem_cfg = source_sem_meta.get("semantic_build_config", {}) if isinstance(source_sem_meta, dict) else {}
+        if isinstance(source_sem_cfg, dict) and source_sem_cfg:
+            target_semantic_build_config = dict(source_sem_cfg)
+        target_semantic_cache_key = selected_key or requested_key
 
     reused_meta = _materialize_semantic_meta_paths(
         index_dir=root,
         semantic_meta=source_sem_meta,
-        semantic_cache_key=semantic_cache_key,
-        semantic_build_config=semantic_build_config,
+        semantic_cache_key=target_semantic_cache_key,
+        semantic_build_config=target_semantic_build_config,
         graph_semantic_node_signature=graph_semantic_node_signature,
         build_ms_override=0.0,
         reused_from_index_dir=str(source_dir.resolve()),
@@ -1361,12 +1432,19 @@ def _try_reuse_semantic_artifacts(
     _write_json_obj(root / "semantic_index_meta.json", reused_meta)
 
     info["semantic_reuse_applied"] = True
-    info["semantic_reuse_reason"] = "copied_matching_semantic_cache"
+    if reuse_mode == "exact_key":
+        info["semantic_reuse_reason"] = "copied_matching_semantic_cache"
+    else:
+        info["semantic_reuse_reason"] = "copied_latest_semantic_cache_fallback"
+        info["semantic_reuse_requested_key"] = requested_key
+        info["semantic_reuse_selected_key"] = selected_key
+        info["semantic_reuse_requested_model"] = requested_model_name
+        info["semantic_reuse_selected_model"] = str(selected.get("cand_model_name", "") or "")
     info["semantic_reuse_source"] = str(source_dir.resolve())
     if show_progress:
         print(
             "[Index/Semantic] "
-            f"reuse semantic cache: {info['semantic_reuse_source']} -> {str(root.resolve())}",
+            f"reuse semantic cache ({reuse_mode}): {info['semantic_reuse_source']} -> {str(root.resolve())}",
             flush=True,
         )
     return reused_meta, info
@@ -2136,6 +2214,7 @@ def load_or_build_global_index(
             semantic_build_ms = 0.0
             semantic_reuse_info = {}
             if bool(build_config.get("embedding_enabled", False)):
+                _ensure_semantic_support_artifacts(index_dir=index_dir, g=graph, show_progress=show_progress)
                 graph_semantic_signature = _graph_semantic_node_signature(graph)
                 if semantic_meta_path.exists() and _semantic_data_artifacts_ready(index_dir):
                     semantic_meta = _read_json_obj(semantic_meta_path)
@@ -2289,6 +2368,7 @@ def load_or_build_global_index(
                 show_progress=show_progress,
             )
             build_ms += float(semantic_meta.get("build_ms", 0.0) or 0.0)
+        _ensure_semantic_support_artifacts(index_dir=index_dir, g=graph, show_progress=show_progress)
 
     stats = dict(stats or {})
     stats["semantic_embedding_enabled"] = bool(semantic_meta.get("enabled", False))

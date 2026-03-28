@@ -71,6 +71,21 @@ class RetrievalConfig:
     seed_score_semantic_weight: float = 0.35
     seed_score_graph_weight: float = 0.45
     seed_score_anchor_weight: float = 0.20
+    top1_correction_enabled: bool = False
+    top1_correction_topk: int = 3
+    top1_correction_corridor_weight_base: float = 0.75
+    top1_correction_corridor_weight_anchor: float = 0.10
+    top1_correction_corridor_weight_support: float = 0.06
+    top1_correction_corridor_weight_bridge: float = 0.05
+    top1_correction_corridor_weight_semantic: float = 0.04
+    top1_correction_corridor_weight_redundancy: float = 0.05
+    top1_correction_sentence_weight_base: float = 0.60
+    top1_correction_sentence_weight_corridor: float = 0.20
+    top1_correction_sentence_weight_main: float = 0.08
+    top1_correction_sentence_weight_support: float = 0.04
+    top1_correction_sentence_weight_query: float = 0.04
+    top1_correction_sentence_weight_locality: float = 0.04
+    top1_correction_sentence_weight_redundancy: float = 0.04
 
     max_anchors: int = 5
     samples_per_anchor: int = 3
@@ -197,6 +212,8 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["embedding_enabled"] = parse_bool(merged["embedding_enabled"])
     if "sentence_rerank_enabled" in merged:
         merged["sentence_rerank_enabled"] = parse_bool(merged["sentence_rerank_enabled"])
+    if "top1_correction_enabled" in merged:
+        merged["top1_correction_enabled"] = parse_bool(merged["top1_correction_enabled"])
     if "query_embedding_cache_enabled" in merged:
         merged["query_embedding_cache_enabled"] = parse_bool(merged["query_embedding_cache_enabled"])
     if "candidate_embedding_fallback_enabled" in merged:
@@ -213,6 +230,8 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["proposal_anchor_distance_bonus"] = parse_bool(merged["proposal_anchor_distance_bonus"])
     if "proposal_sparse_subgraph_build" in merged:
         merged["proposal_sparse_subgraph_build"] = parse_bool(merged["proposal_sparse_subgraph_build"])
+    if "proposal_union_experiment_mode" in merged:
+        merged["proposal_union_experiment_mode"] = str(merged["proposal_union_experiment_mode"]).strip().lower()
     if "phase1_parallel_ppr" in merged:
         merged["phase1_parallel_ppr"] = parse_bool(merged["phase1_parallel_ppr"])
     if "phase2_bidirectional_full_ppr" in merged:

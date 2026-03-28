@@ -237,6 +237,7 @@ PROFILE_STAGE_KEYS = [
     "phase1_run_scoring_ms",
     "phase2_pair_shortlist_ms",
     "phase2_refine_ms",
+    "top1_correction_ms",
     "sentence_rerank_ms",
     "render_ms",
     "generation_ms",
@@ -254,6 +255,7 @@ ACTIONABLE_STAGE_KEYS = [
     "phase1_run_scoring_ms",
     "phase2_pair_shortlist_ms",
     "phase2_refine_ms",
+    "top1_correction_ms",
     "sentence_rerank_ms",
     "render_ms",
     "generation_ms",
@@ -330,6 +332,9 @@ def _build_profile_record(row: dict, retrieval_only: bool = False):
         "phase1_run_scoring_ms": _safe_float(stage.get("phase1_run_scoring_ms", 0.0), 0.0),
         "phase2_pair_shortlist_ms": _safe_float(stage.get("phase2_pair_shortlist_ms", 0.0), 0.0),
         "phase2_refine_ms": _safe_float(stage.get("phase2_refine_ms", 0.0), 0.0),
+        "top1_correction_ms": _safe_float(stage.get("top1_correction_ms", 0.0), 0.0),
+        "top1_corridor_applied": bool(((diag.get("top1_correction", {}) or {}).get("corridor", {}) or {}).get("applied", False)),
+        "top1_sentence_applied": bool(((diag.get("top1_correction", {}) or {}).get("sentence", {}) or {}).get("applied", False)),
         "sentence_rerank_ms": _safe_float(stage.get("sentence_rerank_ms", 0.0), 0.0),
         "render_ms": _safe_float(stage.get("render_ms", _safe_float(efficiency.get("render_ms", 0.0), 0.0)), 0.0),
         "generation_ms": float(generation_ms),
@@ -660,6 +665,21 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--openie-log-every", type=int, default=None)
     parser.add_argument("--embedding-enabled", type=str, default=None)
     parser.add_argument("--sentence-rerank-enabled", type=str, default=None)
+    parser.add_argument("--top1-correction-enabled", type=str, default=None)
+    parser.add_argument("--top1-correction-topk", type=int, default=None)
+    parser.add_argument("--top1-correction-corridor-weight-base", type=float, default=None)
+    parser.add_argument("--top1-correction-corridor-weight-anchor", type=float, default=None)
+    parser.add_argument("--top1-correction-corridor-weight-support", type=float, default=None)
+    parser.add_argument("--top1-correction-corridor-weight-bridge", type=float, default=None)
+    parser.add_argument("--top1-correction-corridor-weight-semantic", type=float, default=None)
+    parser.add_argument("--top1-correction-corridor-weight-redundancy", type=float, default=None)
+    parser.add_argument("--top1-correction-sentence-weight-base", type=float, default=None)
+    parser.add_argument("--top1-correction-sentence-weight-corridor", type=float, default=None)
+    parser.add_argument("--top1-correction-sentence-weight-main", type=float, default=None)
+    parser.add_argument("--top1-correction-sentence-weight-support", type=float, default=None)
+    parser.add_argument("--top1-correction-sentence-weight-query", type=float, default=None)
+    parser.add_argument("--top1-correction-sentence-weight-locality", type=float, default=None)
+    parser.add_argument("--top1-correction-sentence-weight-redundancy", type=float, default=None)
     parser.add_argument("--embedding-model-name", type=str, default=None)
     parser.add_argument("--embedding-weight", type=float, default=None)
     parser.add_argument("--embedding-rerank-topn", type=int, default=None)
@@ -1081,6 +1101,8 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "semantic_topn": cfg.semantic_topn,
             "semantic_candidate_union": cfg.semantic_candidate_union,
             "semantic_scan_batch_size": cfg.semantic_scan_batch_size,
+            "semantic_chunk_lookup_strategy": cfg.semantic_chunk_lookup_strategy,
+            "proposal_union_experiment_mode": str(cfg.proposal_union_experiment_mode),
             "run_score_semantic_weight": cfg.run_score_semantic_weight,
             "run_score_anchor_weight": cfg.run_score_anchor_weight,
             "run_score_structure_weight": cfg.run_score_structure_weight,
@@ -1089,6 +1111,21 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "seed_score_semantic_weight": cfg.seed_score_semantic_weight,
             "seed_score_graph_weight": cfg.seed_score_graph_weight,
             "seed_score_anchor_weight": cfg.seed_score_anchor_weight,
+            "top1_correction_enabled": cfg.top1_correction_enabled,
+            "top1_correction_topk": cfg.top1_correction_topk,
+            "top1_correction_corridor_weight_base": cfg.top1_correction_corridor_weight_base,
+            "top1_correction_corridor_weight_anchor": cfg.top1_correction_corridor_weight_anchor,
+            "top1_correction_corridor_weight_support": cfg.top1_correction_corridor_weight_support,
+            "top1_correction_corridor_weight_bridge": cfg.top1_correction_corridor_weight_bridge,
+            "top1_correction_corridor_weight_semantic": cfg.top1_correction_corridor_weight_semantic,
+            "top1_correction_corridor_weight_redundancy": cfg.top1_correction_corridor_weight_redundancy,
+            "top1_correction_sentence_weight_base": cfg.top1_correction_sentence_weight_base,
+            "top1_correction_sentence_weight_corridor": cfg.top1_correction_sentence_weight_corridor,
+            "top1_correction_sentence_weight_main": cfg.top1_correction_sentence_weight_main,
+            "top1_correction_sentence_weight_support": cfg.top1_correction_sentence_weight_support,
+            "top1_correction_sentence_weight_query": cfg.top1_correction_sentence_weight_query,
+            "top1_correction_sentence_weight_locality": cfg.top1_correction_sentence_weight_locality,
+            "top1_correction_sentence_weight_redundancy": cfg.top1_correction_sentence_weight_redundancy,
             "max_anchors": cfg.max_anchors,
             "samples_per_anchor": cfg.samples_per_anchor,
             "candidate_top_t": cfg.candidate_top_t,

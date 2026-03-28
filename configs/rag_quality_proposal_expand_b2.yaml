@@ -17,9 +17,9 @@ phase1_full_run_score_topk: 1
 run_score_sparse_topk: 64
 run_score_surrogate_topk: 128
 
-semantic_topn_entity: 20
-semantic_topn_chunk: 10
-graph_reserve_topn: 10
+semantic_topn_entity: 30
+semantic_topn_chunk: 15
+graph_reserve_topn: 15
 entity_lookup_use_two_tier: true
 entity_lookup_tier1_topk: 192
 entity_lookup_alias_token_limit: 12
@@ -62,18 +62,11 @@ seed_score_graph_weight: 0.45
 seed_score_semantic_weight: 0.35
 seed_score_anchor_weight: 0.20
 
-top1_correction_enabled: true
-top1_correction_topk: 3
-top1_correction_corridor_weight_base: 0.85
-top1_correction_corridor_weight_anchor: 0.07
-top1_correction_corridor_weight_support: 0.03
-top1_correction_corridor_weight_bridge: 0.03
-top1_correction_corridor_weight_semantic: 0.02
-top1_correction_corridor_weight_redundancy: 0.03
-top1_correction_sentence_weight_base: 0.72
-top1_correction_sentence_weight_corridor: 0.16
-top1_correction_sentence_weight_main: 0.05
-top1_correction_sentence_weight_support: 0.02
-top1_correction_sentence_weight_query: 0.03
-top1_correction_sentence_weight_locality: 0.02
-top1_correction_sentence_weight_redundancy: 0.03
+llm_max_new_tokens: 64
+
+max_context_sentences: 18
+max_corridors_in_context: 3
+max_main_sentences_per_corridor: 3
+max_support_per_corridor: 2
+max_total_sentences: 18
+max_sentences: 18

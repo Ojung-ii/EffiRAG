@@ -187,67 +187,118 @@ corridor 렌더 예산 파라미터:
 - `--max-support-per-corridor` (default: 1)
 - `--max-total-sentences` (default: 12)
 
-## Speed vs Guardrail Profiles
+## Final Operating Profiles (Frozen)
 
-Current policy:
-- Speed profile (`configs/rag_speed_profile.yaml`, `configs/retrieval_speed_profile.yaml`):
-  - `proposal_union_experiment_mode: aggressive`
-  - 장점: `proposal_union_ms`/retrieval latency를 크게 줄이면서 `Recall@20`/rendered recall 유지
-  - 주의: `Recall@1` 하락 가능성
-- Quality/guardrail profile (`configs/rag_quality_profile.yaml`, `configs/retrieval_quality_profile.yaml`):
-  - `proposal_union_experiment_mode: off`
-  - 보수적인 baseline 비교 기준으로 유지
+현재 운영 결론은 아래 3개로 고정합니다.
 
-Recommended guardrail check (100~200 retrieval-only queries):
+1. `speed_default`
+   - config: `configs/rag_speed_profile.yaml` / `configs/retrieval_speed_profile.yaml`
+   - 핵심: `proposal_union_experiment_mode: aggressive`, `sentence_rerank_enabled: false`
+   - 목적: 기본 실행(빠른 반복 실험/대량 평가)
+2. `quality_variant`
+   - config: `configs/rag_quality_profile.yaml` / `configs/retrieval_quality_profile.yaml`
+   - 핵심: speed default 기반 + `top1_correction_enabled: true` (`top1corr_t1`)
+   - 목적: top-rank 보정이 필요한 품질 비교 실행
+3. `ablation_off`
+   - config: `configs/rag_quality_off_ablation.yaml` / `configs/retrieval_quality_off_ablation.yaml`
+   - 핵심: `proposal_union_experiment_mode: off`
+   - 목적: baseline/ablation/reference 비교
+
+Final policy:
+- speed default = `aggressive`
+- quality variant = `top1corr_t1`
+- `off`는 운영 기본값이 아니라 ablation/reference로만 사용
+
+### Fixed Constraints
+
+아래 항목은 운영 고정(freeze)입니다.
+
+- retrieval core 구조:
+  - semantic proposal
+  - reduced subgraph
+  - Phase1 stochastic PPR
+  - Phase2 bounded local refinement
+- speed profile runtime knobs:
+  - `max_anchors: 2`
+  - `samples_per_anchor: 1`
+  - `sentence_rerank_enabled: false`
+  - `semantic_chunk_lookup_strategy: full`
+- offline index spec:
+  - `embedding_model_name`
+  - `embedding_max_length`
+  - `embedding_text_max_chars`
+  - semantic text construction
+  - normalization
+
+권장하지 않는 축(현재 단계 종료):
+- `max_anchors` 증가
+- `samples_per_anchor` 증가
+- entity proposal 추가 확대
+- chunk two-tier 기본값 전환
+- sentence rerank 재도입
+
+### Final Eval Commands
+
+`scripts/run_final_eval.sh`는 최종 3모드를 통일된 인터페이스로 실행합니다.
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 -m effirag.run_rag \
-  --config configs/rag_speed_profile.yaml \
-  --dataset 2wikimultihopqa \
-  --data-path data/qa/2wikimultihopqa.json \
-  --global-corpus-path /home/ojungii/HippoRAG2/dataset/2wikimultihopqa_corpus.json \
-  --graph-cache-dir outputs/index_cache \
-  --force-rebuild-graph-index false \
-  --embedding-enabled true \
-  --embedding-model-name nvidia/NV-Embed-v2 \
-  --generator openai_compat \
-  --model-name Qwen/Qwen2.5-7B-Instruct \
-  --llm-base-url http://localhost:8011/v1 \
-  --llm-api-key EMPTY \
-  --proposal-union-experiment-mode off \
-  --profile-stages true \
-  --retrieval-only true \
-  --profile-limit 200 \
-  --profile-output outputs/profiling/2wiki_200_retrieval_union_off.jsonl
+scripts/run_final_eval.sh speed_default
+scripts/run_final_eval.sh quality_variant
+scripts/run_final_eval.sh ablation_off
 ```
+
+환경변수로 실행 조건 제어:
+- `LIMIT` (default: `200`)
+- `RETRIEVAL_ONLY` (`true|false`)
+- `CUDA_VISIBLE_DEVICES` (default: `0`)
+- `GENERATOR` (`openai_compat` or `heuristic`)
+
+예시 1) 1000-query retrieval-only:
 
 ```bash
-CUDA_VISIBLE_DEVICES=0 python3 -m effirag.run_rag \
-  --config configs/rag_speed_profile.yaml \
-  --dataset 2wikimultihopqa \
-  --data-path data/qa/2wikimultihopqa.json \
-  --global-corpus-path /home/ojungii/HippoRAG2/dataset/2wikimultihopqa_corpus.json \
-  --graph-cache-dir outputs/index_cache \
-  --force-rebuild-graph-index false \
-  --embedding-enabled true \
-  --embedding-model-name nvidia/NV-Embed-v2 \
-  --generator openai_compat \
-  --model-name Qwen/Qwen2.5-7B-Instruct \
-  --llm-base-url http://localhost:8011/v1 \
-  --llm-api-key EMPTY \
-  --proposal-union-experiment-mode aggressive \
-  --profile-stages true \
-  --retrieval-only true \
-  --profile-limit 200 \
-  --profile-output outputs/profiling/2wiki_200_retrieval_union_aggressive.jsonl
+LIMIT=1000 RETRIEVAL_ONLY=true CUDA_VISIBLE_DEVICES=0 \
+scripts/run_final_eval.sh speed_default
 ```
 
-Compare at minimum:
-- `supporting_fact_recall_at_1`
-- `supporting_fact_recall_at_5`
-- `supporting_fact_recall_at_20`
-- `rendered_supporting_fact_recall`
-- `retrieval_latency_ms`
+예시 2) 200-query QA:
+
+```bash
+LIMIT=200 RETRIEVAL_ONLY=false CUDA_VISIBLE_DEVICES=0 \
+scripts/run_final_eval.sh quality_variant
+```
+
+예시 3) 3모드 일괄 실행:
+
+```bash
+LIMIT=200 RETRIEVAL_ONLY=true CUDA_VISIBLE_DEVICES=0 \
+scripts/run_final_eval_all.sh
+```
+
+### Quality Track Helper (Legacy + Final Aliases)
+
+`scripts/run_quality_track.sh`도 최종 모드를 지원합니다:
+
+```bash
+scripts/run_quality_track.sh speed_default
+scripts/run_quality_track.sh quality_variant
+scripts/run_quality_track.sh ablation_off
+```
+
+기존 실험 alias(`top1corr_t2`, `reserve_boost_c1` 등)는 재현용으로만 남아 있습니다.
+
+### Result Table Utility
+
+여러 run의 `rag_summary.json`을 한 번에 표로 합칠 수 있습니다.
+
+```bash
+python scripts/summarize_run_table.py \
+  --title "Final Profile Compare" \
+  --run speed_default=/abs/path/to/speed/rag_summary.json \
+  --run quality_variant=/abs/path/to/quality/rag_summary.json \
+  --run ablation_off=/abs/path/to/off/rag_summary.json \
+  --output-json outputs/profiling/final_profile_compare.json \
+  --output-md outputs/profiling/final_profile_compare.md
+```
 
 ## RAG Run Example
 

@@ -70,3 +70,5 @@ max_main_sentences_per_corridor: 3
 max_support_per_corridor: 2
 max_total_sentences: 14
 max_sentences: 14
+
+top1_correction_enabled: false

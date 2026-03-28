@@ -61,3 +61,5 @@ run_score_redundancy_weight: 0.10
 seed_score_graph_weight: 0.45
 seed_score_semantic_weight: 0.35
 seed_score_anchor_weight: 0.20
+
+top1_correction_enabled: false
