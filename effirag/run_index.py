@@ -14,17 +14,19 @@ except Exception:  # pragma: no cover
 
 def _build_parser():
     parser = argparse.ArgumentParser(description="Build/reuse global corpus KG index for EffiRAG.")
+    parser.add_argument("--dataset", type=str, default="", help="Dataset name (used for cache-dir if not explicitly provided)")
     parser.add_argument("--corpus-path", type=str, default="")
-    parser.add_argument("--cache-dir", type=str, default="outputs/index_cache")
+    parser.add_argument("--cache-dir", type=str, default="", help="Cache directory (defaults to outputs/index_cache/{dataset} if --dataset provided)")
     parser.add_argument("--force-rebuild", type=str, default="false")
     parser.add_argument("--prebuilt-igraph-path", type=str, default="")
     parser.add_argument("--prebuilt-igraph-format", type=str, default="hipporag_pickle")
     parser.add_argument("--prebuilt-entity-token-limit", type=int, default=6)
     parser.add_argument("--embedding-enabled", type=str, default="true")
     parser.add_argument("--embedding-model-name", type=str, default="nvidia/NV-Embed-v2")
-    parser.add_argument("--embedding-batch-size", type=int, default=8)
+    parser.add_argument("--embedding-batch-size", type=int, default=16)
     parser.add_argument("--embedding-max-length", type=int, default=192)
     parser.add_argument("--embedding-text-max-chars", type=int, default=600)
+    parser.add_argument("--semantic-scan-batch-size", type=int, default=8192)
     parser.add_argument("--openie-mode", type=str, default="llm", choices=["llm", "lexical"])
     parser.add_argument("--openie-model-name", type=str, default="Qwen/Qwen2.5-7B-Instruct")
     parser.add_argument("--openie-text-max-chars", type=int, default=2200)
@@ -52,17 +54,25 @@ def main():
     prebuilt_igraph_path = str(args.prebuilt_igraph_path or "").strip()
     if not corpus_path and not prebuilt_igraph_path:
         raise ValueError("Provide either --corpus-path or --prebuilt-igraph-path.")
+    
+    # Determine dataset_tag from --dataset or corpus/igraph path
+    dataset_tag = str(args.dataset or "").strip()
+    if not dataset_tag:
+        if corpus_path:
+            dataset_tag = Path(corpus_path).stem
+            if dataset_tag.endswith("_corpus"):
+                dataset_tag = dataset_tag[: -len("_corpus")]
+        elif prebuilt_igraph_path:
+            dataset_tag = Path(prebuilt_igraph_path).parent.name or Path(prebuilt_igraph_path).stem
+    dataset_tag = str(dataset_tag or "unknown_dataset")
+    
+    # Set cache_dir based on --dataset if --cache-dir not explicitly provided
+    cache_dir = str(args.cache_dir or "").strip()
+    if not cache_dir:
+        cache_dir = f"outputs/index_cache/{dataset_tag}"
+    
     run_stamp = timestamp_for_filename()
     run_iso = timestamp_iso_utc()
-    if corpus_path:
-        dataset_tag = Path(corpus_path).stem
-        if dataset_tag.endswith("_corpus"):
-            dataset_tag = dataset_tag[: -len("_corpus")]
-    elif prebuilt_igraph_path:
-        dataset_tag = Path(prebuilt_igraph_path).parent.name or Path(prebuilt_igraph_path).stem
-    else:
-        dataset_tag = "unknown_dataset"
-    dataset_tag = str(dataset_tag or "unknown_dataset")
     graph = None
     meta = {}
     summary_path = None
@@ -88,7 +98,7 @@ def main():
             print("[RunIndex] stage=build_or_load_index start", flush=True)
             graph, meta = load_or_build_global_index(
                 corpus_path=corpus_path,
-                cache_dir=args.cache_dir,
+                cache_dir=cache_dir,
                 force_rebuild=force_rebuild,
                 prebuilt_igraph_path=prebuilt_igraph_path,
                 prebuilt_igraph_format=str(args.prebuilt_igraph_format or "hipporag_pickle"),
@@ -120,7 +130,7 @@ def main():
             )
         elif stage == "write_summary":
             print("[RunIndex] stage=write_summary start", flush=True)
-            index_dir = Path(meta.get("index_dir", args.cache_dir))
+            index_dir = Path(meta.get("index_dir", cache_dir))
             summary_path = index_dir / "index_summary.json"
             payload = {
                 "corpus_path": str(Path(corpus_path).resolve()) if corpus_path else "",
@@ -132,7 +142,8 @@ def main():
                 "embedding_batch_size": int(args.embedding_batch_size),
                 "embedding_max_length": int(args.embedding_max_length),
                 "embedding_text_max_chars": int(args.embedding_text_max_chars),
-                "cache_dir": str(Path(args.cache_dir).resolve()),
+                "semantic_scan_batch_size": int(args.semantic_scan_batch_size),
+                "cache_dir": str(Path(cache_dir).resolve()),
                 "force_rebuild": bool(force_rebuild),
                 "openie_mode": str(args.openie_mode),
                 "openie_model_name": str(args.openie_model_name),
@@ -159,7 +170,7 @@ def main():
                 "memory_graph_edges": int(graph.number_of_edges()),
                 "meta": meta,
             }
-            run_dir = Path(args.cache_dir) / "_runs" / dataset_tag / run_stamp
+            run_dir = Path(cache_dir) / "_runs" / dataset_tag / run_stamp
             run_dir.mkdir(parents=True, exist_ok=True)
             run_summary_path = run_dir / "index_run_summary.json"
             payload["run_output_dir"] = str(run_dir.resolve())

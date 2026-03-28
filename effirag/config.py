@@ -30,7 +30,7 @@ class RetrievalConfig:
     openie_api_base_url: str = ""
     openie_api_key: str = ""
     openie_api_timeout_sec: float = 120.0
-    openie_parallel_workers: int = 4
+    openie_parallel_workers: int = 6
     openie_log_every: int = 200
     embedding_enabled: bool = True
     sentence_rerank_enabled: bool = True
@@ -40,11 +40,28 @@ class RetrievalConfig:
     embedding_rerank_topn: int = 80
     embedding_batch_size: int = 16
     embedding_max_length: int = 192
+    candidate_embedding_fallback_enabled: bool = False
+    query_embedding_max_length: int = 96
+    query_embedding_text_max_chars: int = 384
+    query_embedding_cache_enabled: bool = True
+    query_embedding_cache_dir: str = "outputs/query_embedding_cache"
     semantic_topn_entity: int = 30
     semantic_topn_chunk: int = 15
     graph_reserve_topn: int = 15
     semantic_topn: int = 50
+    entity_lookup_use_two_tier: bool = True
+    entity_lookup_tier1_topk: int = 256
+    entity_lookup_alias_token_limit: int = 12
+    entity_lookup_global_fallback_topn: int = 8
     semantic_candidate_union: bool = True
+    semantic_chunk_lookup_strategy: str = "adaptive"
+    semantic_chunk_cache_min_ratio: float = 0.8
+    chunk_lookup_anchor_cache_topn: int = 8
+    chunk_lookup_tier1_topk: int = 256
+    chunk_lookup_dense_topk: int = 96
+    chunk_lookup_global_fallback_topn: int = 6
+    semantic_chunk_support_expand_per_entity: int = 4
+    semantic_chunk_support_expand_total: int = 48
     semantic_scan_batch_size: int = 8192
     run_score_semantic_weight: float = 0.30
     run_score_anchor_weight: float = 0.20
@@ -64,6 +81,26 @@ class RetrievalConfig:
     corridor_top_bc: int = 20
     phase1_parallel_ppr: bool = True
     phase1_run_shortlist_topk: int = 2
+    phase1_run_preshortlist_topm: int = 2
+    phase1_full_run_score_topk: int = 2
+    run_score_sparse_topk: int = 64
+    run_score_surrogate_topk: int = 128
+    proposal_lazy_union_topk: int = 64
+    proposal_anchor_local_topn: int = 48
+    proposal_shared_high_conf_topn: int = 24
+    proposal_global_fallback_topn: int = 16
+    # off (guardrail baseline) | mild | medium | aggressive (speed-optimized, may lower Recall@1)
+    proposal_union_experiment_mode: str = "off"
+    proposal_adaptive_budget: bool = True
+    proposal_chunk_rank_cap: int = 48
+    proposal_reserve_hops: int = 3
+    proposal_reserve_graph_mix_topn: int = 3
+    proposal_reserve_bfs_fallback: bool = False
+    proposal_anchor_distance_bonus: bool = True
+    proposal_sparse_subgraph_build: bool = False
+    proposal_subgraph_anchor_neighbor_cap: int = 12
+    proposal_subgraph_support_cap: int = 4
+    proposal_subgraph_connector_cap: int = 8
     pair_shortlist_topb: int = 6
     phase2_refine_mode: str = "bounded_local"
     phase2_bidirectional_full_ppr: bool = False
@@ -160,8 +197,22 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["embedding_enabled"] = parse_bool(merged["embedding_enabled"])
     if "sentence_rerank_enabled" in merged:
         merged["sentence_rerank_enabled"] = parse_bool(merged["sentence_rerank_enabled"])
+    if "query_embedding_cache_enabled" in merged:
+        merged["query_embedding_cache_enabled"] = parse_bool(merged["query_embedding_cache_enabled"])
+    if "candidate_embedding_fallback_enabled" in merged:
+        merged["candidate_embedding_fallback_enabled"] = parse_bool(merged["candidate_embedding_fallback_enabled"])
     if "semantic_candidate_union" in merged:
         merged["semantic_candidate_union"] = parse_bool(merged["semantic_candidate_union"])
+    if "entity_lookup_use_two_tier" in merged:
+        merged["entity_lookup_use_two_tier"] = parse_bool(merged["entity_lookup_use_two_tier"])
+    if "proposal_reserve_bfs_fallback" in merged:
+        merged["proposal_reserve_bfs_fallback"] = parse_bool(merged["proposal_reserve_bfs_fallback"])
+    if "proposal_adaptive_budget" in merged:
+        merged["proposal_adaptive_budget"] = parse_bool(merged["proposal_adaptive_budget"])
+    if "proposal_anchor_distance_bonus" in merged:
+        merged["proposal_anchor_distance_bonus"] = parse_bool(merged["proposal_anchor_distance_bonus"])
+    if "proposal_sparse_subgraph_build" in merged:
+        merged["proposal_sparse_subgraph_build"] = parse_bool(merged["proposal_sparse_subgraph_build"])
     if "phase1_parallel_ppr" in merged:
         merged["phase1_parallel_ppr"] = parse_bool(merged["phase1_parallel_ppr"])
     if "phase2_bidirectional_full_ppr" in merged:

@@ -187,6 +187,68 @@ corridor 렌더 예산 파라미터:
 - `--max-support-per-corridor` (default: 1)
 - `--max-total-sentences` (default: 12)
 
+## Speed vs Guardrail Profiles
+
+Current policy:
+- Speed profile (`configs/rag_speed_profile.yaml`, `configs/retrieval_speed_profile.yaml`):
+  - `proposal_union_experiment_mode: aggressive`
+  - 장점: `proposal_union_ms`/retrieval latency를 크게 줄이면서 `Recall@20`/rendered recall 유지
+  - 주의: `Recall@1` 하락 가능성
+- Quality/guardrail profile (`configs/rag_quality_profile.yaml`, `configs/retrieval_quality_profile.yaml`):
+  - `proposal_union_experiment_mode: off`
+  - 보수적인 baseline 비교 기준으로 유지
+
+Recommended guardrail check (100~200 retrieval-only queries):
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 -m effirag.run_rag \
+  --config configs/rag_speed_profile.yaml \
+  --dataset 2wikimultihopqa \
+  --data-path data/qa/2wikimultihopqa.json \
+  --global-corpus-path /home/ojungii/HippoRAG2/dataset/2wikimultihopqa_corpus.json \
+  --graph-cache-dir outputs/index_cache \
+  --force-rebuild-graph-index false \
+  --embedding-enabled true \
+  --embedding-model-name nvidia/NV-Embed-v2 \
+  --generator openai_compat \
+  --model-name Qwen/Qwen2.5-7B-Instruct \
+  --llm-base-url http://localhost:8011/v1 \
+  --llm-api-key EMPTY \
+  --proposal-union-experiment-mode off \
+  --profile-stages true \
+  --retrieval-only true \
+  --profile-limit 200 \
+  --profile-output outputs/profiling/2wiki_200_retrieval_union_off.jsonl
+```
+
+```bash
+CUDA_VISIBLE_DEVICES=0 python3 -m effirag.run_rag \
+  --config configs/rag_speed_profile.yaml \
+  --dataset 2wikimultihopqa \
+  --data-path data/qa/2wikimultihopqa.json \
+  --global-corpus-path /home/ojungii/HippoRAG2/dataset/2wikimultihopqa_corpus.json \
+  --graph-cache-dir outputs/index_cache \
+  --force-rebuild-graph-index false \
+  --embedding-enabled true \
+  --embedding-model-name nvidia/NV-Embed-v2 \
+  --generator openai_compat \
+  --model-name Qwen/Qwen2.5-7B-Instruct \
+  --llm-base-url http://localhost:8011/v1 \
+  --llm-api-key EMPTY \
+  --proposal-union-experiment-mode aggressive \
+  --profile-stages true \
+  --retrieval-only true \
+  --profile-limit 200 \
+  --profile-output outputs/profiling/2wiki_200_retrieval_union_aggressive.jsonl
+```
+
+Compare at minimum:
+- `supporting_fact_recall_at_1`
+- `supporting_fact_recall_at_5`
+- `supporting_fact_recall_at_20`
+- `rendered_supporting_fact_recall`
+- `retrieval_latency_ms`
+
 ## RAG Run Example
 
 ```bash
