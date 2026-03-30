@@ -4303,6 +4303,7 @@ def run_graphrag_core(
         selected_nodes,
         sentence_scores,
     )
+    selected_text_map = {sid: text for sid, text in zip(selected_sentence_ids, selected_sentences) if sid and text}
 
     sentence_rerank_enabled = bool(getattr(cfg, "sentence_rerank_enabled", True))
     embedding_diag = {
@@ -4426,6 +4427,8 @@ def run_graphrag_core(
             "chunk_node_enabled_in_diffusion": bool(getattr(cfg, "chunk_node_enabled_in_diffusion", False)),
             "chunk_score_topk": int(getattr(cfg, "chunk_score_topk", 20)),
             "chunk_package_enabled": bool(getattr(cfg, "chunk_package_enabled", False)),
+            "selected_unit_type": ("chunk" if str(getattr(cfg, "graph_mode", "current_entity_graph") or "current_entity_graph").strip().lower() == "entity_chunk_graph" else "sentence"),
+            "selected_text_map": selected_text_map,
             "ppr_graph_nodes": int(diffusion_graph.number_of_nodes()),
             "ppr_graph_edges": int(diffusion_graph.number_of_edges()),
             "entity_chunk_graph": entity_chunk_diag,

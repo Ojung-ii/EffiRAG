@@ -11,6 +11,49 @@ def _sample_sentence_lookup(sample):
     return lookup
 
 
+def _retrieval_graph_mode(retrieval_result):
+    diagnostics = (getattr(retrieval_result, "diagnostics", {}) or {})
+    mode = str(diagnostics.get("graph_mode", "current_entity_graph") or "current_entity_graph").strip().lower()
+    if mode not in {"current_entity_graph", "entity_chunk_graph"}:
+        mode = "current_entity_graph"
+    return mode
+
+
+def _is_chunk_like_id(unit_id):
+    sid = str(unit_id or "")
+    return sid.startswith("chunk::")
+
+
+def _build_retrieval_text_lookup(sample, retrieval_result):
+    lookup = {}
+    ids = list(getattr(retrieval_result, "selected_sentence_ids", []) or [])
+    texts = list(getattr(retrieval_result, "selected_sentences", []) or [])
+    for sid, text in zip(ids, texts):
+        sid = str(sid or "")
+        txt = str(text or "").strip()
+        if sid and txt:
+            lookup[sid] = txt
+
+    diagnostics = (getattr(retrieval_result, "diagnostics", {}) or {})
+    diag_map = diagnostics.get("selected_text_map", {}) or {}
+    if isinstance(diag_map, dict):
+        for sid, text in diag_map.items():
+            sid = str(sid or "")
+            txt = str(text or "").strip()
+            if sid and txt and sid not in lookup:
+                lookup[sid] = txt
+
+    sentence_lookup = _sample_sentence_lookup(sample)
+    for sid in ids:
+        sid = str(sid or "")
+        if (not sid) or (sid in lookup) or _is_chunk_like_id(sid):
+            continue
+        txt = str(sentence_lookup.get(sid, "") or "").strip()
+        if txt:
+            lookup[sid] = txt
+    return lookup
+
+
 def _ordered_unique(values):
     seen = set()
     out = []
@@ -36,7 +79,7 @@ def _jaccard(a, b):
 
 
 def _extract_selected_pairs(sample, retrieval_result):
-    lookup = _sample_sentence_lookup(sample)
+    lookup = _build_retrieval_text_lookup(sample, retrieval_result)
     ids = list(retrieval_result.selected_sentence_ids or [])
     texts = list(retrieval_result.selected_sentences or [])
     if len(texts) != len(ids):
@@ -869,7 +912,7 @@ def _apply_chunk_grounding(
 
 def render_flat_context(sample, retrieval_result, max_context_sentences):
     max_n = max(1, int(max_context_sentences))
-    lookup = _sample_sentence_lookup(sample)
+    lookup = _build_retrieval_text_lookup(sample, retrieval_result)
 
     ids = list(retrieval_result.selected_sentence_ids)
     texts = list(retrieval_result.selected_sentences)
@@ -911,7 +954,7 @@ def render_corridor_context(
     max_support_per_corridor,
     max_total_sentences,
 ):
-    sentence_map = _sample_sentence_lookup(sample)
+    sentence_map = _build_retrieval_text_lookup(sample, retrieval_result)
     corridors = build_corridor_payload(retrieval_result, graph=None, sentence_map=sentence_map)
 
     packed, rendered_sentence_ids, rendered_corridor_ids, truncated_corridors, truncated_sentences = pack_corridors_with_budget(
@@ -1209,6 +1252,16 @@ def render_context(
         )
     else:
         rendered = render_flat_context(sample, retrieval_result, max_context_sentences=max_context_sentences)
+
+    if _retrieval_graph_mode(retrieval_result) == "entity_chunk_graph":
+        meta = dict(rendered.metadata or {})
+        meta.update({
+            "chunk_grounding_enabled": False,
+            "chunk_grounding_skipped": True,
+            "chunk_grounding_skip_reason": "entity_chunk_graph_uses_chunk_level_context",
+        })
+        rendered.metadata = meta
+        return rendered
 
     if not bool(chunk_grounding_enabled):
         return rendered

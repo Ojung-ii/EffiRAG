@@ -925,7 +925,8 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             delivery_mode = str(getattr(cfg, "delivery_mode", "sentence_compressed") or "sentence_compressed").strip().lower()
             eff_chunk_grounding_enabled = bool(cfg.chunk_grounding_enabled)
             eff_chunk_grounding_mode = str(cfg.chunk_grounding_mode or "sentence_backfill")
-            if delivery_mode != "sentence_compressed":
+            retrieval_graph_mode = str(((retrieval.diagnostics or {}).get("graph_mode", getattr(cfg, "graph_mode", "current_entity_graph")) or "current_entity_graph")).strip().lower()
+            if delivery_mode != "sentence_compressed" and retrieval_graph_mode != "entity_chunk_graph":
                 eff_chunk_grounding_enabled = True
                 if delivery_mode == "chunk_package_basic":
                     eff_chunk_grounding_mode = "package_score"
@@ -933,6 +934,8 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     eff_chunk_grounding_mode = "corridor_lift"
                 elif delivery_mode == "chunk_package_grounded_support":
                     eff_chunk_grounding_mode = "package_score"
+            elif retrieval_graph_mode == "entity_chunk_graph":
+                eff_chunk_grounding_enabled = False
 
             eff_chunk_top_packages = int(cfg.chunk_grounding_top_k_packages)
             if int(getattr(cfg, "max_chunk_packages", 0) or 0) > 0:
@@ -1037,7 +1040,7 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             recall = supporting_fact_recall(sample, retrieval)
             precision = supporting_fact_precision(sample, retrieval)
             recall_at_k = supporting_fact_recall_at_ks(sample, retrieval, ks=DEFAULT_RECALL_KS)
-            gold_ids = supporting_fact_ids(sample)
+            gold_ids = supporting_fact_ids(sample, retrieval)
             rendered_ids = set(rendered.sentence_ids)
             rendered_recall = float(len(gold_ids.intersection(rendered_ids)) / len(gold_ids)) if gold_ids else 0.0
             rendered_precision = float(len(gold_ids.intersection(rendered_ids)) / len(rendered_ids)) if rendered_ids else 0.0

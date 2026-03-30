@@ -4,18 +4,43 @@ from .utils import mean_or_zero, safe_div
 DEFAULT_RECALL_KS = (1, 2, 5, 10, 20, 30, 50, 100, 150, 200)
 
 
-def supporting_fact_ids(sample):
+def _retrieval_graph_mode(retrieval):
+    if retrieval is None:
+        return "current_entity_graph"
+    diagnostics = getattr(retrieval, "diagnostics", {}) or {}
+    mode = str(diagnostics.get("graph_mode", "current_entity_graph") or "current_entity_graph").strip().lower()
+    if mode not in {"current_entity_graph", "entity_chunk_graph"}:
+        mode = "current_entity_graph"
+    return mode
+
+
+def _gold_support_ids(sample, retrieval=None):
+    mode = _retrieval_graph_mode(retrieval)
+    if mode == "entity_chunk_graph":
+        titles = []
+        seen = set()
+        for title, _sent_idx in list(getattr(sample, "supporting_facts", []) or []):
+            t = str(title or "").strip()
+            if not t or t in seen:
+                continue
+            seen.add(t)
+            titles.append(f"chunk::{t}::0")
+        return set(titles)
     return {f"{title}::{sent_idx}" for title, sent_idx in sample.supporting_facts}
 
 
+def supporting_fact_ids(sample, retrieval=None):
+    return _gold_support_ids(sample, retrieval=retrieval)
+
+
 def supporting_fact_recall(sample, retrieval):
-    gold = supporting_fact_ids(sample)
+    gold = _gold_support_ids(sample, retrieval)
     pred = set(retrieval.selected_sentence_ids)
     return safe_div(len(gold.intersection(pred)), len(gold))
 
 
 def supporting_fact_precision(sample, retrieval):
-    gold = supporting_fact_ids(sample)
+    gold = _gold_support_ids(sample, retrieval)
     pred = set(retrieval.selected_sentence_ids)
     return safe_div(len(gold.intersection(pred)), len(pred))
 
@@ -23,7 +48,7 @@ def supporting_fact_precision(sample, retrieval):
 def supporting_fact_recall_at_k(sample, retrieval, k: int):
     if k <= 0:
         return 0.0
-    gold = supporting_fact_ids(sample)
+    gold = _gold_support_ids(sample, retrieval)
     pred = set((retrieval.selected_sentence_ids or [])[:k])
     return safe_div(len(gold.intersection(pred)), len(gold))
 

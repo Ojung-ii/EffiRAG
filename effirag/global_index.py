@@ -851,7 +851,7 @@ def build_corpus_graph(
             title = str(row["title"])
             text = str(row.get("text", "") or "").strip()
             chunk_node = f"c::{doc_idx}"
-            chunk_id = f"{title}::0"
+            chunk_id = f"chunk::{title}::0"
             g.add_node(
                 chunk_node,
                 node_type="chunk",
