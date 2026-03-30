@@ -115,9 +115,10 @@ def _resolve_local_hf_snapshot(model_name):
     return str(snapshots[0].resolve()), True
 
 
-def _openie_sentence_key(doc_idx, sent_idx, text):
+def _openie_text_key(doc_idx, item_idx, text, unit="sentence"):
     digest = hashlib.sha1(str(text or "").encode("utf-8")).hexdigest()[:16]
-    return f"{int(doc_idx)}:{int(sent_idx)}:{digest}"
+    unit = str(unit or "sentence").strip().lower() or "sentence"
+    return f"{unit}:{int(doc_idx)}:{int(item_idx)}:{digest}"
 
 
 def _load_openie_sentence_cache(path, show_progress=True):
@@ -435,14 +436,16 @@ def _openai_http_chat_completion(base_url, api_key, params, timeout_sec):
     return str(content or "").strip()
 
 
-def _attach_relation_triples(g, doc_idx, sent_idx, sentence_id, triples):
+def _attach_relation_triples(g, doc_idx, item_idx, source_node, source_id, triples, source_unit="sentence"):
     added_relations = 0
+    source_unit = str(source_unit or "sentence").strip().lower() or "sentence"
+    source_key = "sentence_id" if source_unit == "sentence" else "chunk_id"
+    idx_key = "sent_idx" if source_unit == "sentence" else "chunk_idx"
     for tri_idx, triple in enumerate(triples):
         if not isinstance(triple, (list, tuple)) or len(triple) < 3:
             continue
         subj, pred, obj = str(triple[0]), str(triple[1]), str(triple[2])
-        rel_node = f"r::{int(doc_idx)}:{int(sent_idx)}:{int(tri_idx)}"
-        sent_node = f"s::{int(doc_idx)}:{int(sent_idx)}"
+        rel_node = f"r::{source_unit}::{int(doc_idx)}:{int(item_idx)}:{int(tri_idx)}"
         g.add_node(
             rel_node,
             node_type="relation",
@@ -450,10 +453,11 @@ def _attach_relation_triples(g, doc_idx, sent_idx, sentence_id, triples):
             subject=subj,
             object=obj,
             doc_idx=int(doc_idx),
-            sent_idx=int(sent_idx),
-            sentence_id=str(sentence_id),
+            source_unit=source_unit,
+            **{idx_key: int(item_idx), source_key: str(source_id)},
         )
-        g.add_edge(sent_node, rel_node, edge_type="expressed_in")
+        if source_node in g:
+            g.add_edge(source_node, rel_node, edge_type="expressed_in")
         added_relations += 1
 
         for tok in _entity_tokens(subj):
@@ -730,6 +734,7 @@ class _OpenAICompatTripleExtractor:
 
 def build_corpus_graph(
     corpus_rows,
+    graph_mode="current_entity_graph",
     openie_mode="llm",
     openie_model_name="Qwen/Qwen2.5-7B-Instruct",
     openie_text_max_chars=2200,
@@ -774,7 +779,11 @@ def build_corpus_graph(
     openie_backend = "lexical"
     openie_api_base_url = str(openie_api_base_url or "").strip()
     log_every = max(1, int(openie_log_every))
-    chunk_unit = _normalize_index_chunk_unit(index_chunk_unit, graph_mode="current_entity_graph")
+    graph_mode = _normalize_graph_mode(graph_mode)
+    chunk_unit = _normalize_index_chunk_unit(index_chunk_unit, graph_mode=graph_mode)
+    use_chunk_layer = chunk_unit == "passage"
+    text_unit = "passage" if (graph_mode == "entity_chunk_graph" and use_chunk_layer) else "sentence"
+    build_sentence_layer = text_unit == "sentence"
     doc_chunk_nodes = {}
 
     def _log(msg):
@@ -828,7 +837,8 @@ def build_corpus_graph(
             if openie_api_base_url:
                 _log(f"[Index/OpenIE] endpoint={openie_api_base_url}")
 
-    if chunk_unit == "passage":
+    openie_records = []
+    if use_chunk_layer:
         for row in tqdm(
             corpus_rows,
             total=len(corpus_rows),
@@ -841,10 +851,11 @@ def build_corpus_graph(
             title = str(row["title"])
             text = str(row.get("text", "") or "").strip()
             chunk_node = f"c::{doc_idx}"
+            chunk_id = f"{title}::0"
             g.add_node(
                 chunk_node,
                 node_type="chunk",
-                chunk_id=f"{title}::0",
+                chunk_id=chunk_id,
                 title=title,
                 chunk_idx=0,
                 text=text,
@@ -853,16 +864,42 @@ def build_corpus_graph(
             doc_chunk_nodes[doc_idx] = chunk_node
             num_chunks += 1
 
-    total_sentences_expected = None
-    if show_progress:
-        total_sentences_expected = sum(len(_split_sentences(str(row.get("text", "")))) for row in corpus_rows)
-    sentence_iter = (
-        (row, sent_idx, sent)
-        for row in corpus_rows
-        for sent_idx, sent in enumerate(_split_sentences(str(row.get("text", ""))))
-    )
-    sentence_records = []
-    try:
+            if not build_sentence_layer:
+                for tok in content_tokens(text):
+                    entity_node = _ensure_entity_node(g, tok)
+                    if entity_node is None:
+                        continue
+                    if g.has_edge(chunk_node, entity_node):
+                        g[chunk_node][entity_node]["support_layer"] = "entity_chunk"
+                    else:
+                        g.add_edge(
+                            chunk_node,
+                            entity_node,
+                            edge_type="entity_chunk_support",
+                            support_layer="entity_chunk",
+                        )
+
+                if effective_openie_mode == "llm" and extractor is not None:
+                    openie_records.append(
+                        {
+                            "doc_idx": int(doc_idx),
+                            "item_idx": 0,
+                            "source_id": str(chunk_id),
+                            "source_node": str(chunk_node),
+                            "source_unit": "passage",
+                            "text": str(text),
+                        }
+                    )
+
+    if build_sentence_layer:
+        total_sentences_expected = None
+        if show_progress:
+            total_sentences_expected = sum(len(_split_sentences(str(row.get("text", "")))) for row in corpus_rows)
+        sentence_iter = (
+            (row, sent_idx, sent)
+            for row in corpus_rows
+            for sent_idx, sent in enumerate(_split_sentences(str(row.get("text", ""))))
+        )
         for row, sent_idx, sent in tqdm(
             sentence_iter,
             total=total_sentences_expected,
@@ -887,14 +924,13 @@ def build_corpus_graph(
             )
             num_sentences += 1
 
-            if chunk_node is not None and chunk_node in g:
-                if not g.has_edge(chunk_node, node):
-                    g.add_edge(
-                        chunk_node,
-                        node,
-                        edge_type="chunk_contains_sentence",
-                        containment=True,
-                    )
+            if chunk_node is not None and chunk_node in g and not g.has_edge(chunk_node, node):
+                g.add_edge(
+                    chunk_node,
+                    node,
+                    edge_type="chunk_contains_sentence",
+                    containment=True,
+                )
 
             for tok in content_tokens(sent):
                 entity_node = _ensure_entity_node(g, tok)
@@ -918,138 +954,180 @@ def build_corpus_graph(
                         )
 
             if effective_openie_mode == "llm" and extractor is not None:
-                sentence_records.append(
+                openie_records.append(
                     {
                         "doc_idx": int(doc_idx),
-                        "sent_idx": int(sent_idx),
-                        "sentence_id": str(sentence_id),
+                        "item_idx": int(sent_idx),
+                        "source_id": str(sentence_id),
+                        "source_node": str(node),
+                        "source_unit": "sentence",
                         "text": str(sent),
                     }
                 )
 
-        if effective_openie_mode == "llm" and extractor is not None:
-            cached_items = []
-            pending_items = []
-            for rec in tqdm(
-                sentence_records,
-                total=len(sentence_records),
-                desc="OpenIE cache lookup",
-                unit="sent",
-                leave=True,
-                disable=not show_progress,
-            ):
-                cache_key = _openie_sentence_key(rec["doc_idx"], rec["sent_idx"], rec["text"])
-                cached = openie_sentence_cache.get(cache_key)
-                if cached is not None:
-                    llm_cache_hits += 1
-                    cached_items.append((rec, cache_key, cached))
-                else:
-                    llm_cache_misses += 1
-                    pending_items.append((rec, cache_key))
-            _log(
-                f"[Index/OpenIE] targets={len(sentence_records)} cache_hit={len(cached_items)} pending={len(pending_items)}"
+    if effective_openie_mode == "llm" and extractor is not None:
+        cached_items = []
+        pending_items = []
+        for rec in tqdm(
+            openie_records,
+            total=len(openie_records),
+            desc=f"OpenIE cache lookup ({text_unit})",
+            unit=text_unit,
+            leave=True,
+            disable=not show_progress,
+        ):
+            cache_key = _openie_text_key(
+                rec["doc_idx"],
+                rec["item_idx"],
+                rec["text"],
+                unit=rec.get("source_unit", text_unit),
+            )
+            cached = openie_sentence_cache.get(cache_key)
+            if cached is not None:
+                llm_cache_hits += 1
+                cached_items.append((rec, cache_key, cached))
+            else:
+                llm_cache_misses += 1
+                pending_items.append((rec, cache_key))
+        _log(
+            f"[Index/OpenIE] unit={text_unit} targets={len(openie_records)} cache_hit={len(cached_items)} pending={len(pending_items)}"
+        )
+
+        def _consume_openie_result(rec, cache_key, triples, parsed, err, from_cache):
+            nonlocal llm_runtime_errors, llm_parse_failures, llm_zero_triple_sentences
+            nonlocal num_relation_nodes, num_triples, cache_dirty
+            if err:
+                llm_runtime_errors += 1
+                err_key = str(err).strip().splitlines()[0][:280]
+                llm_error_counter[err_key] = llm_error_counter.get(err_key, 0) + 1
+                if len(llm_error_samples) < max(0, int(openie_error_sample_limit)):
+                    llm_error_samples.append(
+                        {
+                            "source_id": rec["source_id"],
+                            "doc_idx": int(rec["doc_idx"]),
+                            "item_idx": int(rec["item_idx"]),
+                            "source_unit": str(rec.get("source_unit", text_unit)),
+                            "error": err_key,
+                            "text_head": str(rec["text"])[:240],
+                        }
+                    )
+                return
+
+            if not parsed:
+                llm_parse_failures += 1
+
+            norm_triples = []
+            for item in triples or []:
+                if isinstance(item, (list, tuple)) and len(item) >= 3:
+                    norm_triples.append((str(item[0]), str(item[1]), str(item[2])))
+
+            if (not from_cache) and (cache_key not in openie_sentence_cache):
+                openie_sentence_cache[cache_key] = {
+                    "parsed": bool(parsed),
+                    "triples": norm_triples,
+                }
+                cache_dirty = True
+
+            if not norm_triples:
+                llm_zero_triple_sentences += 1
+                return
+
+            added = _attach_relation_triples(
+                g=g,
+                doc_idx=rec["doc_idx"],
+                item_idx=rec["item_idx"],
+                source_node=rec["source_node"],
+                source_id=rec["source_id"],
+                triples=norm_triples,
+                source_unit=rec.get("source_unit", text_unit),
+            )
+            num_relation_nodes += int(added)
+            num_triples += int(added)
+
+        for rec, cache_key, cached in tqdm(
+            cached_items,
+            total=len(cached_items),
+            desc="Attach cached OpenIE",
+            unit=text_unit,
+            leave=True,
+            disable=not show_progress,
+        ):
+            triples = list(cached.get("triples", []) or [])
+            parsed = bool(cached.get("parsed", True))
+            _consume_openie_result(
+                rec=rec,
+                cache_key=cache_key,
+                triples=triples,
+                parsed=parsed,
+                err="",
+                from_cache=True,
             )
 
-            def _consume_openie_result(rec, cache_key, triples, parsed, err, from_cache):
-                nonlocal llm_runtime_errors, llm_parse_failures, llm_zero_triple_sentences
-                nonlocal num_relation_nodes, num_triples, cache_dirty
-                if err:
-                    llm_runtime_errors += 1
-                    err_key = str(err).strip().splitlines()[0][:280]
-                    llm_error_counter[err_key] = llm_error_counter.get(err_key, 0) + 1
-                    if len(llm_error_samples) < max(0, int(openie_error_sample_limit)):
-                        llm_error_samples.append(
-                            {
-                                "sentence_id": rec["sentence_id"],
-                                "doc_idx": int(rec["doc_idx"]),
-                                "sent_idx": int(rec["sent_idx"]),
-                                "error": err_key,
-                                "text_head": str(rec["text"])[:240],
-                            }
-                        )
-                    return
+        llm_calls += int(len(pending_items))
+        workers = max(1, int(openie_parallel_workers))
+        openie_start = time.perf_counter()
+        openie_done = 0
 
-                if not parsed:
-                    llm_parse_failures += 1
+        def _heartbeat(force=False):
+            nonlocal openie_done
+            if not show_progress:
+                return
+            if (not force) and (openie_done == 0 or (openie_done % log_every != 0)):
+                return
+            elapsed = max(1e-9, time.perf_counter() - openie_start)
+            speed = float(openie_done) / elapsed
+            ok = max(0, int(openie_done - llm_runtime_errors))
+            print(
+                "[Index/OpenIE] "
+                f"done={openie_done}/{len(pending_items)} ok={ok} err={llm_runtime_errors} "
+                f"parse_fail={llm_parse_failures} zero={llm_zero_triple_sentences} "
+                f"speed={speed:.2f} {text_unit}/s",
+                flush=True,
+            )
 
-                norm_triples = []
-                for item in triples or []:
-                    if isinstance(item, (list, tuple)) and len(item) >= 3:
-                        norm_triples.append((str(item[0]), str(item[1]), str(item[2])))
-
-                if (not from_cache) and (cache_key not in openie_sentence_cache):
-                    openie_sentence_cache[cache_key] = {
-                        "parsed": bool(parsed),
-                        "triples": norm_triples,
-                    }
-                    cache_dirty = True
-
-                if not norm_triples:
-                    llm_zero_triple_sentences += 1
-                    return
-
-                added = _attach_relation_triples(
-                    g=g,
-                    doc_idx=rec["doc_idx"],
-                    sent_idx=rec["sent_idx"],
-                    sentence_id=rec["sentence_id"],
-                    triples=norm_triples,
-                )
-                num_relation_nodes += int(added)
-                num_triples += int(added)
-
-            for rec, cache_key, cached in tqdm(
-                cached_items,
-                total=len(cached_items),
-                desc="Attach cached OpenIE",
-                unit="sent",
+        if workers <= 1:
+            pbar = tqdm(
+                pending_items,
+                total=len(pending_items),
+                desc=f"OpenIE triples ({text_unit})",
+                unit=text_unit,
                 leave=True,
                 disable=not show_progress,
-            ):
-                triples = list(cached.get("triples", []) or [])
-                parsed = bool(cached.get("parsed", True))
+            )
+            for rec, cache_key in pbar:
+                triples, _, parsed, err = extractor.extract(rec["text"])
                 _consume_openie_result(
                     rec=rec,
                     cache_key=cache_key,
                     triples=triples,
                     parsed=parsed,
-                    err="",
-                    from_cache=True,
+                    err=err,
+                    from_cache=False,
                 )
-
-            llm_calls += int(len(pending_items))
-            workers = max(1, int(openie_parallel_workers))
-            openie_start = time.perf_counter()
-            openie_done = 0
-
-            def _heartbeat(force=False):
-                nonlocal openie_done
-                if not show_progress:
-                    return
-                if (not force) and (openie_done == 0 or (openie_done % log_every != 0)):
-                    return
-                elapsed = max(1e-9, time.perf_counter() - openie_start)
-                speed = float(openie_done) / elapsed
-                ok = max(0, int(openie_done - llm_runtime_errors))
-                print(
-                    "[Index/OpenIE] "
-                    f"done={openie_done}/{len(pending_items)} ok={ok} err={llm_runtime_errors} "
-                    f"parse_fail={llm_parse_failures} zero={llm_zero_triple_sentences} "
-                    f"speed={speed:.2f} sent/s",
-                    flush=True,
-                )
-
-            if workers <= 1:
+                openie_done += 1
+                _heartbeat(force=False)
+                if show_progress:
+                    pbar.set_postfix({"ok": int(len(openie_sentence_cache)), "err": int(llm_runtime_errors)})
+        else:
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                fut_to_item = {
+                    executor.submit(extractor.extract, rec["text"]): (rec, cache_key)
+                    for rec, cache_key in pending_items
+                }
                 pbar = tqdm(
-                    pending_items,
-                    total=len(pending_items),
-                    desc="OpenIE triples",
-                    unit="sent",
+                    as_completed(fut_to_item),
+                    total=len(fut_to_item),
+                    desc=f"OpenIE triples ({text_unit}, parallel={workers})",
+                    unit=text_unit,
                     leave=True,
                     disable=not show_progress,
                 )
-                for rec, cache_key in pbar:
-                    triples, _, parsed, err = extractor.extract(rec["text"])
+                for fut in pbar:
+                    rec, cache_key = fut_to_item[fut]
+                    try:
+                        triples, _, parsed, err = fut.result()
+                    except Exception as exc:
+                        triples, parsed, err = [], False, f"executor_error: {exc}"
                     _consume_openie_result(
                         rec=rec,
                         cache_key=cache_key,
@@ -1061,56 +1139,13 @@ def build_corpus_graph(
                     openie_done += 1
                     _heartbeat(force=False)
                     if show_progress:
-                        pbar.set_postfix(
-                            {
-                                "ok": int(len(openie_sentence_cache)),
-                                "err": int(llm_runtime_errors),
-                            }
-                        )
-            else:
-                with ThreadPoolExecutor(max_workers=workers) as executor:
-                    fut_to_item = {
-                        executor.submit(extractor.extract, rec["text"]): (rec, cache_key)
-                        for rec, cache_key in pending_items
-                    }
-                    pbar = tqdm(
-                        as_completed(fut_to_item),
-                        total=len(fut_to_item),
-                        desc=f"OpenIE triples (parallel={workers})",
-                        unit="sent",
-                        leave=True,
-                        disable=not show_progress,
-                    )
-                    for fut in pbar:
-                        rec, cache_key = fut_to_item[fut]
-                        try:
-                            triples, _, parsed, err = fut.result()
-                        except Exception as exc:
-                            triples, parsed, err = [], False, f"executor_error: {exc}"
-                        _consume_openie_result(
-                            rec=rec,
-                            cache_key=cache_key,
-                            triples=triples,
-                            parsed=parsed,
-                            err=err,
-                            from_cache=False,
-                        )
-                        openie_done += 1
-                        _heartbeat(force=False)
-                        if show_progress:
-                            pbar.set_postfix(
-                                {
-                                    "ok": int(len(openie_sentence_cache)),
-                                    "err": int(llm_runtime_errors),
-                                }
-                            )
-            _heartbeat(force=True)
-            _log(
-                f"[Index/OpenIE] completed calls={llm_calls} cache_hits={llm_cache_hits} "
-                f"errors={llm_runtime_errors} triples={num_triples}"
-            )
-    finally:
-        if effective_openie_mode == "llm" and cache_path and cache_dirty:
+                        pbar.set_postfix({"ok": int(len(openie_sentence_cache)), "err": int(llm_runtime_errors)})
+        _heartbeat(force=True)
+        _log(
+            f"[Index/OpenIE] completed calls={llm_calls} cache_hits={llm_cache_hits} "
+            f"errors={llm_runtime_errors} triples={num_triples}"
+        )
+        if cache_path and cache_dirty:
             _write_openie_sentence_cache(cache_path, openie_sentence_cache, show_progress=show_progress)
 
     num_entities = sum(1 for n in g.nodes if g.nodes[n].get("node_type") == "entity")
@@ -1132,7 +1167,10 @@ def build_corpus_graph(
         "openie_mode_requested": requested_openie_mode,
         "openie_mode_effective": effective_openie_mode,
         "openie_backend_effective": openie_backend,
+        "graph_mode": str(graph_mode),
         "index_chunk_unit": str(chunk_unit),
+        "openie_record_unit": str(text_unit),
+        "build_sentence_layer": bool(build_sentence_layer),
         "openie_model_name": str(openie_model_name or ""),
         "openie_text_max_chars": int(openie_text_max_chars),
         "openie_max_new_tokens": int(openie_max_new_tokens),
@@ -1542,11 +1580,15 @@ def _maybe_seed_openie_cache_from_latest(
     source_id_path,
     target_cache_path,
     openie_mode,
+    graph_mode="current_entity_graph",
+    index_chunk_unit="sentence",
     show_progress=True,
 ):
     mode = str(openie_mode or "").strip().lower()
     if mode != "llm":
         return {"openie_cache_seeded": False, "openie_cache_seed_reason": "mode_not_llm"}
+    requested_graph_mode = _normalize_graph_mode(graph_mode)
+    requested_chunk_unit = _normalize_index_chunk_unit(index_chunk_unit, graph_mode=requested_graph_mode)
 
     target = Path(target_cache_path)
     if target.exists() and target.stat().st_size > 0:
@@ -1571,6 +1613,12 @@ def _maybe_seed_openie_cache_from_latest(
             continue
         cand = idx_dir / "openie_sentence_cache.jsonl"
         if not cand.exists():
+            continue
+        meta = _read_json_obj(idx_dir / "meta.json")
+        build_cfg = dict((meta or {}).get("build_config", {}) or {})
+        cand_graph_mode = _normalize_graph_mode(build_cfg.get("graph_mode", "current_entity_graph"))
+        cand_chunk_unit = _normalize_index_chunk_unit(build_cfg.get("index_chunk_unit", "sentence"), graph_mode=cand_graph_mode)
+        if cand_graph_mode != requested_graph_mode or cand_chunk_unit != requested_chunk_unit:
             continue
         try:
             st = cand.stat()
@@ -2433,11 +2481,14 @@ def load_or_build_global_index(
             source_id_path=source_id_path,
             target_cache_path=str(openie_sentence_cache_path),
             openie_mode=build_config["openie_mode"],
+            graph_mode=build_config.get("graph_mode", "current_entity_graph"),
+            index_chunk_unit=build_config.get("index_chunk_unit", "sentence"),
             show_progress=show_progress,
         )
         rows = load_corpus_rows(corpus_path, show_progress=show_progress)
         graph, stats = build_corpus_graph(
             rows,
+            graph_mode=build_config.get("graph_mode", "current_entity_graph"),
             index_chunk_unit=build_config.get("index_chunk_unit", "sentence"),
             openie_mode=build_config["openie_mode"],
             openie_model_name=build_config["openie_model_name"],
