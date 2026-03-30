@@ -42,6 +42,27 @@ SEMANTIC_SUPPORT_ARTIFACT_NAMES = [
 SEMANTIC_DATA_ARTIFACT_NAMES = SEMANTIC_CORE_ARTIFACT_NAMES + SEMANTIC_SUPPORT_ARTIFACT_NAMES
 
 
+def _normalize_graph_mode(value):
+    mode = str(value or "current_entity_graph").strip().lower()
+    if mode not in {"current_entity_graph", "entity_chunk_graph"}:
+        mode = "current_entity_graph"
+    return mode
+
+
+def _normalize_index_chunk_unit(value, graph_mode="current_entity_graph"):
+    raw = str(value or "").strip().lower()
+    mode = _normalize_graph_mode(graph_mode)
+    if raw in {"", "auto"}:
+        return "passage" if mode == "entity_chunk_graph" else "sentence"
+    if raw in {"passage", "chunk", "document", "doc"}:
+        return "passage"
+    return "sentence"
+
+
+def _is_chunk_like_type(node_type):
+    return str(node_type or "").strip().lower() in {"chunk", "passage", "document"}
+
+
 def _uses_max_completion_tokens(model_name):
     # Align with HippoRAG2 behavior: GPT models may use max_completion_tokens.
     # Some OpenAI-compatible backends (e.g., vLLM server) still require max_tokens.
@@ -723,10 +744,12 @@ def build_corpus_graph(
     openie_parallel_workers=1,
     openie_log_every=200,
     openie_sentence_cache_path="",
+    index_chunk_unit="sentence",
     show_progress=True,
 ):
     g = nx.Graph()
     num_sentences = 0
+    num_chunks = 0
     num_relation_nodes = 0
     num_triples = 0
 
@@ -751,6 +774,8 @@ def build_corpus_graph(
     openie_backend = "lexical"
     openie_api_base_url = str(openie_api_base_url or "").strip()
     log_every = max(1, int(openie_log_every))
+    chunk_unit = _normalize_index_chunk_unit(index_chunk_unit, graph_mode="current_entity_graph")
+    doc_chunk_nodes = {}
 
     def _log(msg):
         if show_progress:
@@ -803,6 +828,31 @@ def build_corpus_graph(
             if openie_api_base_url:
                 _log(f"[Index/OpenIE] endpoint={openie_api_base_url}")
 
+    if chunk_unit == "passage":
+        for row in tqdm(
+            corpus_rows,
+            total=len(corpus_rows),
+            desc="Build passage chunk nodes",
+            unit="doc",
+            leave=True,
+            disable=not show_progress,
+        ):
+            doc_idx = int(row["idx"])
+            title = str(row["title"])
+            text = str(row.get("text", "") or "").strip()
+            chunk_node = f"c::{doc_idx}"
+            g.add_node(
+                chunk_node,
+                node_type="chunk",
+                chunk_id=f"{title}::0",
+                title=title,
+                chunk_idx=0,
+                text=text,
+                doc_idx=doc_idx,
+            )
+            doc_chunk_nodes[doc_idx] = chunk_node
+            num_chunks += 1
+
     total_sentences_expected = None
     if show_progress:
         total_sentences_expected = sum(len(_split_sentences(str(row.get("text", "")))) for row in corpus_rows)
@@ -823,6 +873,7 @@ def build_corpus_graph(
         ):
             doc_idx = int(row["idx"])
             title = str(row["title"])
+            chunk_node = doc_chunk_nodes.get(doc_idx)
             node = f"s::{doc_idx}:{sent_idx}"
             sentence_id = f"{title}::{sent_idx}"
             g.add_node(
@@ -836,6 +887,15 @@ def build_corpus_graph(
             )
             num_sentences += 1
 
+            if chunk_node is not None and chunk_node in g:
+                if not g.has_edge(chunk_node, node):
+                    g.add_edge(
+                        chunk_node,
+                        node,
+                        edge_type="chunk_contains_sentence",
+                        containment=True,
+                    )
+
             for tok in content_tokens(sent):
                 entity_node = _ensure_entity_node(g, tok)
                 if entity_node is None:
@@ -844,8 +904,18 @@ def build_corpus_graph(
                     node,
                     entity_node,
                     edge_type="mentions",
-                    support_layer="entity_chunk",
+                    support_layer=("entity_sentence" if chunk_node is not None else "entity_chunk"),
                 )
+                if chunk_node is not None:
+                    if g.has_edge(chunk_node, entity_node):
+                        g[chunk_node][entity_node]["support_layer"] = "entity_chunk"
+                    else:
+                        g.add_edge(
+                            chunk_node,
+                            entity_node,
+                            edge_type="entity_chunk_support",
+                            support_layer="entity_chunk",
+                        )
 
             if effective_openie_mode == "llm" and extractor is not None:
                 sentence_records.append(
@@ -1045,12 +1115,14 @@ def build_corpus_graph(
 
     num_entities = sum(1 for n in g.nodes if g.nodes[n].get("node_type") == "entity")
     num_relations = sum(1 for n in g.nodes if g.nodes[n].get("node_type") == "relation")
+    num_chunks = sum(1 for n in g.nodes if _is_chunk_like_type(g.nodes[n].get("node_type")))
     num_docs = len({int(row["idx"]) for row in corpus_rows})
     num_support_edges = sum(1 for u, v in g.edges if str(g[u][v].get("support_layer", "")) == "entity_chunk")
     top_errors = sorted(llm_error_counter.items(), key=lambda x: x[1], reverse=True)[:10]
     stats = {
         "num_docs": int(num_docs),
         "num_sentences": int(num_sentences),
+        "num_chunks": int(num_chunks),
         "num_entities": int(num_entities),
         "num_relation_nodes": int(num_relations or num_relation_nodes),
         "num_extracted_triples": int(num_triples),
@@ -1060,6 +1132,7 @@ def build_corpus_graph(
         "openie_mode_requested": requested_openie_mode,
         "openie_mode_effective": effective_openie_mode,
         "openie_backend_effective": openie_backend,
+        "index_chunk_unit": str(chunk_unit),
         "openie_model_name": str(openie_model_name or ""),
         "openie_text_max_chars": int(openie_text_max_chars),
         "openie_max_new_tokens": int(openie_max_new_tokens),
@@ -1103,6 +1176,8 @@ def _normalize_build_config(
     embedding_batch_size,
     embedding_max_length,
     embedding_text_max_chars,
+    graph_mode,
+    index_chunk_unit,
     openie_mode,
     openie_model_name,
     openie_text_max_chars,
@@ -1123,6 +1198,8 @@ def _normalize_build_config(
             prebuilt_path = str(Path(prebuilt_path).resolve())
         except Exception:
             prebuilt_path = str(prebuilt_igraph_path or "")
+    mode_graph = _normalize_graph_mode(graph_mode)
+    chunk_unit = _normalize_index_chunk_unit(index_chunk_unit, graph_mode=mode_graph)
     return {
         "prebuilt_igraph_path": prebuilt_path,
         "prebuilt_igraph_format": str(prebuilt_igraph_format or "hipporag_pickle"),
@@ -1132,6 +1209,8 @@ def _normalize_build_config(
         "embedding_batch_size": int(embedding_batch_size),
         "embedding_max_length": int(embedding_max_length),
         "embedding_text_max_chars": int(embedding_text_max_chars),
+        "graph_mode": mode_graph,
+        "index_chunk_unit": chunk_unit,
         "openie_mode": mode,
         "openie_model_name": str(openie_model_name or ""),
         "openie_text_max_chars": int(openie_text_max_chars),
@@ -1161,6 +1240,8 @@ def _normalize_semantic_build_config(build_config):
         "embedding_model_name": str(cfg.get("embedding_model_name", "") or ""),
         "embedding_max_length": int(cfg.get("embedding_max_length", 192)),
         "embedding_text_max_chars": int(cfg.get("embedding_text_max_chars", 600)),
+        "graph_mode": str(cfg.get("graph_mode", "current_entity_graph") or "current_entity_graph"),
+        "index_chunk_unit": str(cfg.get("index_chunk_unit", "sentence") or "sentence"),
         "text_construction_version": SEMANTIC_TEXT_CONSTRUCTION_VERSION,
         "normalization_version": SEMANTIC_NORMALIZATION_VERSION,
     }
@@ -1190,12 +1271,17 @@ def _semantic_node_signature_from_ids(entity_ids, chunk_ids):
 def _graph_semantic_node_signature(g):
     entity_ids = []
     chunk_ids = []
+    sentence_ids = []
     for node in g.nodes:
         node_type = str(g.nodes[node].get("node_type", "") or "")
         if node_type == "entity":
             entity_ids.append(str(node))
-        elif node_type == "sentence":
+        elif _is_chunk_like_type(node_type):
             chunk_ids.append(str(node))
+        elif node_type == "sentence":
+            sentence_ids.append(str(node))
+    if not chunk_ids:
+        chunk_ids = sentence_ids
     return _semantic_node_signature_from_ids(entity_ids, chunk_ids)
 
 
@@ -1637,13 +1723,21 @@ def _build_chunk_semantic_text(g, node_id):
 def _collect_semantic_records(g):
     entity_records = []
     chunk_records = []
+    has_explicit_chunk_nodes = any(
+        _is_chunk_like_type(g.nodes[node_id].get("node_type", ""))
+        for node_id in g.nodes
+    )
     for node_id in g.nodes:
         node_type = str(g.nodes[node_id].get("node_type", "") or "")
         if node_type == "entity":
             text = _build_entity_semantic_text(g, node_id)
             if text:
                 entity_records.append({"node_id": str(node_id), "text": text})
-        elif node_type == "sentence":
+        elif _is_chunk_like_type(node_type):
+            text = _build_chunk_semantic_text(g, node_id)
+            if text:
+                chunk_records.append({"node_id": str(node_id), "text": text})
+        elif (not has_explicit_chunk_nodes) and node_type == "sentence":
             text = _build_chunk_semantic_text(g, node_id)
             if text:
                 chunk_records.append({"node_id": str(node_id), "text": text})
@@ -1685,20 +1779,34 @@ def _read_json_obj(path):
 def _build_entity_chunk_support_mapping(g):
     entity_to_chunks = {}
     chunk_to_entities = {}
+    has_explicit_chunk_nodes = any(
+        _is_chunk_like_type(g.nodes[node_id].get("node_type", ""))
+        for node_id in g.nodes
+    )
 
     for u, v in g.edges:
         u_type = str(g.nodes[u].get("node_type", "") or "")
         v_type = str(g.nodes[v].get("node_type", "") or "")
         support_layer = str(g[u][v].get("support_layer", "") or "")
 
-        is_support_edge = (support_layer == "entity_chunk") or ({u_type, v_type} == {"entity", "sentence"})
+        pair = {u_type, v_type}
+        pair_is_entity_chunk_like = (
+            (u_type == "entity" and _is_chunk_like_type(v_type))
+            or (v_type == "entity" and _is_chunk_like_type(u_type))
+        )
+        pair_is_legacy_entity_sentence = pair == {"entity", "sentence"}
+
+        if has_explicit_chunk_nodes:
+            is_support_edge = pair_is_entity_chunk_like and (support_layer == "entity_chunk" or support_layer == "")
+        else:
+            is_support_edge = pair_is_entity_chunk_like or pair_is_legacy_entity_sentence or (support_layer == "entity_chunk")
         if not is_support_edge:
             continue
 
-        if u_type == "entity" and v_type == "sentence":
+        if u_type == "entity" and (_is_chunk_like_type(v_type) or (not has_explicit_chunk_nodes and v_type == "sentence")):
             entity = str(u)
             chunk = str(v)
-        elif v_type == "entity" and u_type == "sentence":
+        elif v_type == "entity" and (_is_chunk_like_type(u_type) or (not has_explicit_chunk_nodes and u_type == "sentence")):
             entity = str(v)
             chunk = str(u)
         else:
@@ -2008,10 +2116,10 @@ def _build_graph_from_prebuilt_igraph(
         if name.startswith("chunk-"):
             g.add_node(
                 name,
-                node_type="sentence",
-                sentence_id=name,
+                node_type="chunk",
+                chunk_id=name,
                 title="prebuilt_chunk",
-                sent_idx=0,
+                chunk_idx=0,
                 text=content,
                 source_node_type="chunk",
             )
@@ -2056,7 +2164,10 @@ def _build_graph_from_prebuilt_igraph(
             g.add_edge(u, v, edge_type="hipporag_link", weight=weight)
         u_type = g.nodes[u].get("node_type")
         v_type = g.nodes[v].get("node_type")
-        if {u_type, v_type} == {"sentence", "entity"}:
+        if ({u_type, v_type} == {"sentence", "entity"}) or (
+            (u_type == "entity" and _is_chunk_like_type(v_type))
+            or (v_type == "entity" and _is_chunk_like_type(u_type))
+        ):
             g[u][v]["support_layer"] = "entity_chunk"
 
     alias_nodes_added = 0
@@ -2116,6 +2227,7 @@ def _build_graph_from_prebuilt_igraph(
 
     num_entities = sum(1 for n in g.nodes if g.nodes[n].get("node_type") == "entity")
     num_sentences = sum(1 for n in g.nodes if g.nodes[n].get("node_type") == "sentence")
+    num_chunks = sum(1 for n in g.nodes if _is_chunk_like_type(g.nodes[n].get("node_type")))
     num_support_edges = sum(1 for u, v in g.edges if str(g[u][v].get("support_layer", "")) == "entity_chunk")
     stats = {
         "source_type": "prebuilt_igraph",
@@ -2133,6 +2245,7 @@ def _build_graph_from_prebuilt_igraph(
         "num_edges": int(g.number_of_edges()),
         "num_entities": int(num_entities),
         "num_sentences": int(num_sentences),
+        "num_chunks": int(num_chunks),
         "num_entity_chunk_support_edges": int(num_support_edges),
     }
     return g, stats
@@ -2150,6 +2263,8 @@ def load_or_build_global_index(
     embedding_batch_size=8,
     embedding_max_length=192,
     embedding_text_max_chars=600,
+    graph_mode="current_entity_graph",
+    index_chunk_unit="auto",
     openie_mode="llm",
     openie_model_name="Qwen/Qwen2.5-7B-Instruct",
     openie_text_max_chars=2200,
@@ -2175,6 +2290,8 @@ def load_or_build_global_index(
         embedding_batch_size=embedding_batch_size,
         embedding_max_length=embedding_max_length,
         embedding_text_max_chars=embedding_text_max_chars,
+        graph_mode=graph_mode,
+        index_chunk_unit=index_chunk_unit,
         openie_mode=openie_mode,
         openie_model_name=openie_model_name,
         openie_text_max_chars=openie_text_max_chars,
@@ -2204,12 +2321,20 @@ def load_or_build_global_index(
     if not force_rebuild and graph_path.exists() and meta_path.exists():
         with meta_path.open("r", encoding="utf-8") as f:
             meta = json.load(f)
-        if meta.get("fingerprint", {}) == fp and meta.get("build_config", {}) == build_config:
+        meta_build_config = dict(meta.get("build_config", {}) or {})
+        if "graph_mode" not in meta_build_config:
+            meta_build_config["graph_mode"] = "current_entity_graph"
+        if "index_chunk_unit" not in meta_build_config:
+            meta_build_config["index_chunk_unit"] = "sentence"
+        if meta.get("fingerprint", {}) == fp and meta_build_config == build_config:
             load_start = time.perf_counter()
             graph = _read_gpickle(graph_path)
             load_ms = (time.perf_counter() - load_start) * 1000.0
             out_meta = dict(meta)
+            out_meta["build_config"] = dict(build_config)
             out_meta_stats = dict(out_meta.get("stats", {}) or {})
+            out_meta_stats["graph_mode"] = str(build_config.get("graph_mode", "current_entity_graph"))
+            out_meta_stats["index_chunk_unit"] = str(build_config.get("index_chunk_unit", "sentence"))
             semantic_meta = dict(out_meta.get("semantic_index", {}) or {})
             semantic_build_ms = 0.0
             semantic_reuse_info = {}
@@ -2313,6 +2438,7 @@ def load_or_build_global_index(
         rows = load_corpus_rows(corpus_path, show_progress=show_progress)
         graph, stats = build_corpus_graph(
             rows,
+            index_chunk_unit=build_config.get("index_chunk_unit", "sentence"),
             openie_mode=build_config["openie_mode"],
             openie_model_name=build_config["openie_model_name"],
             openie_text_max_chars=build_config["openie_text_max_chars"],
@@ -2371,6 +2497,8 @@ def load_or_build_global_index(
         _ensure_semantic_support_artifacts(index_dir=index_dir, g=graph, show_progress=show_progress)
 
     stats = dict(stats or {})
+    stats["graph_mode"] = str(build_config.get("graph_mode", "current_entity_graph"))
+    stats["index_chunk_unit"] = str(build_config.get("index_chunk_unit", "sentence"))
     stats["semantic_embedding_enabled"] = bool(semantic_meta.get("enabled", False))
     stats["semantic_embedding_model_name"] = str(semantic_meta.get("model_name", ""))
     stats["semantic_embedding_dim"] = int(semantic_meta.get("dim", 0) or 0)

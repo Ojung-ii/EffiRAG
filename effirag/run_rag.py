@@ -9,6 +9,7 @@ from pathlib import Path
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from .config import RagConfig, apply_cli_overrides, dataclass_from_dict
+from .eval.evaluator import QAEvaluator, extract_gold_answers
 from .efficiency import Timer, gpu_peak_mb, process_rss_mb, reset_gpu_peak
 from .metrics import (
     DEFAULT_RECALL_KS,
@@ -17,7 +18,6 @@ from .metrics import (
     supporting_fact_recall,
     supporting_fact_recall_at_ks,
 )
-from .qa_metrics import exact_match_score, token_f1_score
 from .registry import get_dataset_loader, get_generator, get_method, register_defaults
 from .render import render_context
 from .types import AnchorResult, RetrievalResult
@@ -291,6 +291,11 @@ def _build_profile_record(row: dict, retrieval_only: bool = False):
         "query_index": _safe_int(row.get("sample_index", -1), -1),
         "query_id": str(row.get("sample_id", "")),
         "question_preview": str(row.get("question", "") or "")[:160],
+        "graph_mode": str(diag.get("graph_mode", "current_entity_graph") or "current_entity_graph"),
+        "chunk_scoring_mode": str(diag.get("chunk_scoring_mode", "entity_aggregate") or "entity_aggregate"),
+        "delivery_mode": str((row.get("rendering", {}) or {}).get("delivery_mode", "sentence_compressed") or "sentence_compressed"),
+        "ppr_graph_nodes": _safe_int(diag.get("ppr_graph_nodes", 0), 0),
+        "ppr_graph_edges": _safe_int(diag.get("ppr_graph_edges", 0), 0),
         "anchor_count": _safe_int(len(retrieval.get("anchors", []) or []), 0),
         "proposal_entity_count": _safe_int(diag.get("proposal_entity_count", 0), 0),
         "proposal_chunk_count": _safe_int(diag.get("proposal_chunk_count", 0), 0),
@@ -320,6 +325,8 @@ def _build_profile_record(row: dict, retrieval_only: bool = False):
         "candidate_similarity_recomputed_count": _safe_int(diag.get("candidate_similarity_recomputed_count", 0), 0),
         "semantic_scores_reused_in_final": bool(diag.get("semantic_scores_reused_in_final", False)),
         "sentence_rerank_semantic_calls": _safe_int(diag.get("sentence_rerank_semantic_calls", 0), 0),
+        "entity_chunk_graph_applied": bool(((diag.get("entity_chunk_graph", {}) or {}).get("applied", False))),
+        "entity_chunk_graph_selected_chunks": _safe_int(len(((diag.get("entity_chunk_graph", {}) or {}).get("selected_chunks", [])) or []), 0),
         "prompt_tokens": int(prompt_tokens),
         "completion_tokens": int(completion_tokens),
         "finish_reason": finish_reason,
@@ -695,6 +702,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--semantic-topn-chunk", type=int, default=None)
     parser.add_argument("--graph-reserve-topn", type=int, default=None)
     parser.add_argument("--semantic-topn", type=int, default=None)
+    parser.add_argument("--index-chunk-unit", type=str, default=None, choices=["auto", "sentence", "passage"])
+    parser.add_argument("--graph-mode", type=str, default=None, choices=["current_entity_graph", "entity_chunk_graph"])
+    parser.add_argument("--chunk-scoring-mode", type=str, default=None, choices=["entity_aggregate", "direct_chunk"])
+    parser.add_argument("--entity-chunk-transition-weight", type=float, default=None)
+    parser.add_argument("--chunk-node-enabled-in-diffusion", type=str, default=None)
+    parser.add_argument("--chunk-score-topk", type=int, default=None)
+    parser.add_argument("--chunk-package-enabled", type=str, default=None)
     parser.add_argument("--entity-lookup-use-two-tier", type=str, default=None)
     parser.add_argument("--entity-lookup-tier1-topk", type=int, default=None)
     parser.add_argument("--entity-lookup-alias-token-limit", type=int, default=None)
@@ -714,9 +728,17 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-score-structure-weight", type=float, default=None)
     parser.add_argument("--run-score-bridge-weight", type=float, default=None)
     parser.add_argument("--run-score-redundancy-weight", type=float, default=None)
+    parser.add_argument("--run-score-pair-coverage-weight", type=float, default=None)
+    parser.add_argument("--run-score-bridge-completeness-weight", type=float, default=None)
+    parser.add_argument("--run-score-entity-chunk-grounding-weight", type=float, default=None)
+    parser.add_argument("--run-score-anchor-dispersion-penalty", type=float, default=None)
     parser.add_argument("--seed-score-semantic-weight", type=float, default=None)
     parser.add_argument("--seed-score-graph-weight", type=float, default=None)
     parser.add_argument("--seed-score-anchor-weight", type=float, default=None)
+    parser.add_argument("--seed-score-bridge-weight", type=float, default=None)
+    parser.add_argument("--seed-score-chunk-grounding-weight", type=float, default=None)
+    parser.add_argument("--corridor-score-chunk-support-weight", type=float, default=None)
+    parser.add_argument("--corridor-score-answer-alignment-weight", type=float, default=None)
 
     parser.add_argument("--max-anchors", type=int, default=None)
     parser.add_argument("--samples-per-anchor", type=int, default=None)
@@ -754,6 +776,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--trim-rho", type=float, default=None)
 
     parser.add_argument("--run-qa", type=str, default=None)
+    parser.add_argument("--evaluator-mode", type=str, default=None, choices=["legacy", "hipporag2_parity"])
     parser.add_argument("--generator", type=str, default=None, choices=["heuristic", "oracle", "hf", "openai_compat", "vllm"])
     parser.add_argument("--model-name", type=str, default=None)
     parser.add_argument("--llm-base-url", type=str, default=None)
@@ -766,6 +789,23 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-main-sentences-per-corridor", type=int, default=None)
     parser.add_argument("--max-support-per-corridor", type=int, default=None)
     parser.add_argument("--max-total-sentences", type=int, default=None)
+    parser.add_argument("--delivery-mode", type=str, default=None, choices=["sentence_compressed", "chunk_package_basic", "chunk_grounded_bridge", "chunk_package_grounded_support"])
+    parser.add_argument("--max-chunk-packages", type=int, default=None)
+    parser.add_argument("--max-excerpt-sentences-per-package", type=int, default=None)
+    parser.add_argument("--chunk-grounding-enabled", type=str, default=None)
+    parser.add_argument("--chunk-grounding-mode", type=str, default=None, choices=["sentence_backfill", "corridor_lift", "package_score"])
+    parser.add_argument("--chunk-excerpt-max-per-corridor", type=int, default=None)
+    parser.add_argument("--chunk-excerpt-window-sentences-before", type=int, default=None)
+    parser.add_argument("--chunk-excerpt-window-sentences-after", type=int, default=None)
+    parser.add_argument("--chunk-excerpt-max-total-sentences", type=int, default=None)
+    parser.add_argument("--chunk-excerpt-dedup-enabled", type=str, default=None)
+    parser.add_argument("--chunk-grounding-top-corridor-chunks", type=int, default=None)
+    parser.add_argument("--chunk-grounding-top-k-packages", type=int, default=None)
+    parser.add_argument("--package-score-answer-weight", type=float, default=None)
+    parser.add_argument("--package-score-bridge-weight", type=float, default=None)
+    parser.add_argument("--package-score-support-weight", type=float, default=None)
+    parser.add_argument("--package-score-chunk-grounding-weight", type=float, default=None)
+    parser.add_argument("--package-score-redundancy-weight", type=float, default=None)
     parser.add_argument("--alpha", type=float, default=None)
     parser.add_argument("--beta", type=float, default=None)
     parser.add_argument("--gamma-main", type=float, default=None)
@@ -821,6 +861,7 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         profile_query_indices=profile_indices,
     )
     run_qa_enabled = bool(getattr(cfg, "run_qa", True)) and (not bool(getattr(cfg, "retrieval_only", False)))
+    qa_evaluator = QAEvaluator(mode=str(getattr(cfg, "evaluator_mode", "legacy")))
     retrieval_cache = {}
     if precomputed_retrieval_path:
         retrieval_cache = _load_precomputed_retrieval(precomputed_retrieval_path)
@@ -881,6 +922,32 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             retrieval_source_counts[retrieval_source] = retrieval_source_counts.get(retrieval_source, 0) + 1
 
             render_ms = 0.0
+            delivery_mode = str(getattr(cfg, "delivery_mode", "sentence_compressed") or "sentence_compressed").strip().lower()
+            eff_chunk_grounding_enabled = bool(cfg.chunk_grounding_enabled)
+            eff_chunk_grounding_mode = str(cfg.chunk_grounding_mode or "sentence_backfill")
+            if delivery_mode != "sentence_compressed":
+                eff_chunk_grounding_enabled = True
+                if delivery_mode == "chunk_package_basic":
+                    eff_chunk_grounding_mode = "package_score"
+                elif delivery_mode == "chunk_grounded_bridge":
+                    eff_chunk_grounding_mode = "corridor_lift"
+                elif delivery_mode == "chunk_package_grounded_support":
+                    eff_chunk_grounding_mode = "package_score"
+
+            eff_chunk_top_packages = int(cfg.chunk_grounding_top_k_packages)
+            if int(getattr(cfg, "max_chunk_packages", 0) or 0) > 0:
+                eff_chunk_top_packages = int(getattr(cfg, "max_chunk_packages", eff_chunk_top_packages))
+            eff_chunk_excerpt_total = int(cfg.chunk_excerpt_max_total_sentences)
+            max_excerpt_per_pkg = int(getattr(cfg, "max_excerpt_sentences_per_package", 0) or 0)
+            if max_excerpt_per_pkg > 0 and eff_chunk_top_packages > 0:
+                eff_chunk_excerpt_total = max(eff_chunk_excerpt_total, max_excerpt_per_pkg * eff_chunk_top_packages)
+
+            eff_package_support_weight = float(cfg.package_score_support_weight)
+            eff_package_grounding_weight = float(cfg.package_score_chunk_grounding_weight)
+            if delivery_mode == "chunk_package_grounded_support":
+                eff_package_support_weight = max(eff_package_support_weight, 0.22)
+                eff_package_grounding_weight = max(eff_package_grounding_weight, 0.20)
+
             render_start = time.perf_counter()
             try:
                 rendered = render_context(
@@ -892,6 +959,20 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     max_main_sentences_per_corridor=cfg.max_main_sentences_per_corridor,
                     max_support_per_corridor=cfg.max_support_per_corridor,
                     max_total_sentences=cfg.max_total_sentences,
+                    chunk_grounding_enabled=eff_chunk_grounding_enabled,
+                    chunk_grounding_mode=eff_chunk_grounding_mode,
+                    chunk_excerpt_max_per_corridor=cfg.chunk_excerpt_max_per_corridor,
+                    chunk_excerpt_window_sentences_before=cfg.chunk_excerpt_window_sentences_before,
+                    chunk_excerpt_window_sentences_after=cfg.chunk_excerpt_window_sentences_after,
+                    chunk_excerpt_max_total_sentences=eff_chunk_excerpt_total,
+                    chunk_excerpt_dedup_enabled=cfg.chunk_excerpt_dedup_enabled,
+                    chunk_grounding_top_corridor_chunks=cfg.chunk_grounding_top_corridor_chunks,
+                    chunk_grounding_top_k_packages=eff_chunk_top_packages,
+                    package_score_answer_weight=cfg.package_score_answer_weight,
+                    package_score_bridge_weight=cfg.package_score_bridge_weight,
+                    package_score_support_weight=eff_package_support_weight,
+                    package_score_chunk_grounding_weight=eff_package_grounding_weight,
+                    package_score_redundancy_weight=cfg.package_score_redundancy_weight,
                     alpha=cfg.alpha,
                     beta=cfg.beta,
                     gamma_main=cfg.gamma_main,
@@ -916,14 +997,16 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             em = 0.0
             f1 = 0.0
             generation_call_ms = 0.0
+            gold_answers = extract_gold_answers(sample) or [str(sample.answer or "")]
             if run_qa_enabled:
                 generation_start = time.perf_counter()
                 try:
                     generation = generator_fn(sample, rendered, cfg.model_name, cfg)
                 finally:
                     generation_call_ms = float((time.perf_counter() - generation_start) * 1000.0)
-                em = exact_match_score(generation.prediction, sample.answer)
-                f1 = token_f1_score(generation.prediction, sample.answer)
+                eval_result = qa_evaluator.evaluate(generation.prediction, sample)
+                em = float(eval_result.em)
+                f1 = float(eval_result.f1)
                 if _is_generation_fallback(generation):
                     fallback_count += 1
                 generation_bar.update(1)
@@ -938,6 +1021,18 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             rendered_sentence_count = int(len(rendered.sentence_ids))
             truncated_sentence_count = int(rendered.truncated_sentence_count)
             truncated_corridor_count = int(rendered.truncated_corridor_count)
+            rendered_meta = (rendered.metadata or {}) if rendered is not None else {}
+            chunk_excerpts_used = _safe_int(rendered_meta.get("chunk_excerpts_used", 0) or 0, default=0)
+            chunk_excerpt_sentence_count = _safe_int(
+                rendered_meta.get("chunk_excerpt_sentence_count", 0) or 0, default=0
+            )
+            evidence_package_count = _safe_int(rendered_meta.get("evidence_package_count", 0) or 0, default=0)
+            chunk_excerpt_truncated_count = _safe_int(
+                rendered_meta.get("chunk_excerpt_truncated_count", 0) or 0, default=0
+            )
+            chunk_excerpt_avg_len = 0.0
+            if chunk_excerpts_used > 0:
+                chunk_excerpt_avg_len = float(chunk_excerpt_sentence_count) / float(chunk_excerpts_used)
 
             recall = supporting_fact_recall(sample, retrieval)
             precision = supporting_fact_precision(sample, retrieval)
@@ -979,9 +1074,11 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                 "sample_id": sample.qid,
                 "question": sample.question,
                 "answer": sample.answer,
+                "gold_answers": list(gold_answers),
                 "prediction": generation.prediction if generation else "",
                 "qa_executed": bool(generation is not None),
                 "generation_fallback": bool(_is_generation_fallback(generation)),
+                "evaluator_mode": str(qa_evaluator.mode),
                 "method": retrieval.method,
                 "generator": cfg.generator,
                 "metrics": metrics,
@@ -997,6 +1094,13 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     "render_mode_requested": render_mode_requested or "(auto)",
                     "truncated_corridors": rendered.truncated_corridor_count,
                     "truncated_sentences": rendered.truncated_sentence_count,
+                    "chunk_grounding_enabled": bool(rendered_meta.get("chunk_grounding_enabled", False)),
+                    "chunk_grounding_mode": str(rendered_meta.get("chunk_grounding_mode", "") or ""),
+                    "chunk_excerpts_used": int(chunk_excerpts_used),
+                    "chunk_excerpt_sentence_count": int(chunk_excerpt_sentence_count),
+                    "chunk_excerpt_avg_len": float(chunk_excerpt_avg_len),
+                    "evidence_package_count": int(evidence_package_count),
+                    "chunk_excerpt_truncated_count": int(chunk_excerpt_truncated_count),
                 },
                 "generation_diagnostics": {
                     "prompt_tokens": prompt_tokens,
@@ -1005,6 +1109,11 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     "rendered_sentence_count": rendered_sentence_count,
                     "truncated_sentence_count": truncated_sentence_count,
                     "truncated_corridor_count": truncated_corridor_count,
+                    "chunk_excerpts_used": int(chunk_excerpts_used),
+                    "chunk_excerpt_sentence_count": int(chunk_excerpt_sentence_count),
+                    "chunk_excerpt_avg_len": float(chunk_excerpt_avg_len),
+                    "evidence_package_count": int(evidence_package_count),
+                    "chunk_excerpt_truncated_count": int(chunk_excerpt_truncated_count),
                 },
                 "retrieval_source": retrieval_source,
                 "generation": asdict(generation) if generation else None,
@@ -1024,6 +1133,7 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         "method": cfg.method,
         "generator": cfg.generator,
         "generator_display": str(cfg.model_name or cfg.generator),
+        "evaluator_mode": str(qa_evaluator.mode),
         "run_qa": bool(run_qa_enabled),
         "run_qa_requested": bool(getattr(cfg, "run_qa", True)),
         "retrieval_only": bool(getattr(cfg, "retrieval_only", False)),
@@ -1067,6 +1177,21 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         ),
         "truncated_corridors_avg": mean_or_zero([r.get("rendering", {}).get("truncated_corridors", 0.0) for r in rows]),
         "truncated_sentences_avg": mean_or_zero([r.get("rendering", {}).get("truncated_sentences", 0.0) for r in rows]),
+        "chunk_excerpts_used_avg": mean_or_zero(
+            [float((r.get("rendering", {}) or {}).get("chunk_excerpts_used", 0.0)) for r in rows]
+        ),
+        "chunk_excerpt_sentence_count_avg": mean_or_zero(
+            [float((r.get("rendering", {}) or {}).get("chunk_excerpt_sentence_count", 0.0)) for r in rows]
+        ),
+        "chunk_excerpt_avg_len": mean_or_zero(
+            [float((r.get("rendering", {}) or {}).get("chunk_excerpt_avg_len", 0.0)) for r in rows]
+        ),
+        "evidence_package_count_avg": mean_or_zero(
+            [float((r.get("rendering", {}) or {}).get("evidence_package_count", 0.0)) for r in rows]
+        ),
+        "chunk_excerpt_truncated_count_avg": mean_or_zero(
+            [float((r.get("rendering", {}) or {}).get("chunk_excerpt_truncated_count", 0.0)) for r in rows]
+        ),
         "run_timestamp": run_stamp,
         "run_timestamp_utc": run_iso,
         "retrieval_params": {
@@ -1099,6 +1224,13 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "semantic_topn_chunk": cfg.semantic_topn_chunk,
             "graph_reserve_topn": cfg.graph_reserve_topn,
             "semantic_topn": cfg.semantic_topn,
+            "index_chunk_unit": cfg.index_chunk_unit,
+            "graph_mode": cfg.graph_mode,
+            "chunk_scoring_mode": cfg.chunk_scoring_mode,
+            "entity_chunk_transition_weight": cfg.entity_chunk_transition_weight,
+            "chunk_node_enabled_in_diffusion": cfg.chunk_node_enabled_in_diffusion,
+            "chunk_score_topk": cfg.chunk_score_topk,
+            "chunk_package_enabled": cfg.chunk_package_enabled,
             "semantic_candidate_union": cfg.semantic_candidate_union,
             "semantic_scan_batch_size": cfg.semantic_scan_batch_size,
             "semantic_chunk_lookup_strategy": cfg.semantic_chunk_lookup_strategy,
@@ -1108,9 +1240,17 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "run_score_structure_weight": cfg.run_score_structure_weight,
             "run_score_bridge_weight": cfg.run_score_bridge_weight,
             "run_score_redundancy_weight": cfg.run_score_redundancy_weight,
+            "run_score_pair_coverage_weight": cfg.run_score_pair_coverage_weight,
+            "run_score_bridge_completeness_weight": cfg.run_score_bridge_completeness_weight,
+            "run_score_entity_chunk_grounding_weight": cfg.run_score_entity_chunk_grounding_weight,
+            "run_score_anchor_dispersion_penalty": cfg.run_score_anchor_dispersion_penalty,
             "seed_score_semantic_weight": cfg.seed_score_semantic_weight,
             "seed_score_graph_weight": cfg.seed_score_graph_weight,
             "seed_score_anchor_weight": cfg.seed_score_anchor_weight,
+            "seed_score_bridge_weight": cfg.seed_score_bridge_weight,
+            "seed_score_chunk_grounding_weight": cfg.seed_score_chunk_grounding_weight,
+            "corridor_score_chunk_support_weight": cfg.corridor_score_chunk_support_weight,
+            "corridor_score_answer_alignment_weight": cfg.corridor_score_answer_alignment_weight,
             "top1_correction_enabled": cfg.top1_correction_enabled,
             "top1_correction_topk": cfg.top1_correction_topk,
             "top1_correction_corridor_weight_base": cfg.top1_correction_corridor_weight_base,
@@ -1163,12 +1303,32 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "llm_timeout_sec": cfg.llm_timeout_sec,
             "llm_max_new_tokens": cfg.llm_max_new_tokens,
         },
+        "evaluation_params": {
+            "evaluator_mode": str(qa_evaluator.mode),
+        },
         "render_params": {
             "max_context_sentences": cfg.max_context_sentences,
             "max_corridors_in_context": cfg.max_corridors_in_context,
             "max_main_sentences_per_corridor": cfg.max_main_sentences_per_corridor,
             "max_support_per_corridor": cfg.max_support_per_corridor,
             "max_total_sentences": cfg.max_total_sentences,
+            "delivery_mode": cfg.delivery_mode,
+            "max_chunk_packages": cfg.max_chunk_packages,
+            "max_excerpt_sentences_per_package": cfg.max_excerpt_sentences_per_package,
+            "chunk_grounding_enabled": cfg.chunk_grounding_enabled,
+            "chunk_grounding_mode": cfg.chunk_grounding_mode,
+            "chunk_excerpt_max_per_corridor": cfg.chunk_excerpt_max_per_corridor,
+            "chunk_excerpt_window_sentences_before": cfg.chunk_excerpt_window_sentences_before,
+            "chunk_excerpt_window_sentences_after": cfg.chunk_excerpt_window_sentences_after,
+            "chunk_excerpt_max_total_sentences": cfg.chunk_excerpt_max_total_sentences,
+            "chunk_excerpt_dedup_enabled": cfg.chunk_excerpt_dedup_enabled,
+            "chunk_grounding_top_corridor_chunks": cfg.chunk_grounding_top_corridor_chunks,
+            "chunk_grounding_top_k_packages": cfg.chunk_grounding_top_k_packages,
+            "package_score_answer_weight": cfg.package_score_answer_weight,
+            "package_score_bridge_weight": cfg.package_score_bridge_weight,
+            "package_score_support_weight": cfg.package_score_support_weight,
+            "package_score_chunk_grounding_weight": cfg.package_score_chunk_grounding_weight,
+            "package_score_redundancy_weight": cfg.package_score_redundancy_weight,
             "alpha": cfg.alpha,
             "beta": cfg.beta,
             "gamma_main": cfg.gamma_main,

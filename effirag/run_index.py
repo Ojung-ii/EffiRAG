@@ -26,6 +26,8 @@ def _build_parser():
     parser.add_argument("--embedding-batch-size", type=int, default=16)
     parser.add_argument("--embedding-max-length", type=int, default=192)
     parser.add_argument("--embedding-text-max-chars", type=int, default=600)
+    parser.add_argument("--graph-mode", type=str, default="current_entity_graph", choices=["current_entity_graph", "entity_chunk_graph"])
+    parser.add_argument("--index-chunk-unit", type=str, default="auto", choices=["auto", "sentence", "passage"])
     parser.add_argument("--semantic-scan-batch-size", type=int, default=8192)
     parser.add_argument("--openie-mode", type=str, default="llm", choices=["llm", "lexical"])
     parser.add_argument("--openie-model-name", type=str, default="Qwen/Qwen2.5-7B-Instruct")
@@ -81,7 +83,8 @@ def main():
     print(
         "[RunIndex] "
         f"mode={args.openie_mode} workers={int(args.openie_parallel_workers)} "
-        f"log_every={int(args.openie_log_every)} timeout={float(args.openie_api_timeout_sec):.1f}s",
+        f"log_every={int(args.openie_log_every)} timeout={float(args.openie_api_timeout_sec):.1f}s "
+        f"graph_mode={str(args.graph_mode)} index_chunk_unit={str(args.index_chunk_unit)}",
         flush=True,
     )
     if str(args.openie_api_base_url or "").strip():
@@ -108,6 +111,8 @@ def main():
                 embedding_batch_size=int(args.embedding_batch_size),
                 embedding_max_length=int(args.embedding_max_length),
                 embedding_text_max_chars=int(args.embedding_text_max_chars),
+                graph_mode=str(args.graph_mode or "current_entity_graph"),
+                index_chunk_unit=str(args.index_chunk_unit or "auto"),
                 openie_mode=args.openie_mode,
                 openie_model_name=args.openie_model_name,
                 openie_text_max_chars=args.openie_text_max_chars,
@@ -138,6 +143,8 @@ def main():
                 "prebuilt_igraph_format": str(args.prebuilt_igraph_format or "hipporag_pickle"),
                 "prebuilt_entity_token_limit": int(args.prebuilt_entity_token_limit),
                 "embedding_enabled": bool(embedding_enabled),
+                "graph_mode": str(args.graph_mode or "current_entity_graph"),
+                "index_chunk_unit": str((meta.get("build_config", {}) or {}).get("index_chunk_unit", args.index_chunk_unit or "auto")),
                 "embedding_model_name": str(args.embedding_model_name or ""),
                 "embedding_batch_size": int(args.embedding_batch_size),
                 "embedding_max_length": int(args.embedding_max_length),

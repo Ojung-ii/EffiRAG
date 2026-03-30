@@ -45,6 +45,16 @@ def _get_global_graph(cfg):
     force_rebuild = bool(getattr(cfg, "force_rebuild_graph_index", False))
     prebuilt_igraph_format = str(getattr(cfg, "prebuilt_igraph_format", "hipporag_pickle") or "hipporag_pickle").strip()
     prebuilt_entity_token_limit = int(getattr(cfg, "prebuilt_entity_token_limit", 6))
+    graph_mode = str(getattr(cfg, "graph_mode", "current_entity_graph") or "current_entity_graph").strip().lower()
+    if graph_mode not in {"current_entity_graph", "entity_chunk_graph"}:
+        graph_mode = "current_entity_graph"
+    index_chunk_unit = str(getattr(cfg, "index_chunk_unit", "auto") or "auto").strip().lower()
+    if index_chunk_unit in {"", "auto"}:
+        index_chunk_unit = "passage" if graph_mode == "entity_chunk_graph" else "sentence"
+    elif index_chunk_unit in {"passage", "chunk", "document", "doc"}:
+        index_chunk_unit = "passage"
+    else:
+        index_chunk_unit = "sentence"
     openie_mode = str(getattr(cfg, "openie_mode", "llm") or "llm").strip().lower()
     openie_model_name = str(getattr(cfg, "openie_model_name", "") or "").strip()
     openie_text_max_chars = int(getattr(cfg, "openie_text_max_chars", 2200))
@@ -68,6 +78,8 @@ def _get_global_graph(cfg):
         str(Path(prebuilt_igraph_path).resolve()) if prebuilt_igraph_path else "",
         prebuilt_igraph_format,
         prebuilt_entity_token_limit,
+        graph_mode,
+        index_chunk_unit,
         embedding_enabled,
         embedding_model_name,
         embedding_batch_size,
@@ -107,6 +119,8 @@ def _get_global_graph(cfg):
         embedding_batch_size=embedding_batch_size,
         embedding_max_length=embedding_max_length,
         embedding_text_max_chars=embedding_text_max_chars,
+        graph_mode=graph_mode,
+        index_chunk_unit=index_chunk_unit,
         openie_mode=openie_mode,
         openie_model_name=openie_model_name,
         openie_text_max_chars=openie_text_max_chars,
@@ -536,7 +550,7 @@ def _node_semantic_text(g, node):
         return ""
     data = g.nodes[node]
     node_type = str(data.get("node_type", "") or "")
-    if node_type == "sentence":
+    if node_type == "sentence" or _is_chunk_like_node(g, node):
         title = str(data.get("title", "") or "").strip()
         text = str(data.get("text", data.get("content", "")) or "").strip()
         if title:
@@ -549,7 +563,7 @@ def _node_semantic_text(g, node):
         support = []
         for nbr in g.neighbors(node):
             nbr_data = g.nodes[nbr]
-            if nbr_data.get("node_type") == "sentence":
+            if _is_chunk_like_node(g, nbr):
                 txt = str(nbr_data.get("text", "") or "").strip()
                 if txt:
                     support.append(txt)
@@ -756,7 +770,7 @@ def _entity_shortlist_tier1(query_text, anchors, g, semantic_state, cfg):
         a_type = g.nodes[anchor].get("node_type")
         if a_type == "entity":
             add_entity(anchor, 1.00 - 0.05 * float(arank))
-        elif a_type == "sentence":
+        elif _is_chunk_like_node(g, anchor):
             for erank, ent in enumerate(list(chk2ent.get(str(anchor), []) or [])[:8]):
                 add_entity(ent, 0.90 - 0.03 * float(erank) - 0.02 * float(arank))
 
@@ -974,7 +988,7 @@ def _chunk_shortlist_tier1(query_text, anchors, g, semantic_state, entity_scores
             return
         if node_id not in g:
             return
-        if g.nodes[node_id].get("node_type") != "sentence":
+        if not _is_chunk_like_node(g, node_id):
             return
         scores[node_id] = max(float(scores.get(node_id, -1.0e9)), float(score))
 
@@ -1007,7 +1021,7 @@ def _chunk_shortlist_tier1(query_text, anchors, g, semantic_state, entity_scores
         if anchor not in g:
             continue
         a_type = g.nodes[anchor].get("node_type")
-        if a_type == "sentence":
+        if _is_chunk_like_node(g, anchor):
             add_chunk(anchor, 0.90 - 0.03 * float(arank))
         elif a_type == "entity":
             linked = []
@@ -1028,14 +1042,14 @@ def _chunk_shortlist_tier1(query_text, anchors, g, semantic_state, entity_scores
         added = 0
         for nbr in direct:
             ntype = g.nodes[nbr].get("node_type")
-            if ntype == "sentence":
-                label = str(g.nodes[nbr].get("content", "") or "")
+            if _is_chunk_like_node(g, nbr):
+                label = str(g.nodes[nbr].get("text", g.nodes[nbr].get("content", "")) or "")
                 overlap = float(len(q_tokens.intersection(set(content_tokens(label))))) if q_tokens else 0.0
                 add_chunk(nbr, 0.72 + min(0.18, 0.04 * overlap))
                 added += 1
             elif ntype == "relation":
                 for nbr2 in g.neighbors(nbr):
-                    if g.nodes[nbr2].get("node_type") == "sentence":
+                    if _is_chunk_like_node(g, nbr2):
                         add_chunk(nbr2, 0.68)
                         added += 1
             if added >= neighbor_cap:
@@ -1115,7 +1129,7 @@ def _chunk_lookup_two_tier(query_vec, semantic_state, g, anchors, query_text, en
             if i < 0 or i >= len(semantic_state.get("chunk_ids", [])):
                 continue
             node = str(semantic_state["chunk_ids"][i])
-            if node in g and g.nodes[node].get("node_type") == "sentence":
+            if node in g and _is_chunk_like_node(g, node):
                 chunk_scores[node] = max(float(chunk_scores.get(node, -1.0e9)), float(score))
         mode = "two_tier+global_fallback"
 
@@ -1222,7 +1236,7 @@ def _semantic_topk_candidates_by_type(query_vec, semantic_state, cfg, g=None, an
             if anchor not in g:
                 continue
             anchor_type = g.nodes[anchor].get("node_type")
-            if anchor_type == "sentence":
+            if _is_chunk_like_node(g, anchor):
                 cache_chunk_scores[str(anchor)] = max(
                     float(cache_chunk_scores.get(str(anchor), -1.0)),
                     0.88 - 0.03 * float(arank),
@@ -1243,7 +1257,7 @@ def _semantic_topk_candidates_by_type(query_vec, semantic_state, cfg, g=None, an
                 semantic_state=semantic_state,
             )
             for node_id in cache_nodes:
-                if node_id not in g or g.nodes[node_id].get("node_type") != "sentence":
+                if node_id not in g or (not _is_chunk_like_node(g, node_id)):
                     continue
                 prior = float(cache_scores.get(node_id, 0.0))
                 boosted = 0.82 * prior + 0.04 * (1.0 / float(arank + 1))
@@ -1350,7 +1364,7 @@ def _load_candidate_vectors(nodes, g, cfg, semantic_state):
                 idx = semantic_state.get("entity_id_to_idx", {}).get(str(node))
                 if idx is not None:
                     vec = np.asarray(semantic_state["entity_embeddings"][idx], dtype=np.float32)
-            elif node_type == "sentence":
+            elif _is_chunk_like_node(g, node):
                 idx = semantic_state.get("chunk_id_to_idx", {}).get(str(node))
                 if idx is not None:
                     vec = np.asarray(semantic_state["chunk_embeddings"][idx], dtype=np.float32)
@@ -1398,11 +1412,11 @@ def _entity_support_similarity(g, node, query_sim_map):
     best = 0.0
     for nbr in g.neighbors(node):
         nbr_type = g.nodes[nbr].get("node_type")
-        if nbr_type == "sentence":
+        if _is_chunk_like_node(g, nbr):
             best = max(best, float(query_sim_map.get(nbr, 0.0)))
         elif nbr_type == "relation":
             for nbr2 in g.neighbors(nbr):
-                if g.nodes[nbr2].get("node_type") == "sentence":
+                if _is_chunk_like_node(g, nbr2):
                     best = max(best, float(query_sim_map.get(nbr2, 0.0)))
     return best
 
@@ -1427,7 +1441,95 @@ def _weighted_mean(score_map, keys, weight_map=None):
     return float(total_v / total_w)
 
 
-def _seed_hybrid_scores(candidates, agg_scores, query_sim, anchor_sim, support_sim, cfg):
+def _seed_bridge_bonus_map(candidates, anchors, anchor_distance_maps, tau):
+    out = {}
+    cands = list(candidates or [])
+    if not cands:
+        return out
+    a_list = list(anchors or [])
+    cap = max(1, int(tau))
+    n_anchor = max(1, len(a_list))
+    for node in cands:
+        if not a_list:
+            out[node] = 0.0
+            continue
+        connected = 0
+        for anchor in a_list:
+            dmap = anchor_distance_maps.get(anchor, {})
+            if int(dmap.get(node, cap + 1)) <= cap:
+                connected += 1
+        base = float(connected) / float(n_anchor)
+        if len(a_list) >= 2 and connected >= 2:
+            base = min(1.0, base + 0.2)
+        out[node] = max(0.0, min(1.0, float(base)))
+    return out
+
+
+def _seed_chunk_grounding_bonus_map(candidates, g, semantic_state, query_sim_map, support_sim_map):
+    out = {}
+    cands = list(candidates or [])
+    if not cands or g is None or semantic_state is None:
+        return out
+
+    ent2chk = semantic_state.get("entity_topk_chunks_cache", {}) if isinstance(semantic_state, dict) else {}
+    chk2ent = semantic_state.get("chunk_topk_entities_cache", {}) if isinstance(semantic_state, dict) else {}
+    support_map = semantic_state.get("entity_to_chunks", {}) if isinstance(semantic_state, dict) else {}
+    ent2chk = ent2chk if isinstance(ent2chk, dict) else {}
+    chk2ent = chk2ent if isinstance(chk2ent, dict) else {}
+    support_map = support_map if isinstance(support_map, dict) else {}
+
+    for node in cands:
+        if node not in g:
+            continue
+        node_type = str(g.nodes[node].get("node_type", "") or "")
+        vals = []
+        if node_type == "entity":
+            linked = []
+            linked.extend(list(ent2chk.get(str(node), []) or []))
+            linked.extend(list(support_map.get(str(node), []) or []))
+            seen = set()
+            compact = []
+            for chunk in linked:
+                chunk_id = str(chunk)
+                if chunk_id in seen:
+                    continue
+                seen.add(chunk_id)
+                compact.append(chunk_id)
+            for chunk in compact[:12]:
+                if chunk not in g:
+                    continue
+                qv = float(query_sim_map.get(chunk, 0.0))
+                sv = float(support_sim_map.get(chunk, 0.0))
+                vals.append(0.5 * (max(qv, sv) + 1.0))
+        elif _is_chunk_like_node(g, node):
+            linked_entities = list(chk2ent.get(str(node), []) or [])
+            for ent in linked_entities[:12]:
+                ent_id = str(ent)
+                if ent_id not in g:
+                    continue
+                qv = float(query_sim_map.get(ent_id, 0.0))
+                sv = float(support_sim_map.get(ent_id, 0.0))
+                vals.append(0.5 * (max(qv, sv) + 1.0))
+
+        if vals:
+            vals.sort(reverse=True)
+            top = vals[:3]
+            out[node] = float(sum(top) / float(max(len(top), 1)))
+        else:
+            out[node] = 0.0
+    return out
+
+
+def _seed_hybrid_scores(
+    candidates,
+    agg_scores,
+    query_sim,
+    anchor_sim,
+    support_sim,
+    cfg,
+    bridge_bonus_map=None,
+    chunk_grounding_bonus_map=None,
+):
     graph_raw = {node: float(agg_scores.get(node, 0.0)) for node in candidates}
     graph_norm = _normalize_map(graph_raw)
 
@@ -1440,18 +1542,32 @@ def _seed_hybrid_scores(candidates, agg_scores, query_sim, anchor_sim, support_s
     anchor_raw = {node: 0.5 * (float(anchor_sim.get(node, 0.0)) + 1.0) for node in candidates}
     anchor_norm = _normalize_map(anchor_raw)
 
+    bridge_raw = {node: max(0.0, min(1.0, float((bridge_bonus_map or {}).get(node, 0.0)))) for node in candidates}
+    bridge_norm = _normalize_map(bridge_raw)
+
+    grounding_raw = {
+        node: max(0.0, min(1.0, float((chunk_grounding_bonus_map or {}).get(node, 0.0)))) for node in candidates
+    }
+    grounding_norm = _normalize_map(grounding_raw)
+
     w_sem = max(0.0, float(getattr(cfg, "seed_score_semantic_weight", 0.30)))
     w_graph = max(0.0, float(getattr(cfg, "seed_score_graph_weight", 0.50)))
     w_anchor = max(0.0, float(getattr(cfg, "seed_score_anchor_weight", 0.20)))
-    norm = w_sem + w_graph + w_anchor
+    w_bridge = max(0.0, float(getattr(cfg, "seed_score_bridge_weight", 0.0)))
+    w_ground = max(0.0, float(getattr(cfg, "seed_score_chunk_grounding_weight", 0.0)))
+    norm = w_sem + w_graph + w_anchor + w_bridge + w_ground
     if norm <= 0.0:
         w_graph = 1.0
         w_sem = 0.0
         w_anchor = 0.0
+        w_bridge = 0.0
+        w_ground = 0.0
         norm = 1.0
     w_sem /= norm
     w_graph /= norm
     w_anchor /= norm
+    w_bridge /= norm
+    w_ground /= norm
 
     score = {}
     for node in candidates:
@@ -1459,8 +1575,10 @@ def _seed_hybrid_scores(candidates, agg_scores, query_sim, anchor_sim, support_s
             w_graph * float(graph_norm.get(node, 0.0))
             + w_sem * float(semantic_norm.get(node, 0.0))
             + w_anchor * float(anchor_norm.get(node, 0.0))
+            + w_bridge * float(bridge_norm.get(node, 0.0))
+            + w_ground * float(grounding_norm.get(node, 0.0))
         )
-    return score, graph_norm, semantic_norm, anchor_norm
+    return score, graph_norm, semantic_norm, anchor_norm, bridge_norm, grounding_norm
 
 
 def _bridge_utility(g, anchors, nodes, tau, distance_map_cache=None):
@@ -1550,6 +1668,107 @@ def _run_structural_connectivity(g, surrogate_universe, surrogate_weights, seeds
     dispersion = _dispersion_penalty(g, seeds, cap, distance_map_cache=distance_map_cache)
     adjusted = max(0.0, base - 0.5 * dispersion)
     return adjusted, dispersion, loss
+
+
+def _run_pair_coverage_score(anchors, seeds, anchor_distance_maps, tau):
+    a_list = list(anchors or [])
+    s_list = list(seeds or [])
+    if not a_list or not s_list:
+        return 0.0
+    cap = max(1, int(tau))
+    total = 0
+    covered = 0
+    for anchor in a_list:
+        dmap = anchor_distance_maps.get(anchor, {}) if isinstance(anchor_distance_maps, dict) else {}
+        for seed in s_list:
+            total += 1
+            if int(dmap.get(seed, cap + 1)) <= cap:
+                covered += 1
+    if total <= 0:
+        return 0.0
+    return float(covered) / float(total)
+
+
+def _run_bridge_path_completeness(anchors, run_nodes, anchor_distance_maps, tau):
+    a_list = list(anchors or [])
+    r_nodes = list(run_nodes or [])
+    if len(a_list) < 2 or not r_nodes:
+        return 0.0
+    cap = max(1, int(tau))
+    total_pairs = 0
+    complete_pairs = 0
+    for i in range(len(a_list)):
+        for j in range(i + 1, len(a_list)):
+            total_pairs += 1
+            a = a_list[i]
+            b = a_list[j]
+            da = anchor_distance_maps.get(a, {}) if isinstance(anchor_distance_maps, dict) else {}
+            db = anchor_distance_maps.get(b, {}) if isinstance(anchor_distance_maps, dict) else {}
+            ok = False
+            for node in r_nodes:
+                if int(da.get(node, cap + 1)) <= cap and int(db.get(node, cap + 1)) <= cap:
+                    ok = True
+                    break
+            if ok:
+                complete_pairs += 1
+    if total_pairs <= 0:
+        return 0.0
+    return float(complete_pairs) / float(total_pairs)
+
+
+def _run_entity_chunk_grounding_score(seeds, run_nodes, semantic_state):
+    s_list = [str(x) for x in list(seeds or [])]
+    r_set = {str(x) for x in list(run_nodes or [])}
+    if not s_list or not r_set or semantic_state is None:
+        return 0.0
+    ent2chk = semantic_state.get("entity_topk_chunks_cache", {}) if isinstance(semantic_state, dict) else {}
+    chk2ent = semantic_state.get("chunk_topk_entities_cache", {}) if isinstance(semantic_state, dict) else {}
+    support_map = semantic_state.get("entity_to_chunks", {}) if isinstance(semantic_state, dict) else {}
+    ent2chk = ent2chk if isinstance(ent2chk, dict) else {}
+    chk2ent = chk2ent if isinstance(chk2ent, dict) else {}
+    support_map = support_map if isinstance(support_map, dict) else {}
+
+    considered = 0
+    grounded = 0
+    for seed in s_list:
+        # entity-like seed
+        linked_chunks = []
+        linked_chunks.extend(list(ent2chk.get(seed, []) or []))
+        linked_chunks.extend(list(support_map.get(seed, []) or []))
+        if linked_chunks:
+            considered += 1
+            if any(str(c) in r_set for c in linked_chunks):
+                grounded += 1
+            continue
+        # chunk-like seed
+        linked_entities = list(chk2ent.get(seed, []) or [])
+        if linked_entities:
+            considered += 1
+            if any(str(e) in r_set for e in linked_entities):
+                grounded += 1
+    if considered <= 0:
+        return 0.0
+    return float(grounded) / float(considered)
+
+
+def _run_anchor_dispersion_penalty(anchors, seeds, anchor_distance_maps, tau):
+    a_list = list(anchors or [])
+    s_list = list(seeds or [])
+    if not a_list or len(a_list) <= 1 or not s_list:
+        return 0.0
+    cap = max(1, int(tau))
+    rates = []
+    for anchor in a_list:
+        dmap = anchor_distance_maps.get(anchor, {}) if isinstance(anchor_distance_maps, dict) else {}
+        hit = 0
+        for seed in s_list:
+            if int(dmap.get(seed, cap + 1)) <= cap:
+                hit += 1
+        rates.append(float(hit) / float(max(len(s_list), 1)))
+    arr = np.asarray(rates, dtype=np.float32)
+    if arr.size <= 1:
+        return 0.0
+    return float(np.std(arr))
 
 
 def _sentence_node_to_id(g, node):
@@ -1905,7 +2124,7 @@ def _anchor_graph_reserve_candidates(g, anchor, topn, max_hops, precomputed_dmap
         if node == anchor:
             continue
         ntype = g.nodes[node].get("node_type")
-        if ntype not in {"entity", "sentence"}:
+        if (ntype != "entity") and (not _is_chunk_like_node(g, node)):
             continue
         dist_term = 1.0 / float(1 + int(dist))
         degree_term = min(1.0, float(g.degree(node)) / 20.0)
@@ -1957,7 +2176,7 @@ def _anchor_cache_reserve_candidates(g, anchor, topn, semantic_state):
         if nbr == anchor:
             continue
         ntype = g.nodes[nbr].get("node_type")
-        if ntype not in {"entity", "sentence"}:
+        if (ntype != "entity") and (not _is_chunk_like_node(g, nbr)):
             continue
         degree_term = min(1.0, float(g.degree(nbr)) / 20.0)
         scores[nbr] = max(float(scores.get(nbr, -1.0e9)), 0.35 + 0.15 * degree_term)
@@ -2747,9 +2966,14 @@ def _rerank_corridors_hybrid(corridors, g, query_sim_map, support_sim_map, cfg):
         support_density = float(len(support_ids)) / float(max(1, len(sent_ids)))
         anchor_alignment = float(corridor.get("anchor_alignment", 0.0) or 0.0)
         bridge_utility = float(corridor.get("bridge_potential", 0.0) or 0.0)
+        answer_alignment = max(float(answer_support), float(semantic_rel), float(anchor_alignment))
 
         pair_proxy = float(corridor.get("pair_proxy_score", corridor.get("corridor_score", 0.0)) or 0.0)
         base_score = 0.45 * structural + 0.25 * semantic_rel + 0.20 * answer_support + 0.10 * pair_proxy
+        chunk_support_w = max(0.0, float(getattr(cfg, "corridor_score_chunk_support_weight", 0.0)))
+        answer_align_w = max(0.0, float(getattr(cfg, "corridor_score_answer_alignment_weight", 0.0)))
+        if chunk_support_w > 0.0 or answer_align_w > 0.0:
+            base_score += chunk_support_w * float(support_density) + answer_align_w * float(answer_alignment)
         base_rows.append(
             {
                 "corridor": dict(corridor),
@@ -2762,7 +2986,10 @@ def _rerank_corridors_hybrid(corridors, g, query_sim_map, support_sim_map, cfg):
                     "support_density": float(support_density),
                     "pair_proxy_score": float(pair_proxy),
                     "anchor_alignment": float(anchor_alignment),
+                    "answer_alignment": float(answer_alignment),
                     "bridge_utility": float(bridge_utility),
+                    "chunk_support_bonus_weight": float(chunk_support_w),
+                    "answer_alignment_bonus_weight": float(answer_align_w),
                 },
             }
         )
@@ -2980,6 +3207,211 @@ def _apply_lightweight_sentence_top1_correction(
     return reordered_ids, reordered_texts, diag
 
 
+def _is_chunk_like_node(g, node):
+    if node not in g:
+        return False
+    ntype = str((g.nodes[node] or {}).get("node_type", "") or "").strip().lower()
+    return ntype in {"sentence", "chunk", "passage", "document"}
+
+
+def _resolve_entity_chunk_support_maps(g, semantic_state):
+    ent2chk = {}
+    chk2ent = {}
+    if isinstance(semantic_state, dict):
+        raw_e2c = semantic_state.get("entity_to_chunks", {})
+        raw_c2e = semantic_state.get("chunk_to_entities", {})
+        if isinstance(raw_e2c, dict) and isinstance(raw_c2e, dict):
+            for ent, chunks in raw_e2c.items():
+                ent_id = str(ent)
+                vals = [str(c) for c in (chunks or []) if str(c)]
+                if vals:
+                    ent2chk[ent_id] = vals
+            for chk, ents in raw_c2e.items():
+                chk_id = str(chk)
+                vals = [str(e) for e in (ents or []) if str(e)]
+                if vals:
+                    chk2ent[chk_id] = vals
+
+    if ent2chk and chk2ent:
+        return ent2chk, chk2ent
+
+    has_explicit_chunk_nodes = any(_is_chunk_like_node(g, node) for node in g.nodes)
+
+    for u, v, data in g.edges(data=True):
+        u_type = str((g.nodes[u] or {}).get("node_type", "") or "").strip().lower()
+        v_type = str((g.nodes[v] or {}).get("node_type", "") or "").strip().lower()
+        support_layer = str((data or {}).get("support_layer", "") or "").strip().lower()
+
+        edge_is_entity_chunk = False
+        pair_is_entity_chunk_like = (
+            (u_type == "entity" and _is_chunk_like_node(g, v))
+            or (v_type == "entity" and _is_chunk_like_node(g, u))
+        )
+        pair_is_entity_sentence = {u_type, v_type} == {"entity", "sentence"}
+        if has_explicit_chunk_nodes:
+            edge_is_entity_chunk = pair_is_entity_chunk_like and (support_layer == "entity_chunk" or support_layer == "")
+        else:
+            edge_is_entity_chunk = (
+                pair_is_entity_chunk_like
+                or pair_is_entity_sentence
+                or (support_layer == "entity_chunk")
+            )
+        if not edge_is_entity_chunk:
+            continue
+
+        if u_type == "entity":
+            ent, chk = str(u), str(v)
+        else:
+            ent, chk = str(v), str(u)
+        ent2chk.setdefault(ent, []).append(chk)
+        chk2ent.setdefault(chk, []).append(ent)
+
+    for key, vals in list(ent2chk.items()):
+        seen = set()
+        out = []
+        for v in vals:
+            if v in seen:
+                continue
+            seen.add(v)
+            out.append(v)
+        ent2chk[key] = out
+    for key, vals in list(chk2ent.items()):
+        seen = set()
+        out = []
+        for v in vals:
+            if v in seen:
+                continue
+            seen.add(v)
+            out.append(v)
+        chk2ent[key] = out
+    return ent2chk, chk2ent
+
+
+def _prepare_diffusion_graph_for_mode(reduced_graph, anchors, cfg):
+    mode = str(getattr(cfg, "graph_mode", "current_entity_graph") or "current_entity_graph").strip().lower()
+    if mode != "entity_chunk_graph":
+        return reduced_graph, list(anchors), {"graph_mode": mode, "applied": False, "reason": "frozen_default"}
+
+    include_chunks = bool(getattr(cfg, "chunk_node_enabled_in_diffusion", False))
+    if include_chunks:
+        phase1_anchors = [a for a in anchors if a in reduced_graph]
+        return reduced_graph, phase1_anchors, {
+            "graph_mode": mode,
+            "applied": True,
+            "chunk_node_enabled_in_diffusion": True,
+            "reason": "mixed_diffusion",
+        }
+
+    nodes = [n for n in reduced_graph.nodes if not _is_chunk_like_node(reduced_graph, n)]
+    for anchor in anchors:
+        if anchor in reduced_graph and anchor not in nodes:
+            nodes.append(anchor)
+    nodes = list(dict.fromkeys(nodes))
+    if not nodes:
+        phase1_anchors = [a for a in anchors if a in reduced_graph]
+        return reduced_graph, phase1_anchors, {
+            "graph_mode": mode,
+            "applied": False,
+            "chunk_node_enabled_in_diffusion": False,
+            "reason": "entity_only_empty_fallback",
+        }
+
+    diffusion_graph = reduced_graph.subgraph(nodes).copy()
+    phase1_anchors = [a for a in anchors if a in diffusion_graph]
+    if not phase1_anchors:
+        ents = [n for n in diffusion_graph.nodes if str((diffusion_graph.nodes[n] or {}).get("node_type", "")).lower() == "entity"]
+        ents.sort(key=lambda n: diffusion_graph.degree(n), reverse=True)
+        phase1_anchors = ents[: max(1, int(getattr(cfg, "max_anchors", 5)))]
+    return diffusion_graph, phase1_anchors, {
+        "graph_mode": mode,
+        "applied": True,
+        "chunk_node_enabled_in_diffusion": False,
+        "reason": "entity_seed_chunk_lift",
+        "diffusion_graph_nodes": int(diffusion_graph.number_of_nodes()),
+        "diffusion_graph_edges": int(diffusion_graph.number_of_edges()),
+    }
+
+
+def _entity_chunk_graph_chunk_scoring(
+    reduced_graph,
+    final_graph,
+    chosen_run,
+    shortlisted_runs,
+    semantic_state,
+    cfg,
+):
+    mode = str(getattr(cfg, "chunk_scoring_mode", "entity_aggregate") or "entity_aggregate").strip().lower()
+    topk = max(1, int(getattr(cfg, "chunk_score_topk", 20)))
+    transition_w = max(0.0, min(1.0, float(getattr(cfg, "entity_chunk_transition_weight", 0.35))))
+    ent2chk, chk2ent = _resolve_entity_chunk_support_maps(reduced_graph, semantic_state)
+
+    seed_score_map = dict((chosen_run or {}).get("seed_score_map", {}) or {})
+    agg_scores = dict((chosen_run or {}).get("agg_scores", {}) or {})
+    chunk_scores = {}
+    entity_scores = {}
+
+    for node, score in seed_score_map.items():
+        node_id = str(node)
+        if node_id in reduced_graph and str((reduced_graph.nodes[node_id] or {}).get("node_type", "")).lower() == "entity":
+            entity_scores[node_id] = max(float(entity_scores.get(node_id, -1.0e9)), float(score))
+    for node, score in sorted(agg_scores.items(), key=lambda x: x[1], reverse=True)[: max(topk * 8, 64)]:
+        node_id = str(node)
+        if node_id not in reduced_graph:
+            continue
+        ntype = str((reduced_graph.nodes[node_id] or {}).get("node_type", "")).lower()
+        if ntype == "entity":
+            entity_scores[node_id] = max(float(entity_scores.get(node_id, -1.0e9)), float(score))
+        elif _is_chunk_like_node(reduced_graph, node_id):
+            chunk_scores[node_id] = max(float(chunk_scores.get(node_id, -1.0e9)), float(score))
+
+    if mode == "entity_aggregate":
+        for ent, e_score in entity_scores.items():
+            linked = list(ent2chk.get(ent, []) or [])
+            for rank, chunk in enumerate(linked[: max(topk * 2, 16)]):
+                if chunk not in reduced_graph or (not _is_chunk_like_node(reduced_graph, chunk)):
+                    continue
+                decay = max(0.20, 1.0 - 0.06 * float(rank))
+                lift = float(e_score) * decay
+                prev = float(chunk_scores.get(chunk, -1.0e9))
+                chunk_scores[chunk] = max(prev, lift if prev < -1.0e8 else (1.0 - transition_w) * prev + transition_w * lift)
+    else:
+        for chunk, c_score in list(chunk_scores.items()):
+            ents = list(chk2ent.get(str(chunk), []) or [])
+            bonus = 0.0
+            for rank, ent in enumerate(ents[:6]):
+                bonus += max(0.0, float(entity_scores.get(str(ent), 0.0))) * max(0.10, 0.45 - 0.05 * float(rank))
+            chunk_scores[chunk] = float(c_score) + transition_w * float(bonus)
+
+    # Corridor-local bonus: keep chunks touched by selected nodes/bridge paths.
+    if final_graph is not None:
+        selected_nodes = set(final_graph.nodes())
+        for node in selected_nodes:
+            node_id = str(node)
+            if node_id in chunk_scores:
+                chunk_scores[node_id] = float(chunk_scores[node_id]) + 0.15
+            if node_id in ent2chk:
+                for rank, chunk in enumerate(list(ent2chk.get(node_id, []) or [])[:4]):
+                    if chunk in reduced_graph and _is_chunk_like_node(reduced_graph, chunk):
+                        chunk_scores[chunk] = max(float(chunk_scores.get(chunk, -1.0e9)), 0.25 - 0.03 * float(rank))
+
+    ranked = sorted(
+        [(str(chunk), float(score)) for chunk, score in chunk_scores.items() if chunk in reduced_graph and _is_chunk_like_node(reduced_graph, chunk)],
+        key=lambda x: x[1],
+        reverse=True,
+    )[:topk]
+    diag = {
+        "applied": bool(ranked),
+        "chunk_scoring_mode": mode,
+        "chunk_score_topk": int(topk),
+        "entity_chunk_transition_weight": float(transition_w),
+        "entity_score_count": int(len(entity_scores)),
+        "chunk_score_count": int(len(chunk_scores)),
+        "selected_chunk_count": int(len(ranked)),
+        "shortlisted_run_count": int(len(shortlisted_runs or [])),
+    }
+    return ranked, diag
+
+
 def run_graphrag_core(
     sample,
     cfg,
@@ -3128,7 +3560,11 @@ def run_graphrag_core(
                 semantic_entity_lookup_mode = "bruteforce"
                 semantic_chunk_lookup_mode = "bruteforce"
                 local_lookup_start = time.perf_counter()
-                local_nodes = [n for n in g.nodes if g.nodes[n].get("node_type") in {"entity", "sentence"}]
+                local_nodes = [
+                    n
+                    for n in g.nodes
+                    if (g.nodes[n].get("node_type") == "entity") or _is_chunk_like_node(g, n)
+                ]
                 local_vectors, local_err = _load_candidate_vectors(local_nodes, g, cfg, semantic_state=None)
                 if local_err:
                     semantic_diag["error"] = local_err
@@ -3137,7 +3573,7 @@ def run_graphrag_core(
                 else:
                     local_scores = {n: cosine_similarity(query_vec, vec) for n, vec in local_vectors.items()}
                     ent = [(n, s) for n, s in local_scores.items() if g.nodes[n].get("node_type") == "entity"]
-                    chk = [(n, s) for n, s in local_scores.items() if g.nodes[n].get("node_type") == "sentence"]
+                    chk = [(n, s) for n, s in local_scores.items() if _is_chunk_like_node(g, n)]
                     ent.sort(key=lambda x: x[1], reverse=True)
                     chk.sort(key=lambda x: x[1], reverse=True)
                     t_ent = max(0, int(getattr(cfg, "semantic_topn_entity", getattr(cfg, "semantic_topn", 50))))
@@ -3188,6 +3624,13 @@ def run_graphrag_core(
         entities = [n for n in reduced_graph.nodes if reduced_graph.nodes[n].get("node_type") == "entity"]
         entities.sort(key=lambda n: reduced_graph.degree(n), reverse=True)
         anchors = entities[: int(getattr(cfg, "max_anchors", 5))]
+    diffusion_graph, phase1_anchors, diffusion_diag = _prepare_diffusion_graph_for_mode(
+        reduced_graph=reduced_graph,
+        anchors=anchors,
+        cfg=cfg,
+    )
+    if not phase1_anchors:
+        phase1_anchors = list(anchors)
 
     semantic_diag["semantic_entity_candidates"] = [str(n) for n in semantic_entity_scores.keys()]
     semantic_diag["semantic_chunk_candidates"] = [str(n) for n in semantic_chunk_scores.keys()]
@@ -3211,7 +3654,7 @@ def run_graphrag_core(
     stage_ms["proposal_time_ms"] = float((time.perf_counter() - proposal_start) * 1000.0)
 
     phase1_start = time.perf_counter()
-    per_anchor_runs = {a: [] for a in anchors}
+    per_anchor_runs = {a: [] for a in phase1_anchors}
     n_runs = max(1, int(getattr(cfg, "samples_per_anchor", 3)))
     phase1_parallel_enabled = bool(getattr(cfg, "phase1_parallel_ppr", True))
     original_ppr_parallel_workers = int(getattr(cfg, "ppr_parallel_workers", 1))
@@ -3226,10 +3669,10 @@ def run_graphrag_core(
     ):
         run_seed = int(rng.random() * 10**9)
         if ppr_engine == "power":
-            h = _stochastic_perturb_graph(reduced_graph, rng, float(getattr(cfg, "edge_drop_prob", 0.1)))
+            h = _stochastic_perturb_graph(diffusion_graph, rng, float(getattr(cfg, "edge_drop_prob", 0.1)))
             run_map = _compute_ppr_batch(
                 g=h,
-                sources=anchors,
+                sources=phase1_anchors,
                 cfg=cfg,
                 engine="power",
                 run_seed=run_seed,
@@ -3238,15 +3681,15 @@ def run_graphrag_core(
             )
         else:
             run_map = _compute_ppr_batch(
-                g=reduced_graph,
-                sources=anchors,
+                g=diffusion_graph,
+                sources=phase1_anchors,
                 cfg=cfg,
                 engine="mc",
                 run_seed=run_seed,
                 show_progress=show_inner_progress,
                 desc="Phase1 Anchor PPR",
             )
-        for anchor in anchors:
+        for anchor in phase1_anchors:
             per_anchor_runs[anchor].append(run_map.get(anchor, {}))
     if not phase1_parallel_enabled:
         setattr(cfg, "ppr_parallel_workers", original_ppr_parallel_workers)
@@ -3258,7 +3701,7 @@ def run_graphrag_core(
     for run_id in range(n_runs):
         agg_scores = {}
         anchor_scores = {}
-        for anchor in anchors:
+        for anchor in phase1_anchors:
             scores = per_anchor_runs.get(anchor, [{}])[run_id]
             anchor_scores[anchor] = scores
             for node, score in scores.items():
@@ -3273,7 +3716,7 @@ def run_graphrag_core(
             }
         )
 
-    candidate_universe = set(anchors).union(set(proposal_nodes))
+    candidate_universe = set(phase1_anchors).union(set(proposal_nodes))
     for run in run_base:
         candidate_universe.update(run.get("graph_candidates", []))
     candidate_universe = {node for node in candidate_universe if node in reduced_graph}
@@ -3320,6 +3763,26 @@ def run_graphrag_core(
     for node in candidate_universe:
         support_sim_map[node] = _entity_support_similarity(reduced_graph, node, query_sim_map)
 
+    tau_cap = max(1, int(getattr(cfg, "tau", 4)))
+    anchor_distance_maps = {
+        anchor: _get_distance_map(reduced_graph, anchor, tau_cap, distance_map_cache={})
+        for anchor in anchors
+        if anchor in reduced_graph
+    }
+    seed_bridge_bonus_global = _seed_bridge_bonus_map(
+        candidates=sorted(candidate_universe),
+        anchors=anchors,
+        anchor_distance_maps=anchor_distance_maps,
+        tau=tau_cap,
+    )
+    seed_chunk_grounding_bonus_global = _seed_chunk_grounding_bonus_map(
+        candidates=sorted(candidate_universe),
+        g=reduced_graph,
+        semantic_state=semantic_state,
+        query_sim_map=query_sim_map,
+        support_sim_map=support_sim_map,
+    )
+
     semantic_union_enabled = bool(getattr(cfg, "semantic_candidate_union", True))
     distance_map_cache = {}
     run_results = []
@@ -3343,19 +3806,27 @@ def run_graphrag_core(
             candidates = list(anchors)
 
         if semantic_diag["enabled"] and query_vec is not None:
-            seed_score_map, graph_norm, semantic_norm, anchor_norm = _seed_hybrid_scores(
+            bridge_bonus_map = {node: float(seed_bridge_bonus_global.get(node, 0.0)) for node in candidates}
+            chunk_grounding_bonus_map = {
+                node: float(seed_chunk_grounding_bonus_global.get(node, 0.0)) for node in candidates
+            }
+            seed_score_map, graph_norm, semantic_norm, anchor_norm, bridge_norm, grounding_norm = _seed_hybrid_scores(
                 candidates=candidates,
                 agg_scores=run.get("agg_scores", {}),
                 query_sim=query_sim_map,
                 anchor_sim=anchor_sim_map,
                 support_sim=support_sim_map,
                 cfg=cfg,
+                bridge_bonus_map=bridge_bonus_map,
+                chunk_grounding_bonus_map=chunk_grounding_bonus_map,
             )
         else:
             seed_score_map = {node: float(run["agg_scores"].get(node, 0.0)) for node in candidates}
             graph_norm = _normalize_map(seed_score_map)
             semantic_norm = {node: 0.0 for node in candidates}
             anchor_norm = {node: 0.0 for node in candidates}
+            bridge_norm = {node: 0.0 for node in candidates}
+            grounding_norm = {node: 0.0 for node in candidates}
 
         objective_weights = {node: float(seed_score_map.get(node, 0.0)) for node in candidates}
         if max(objective_weights.values(), default=0.0) <= 0.0:
@@ -3386,17 +3857,13 @@ def run_graphrag_core(
                     "graph": graph_norm,
                     "semantic": semantic_norm,
                     "anchor": anchor_norm,
+                    "bridge": bridge_norm,
+                    "grounding": grounding_norm,
                 },
             }
         )
 
     run_score_sparse_topk = max(12, int(getattr(cfg, "run_score_sparse_topk", 64)))
-    tau_cap = max(1, int(getattr(cfg, "tau", 4)))
-    anchor_distance_maps = {
-        anchor: _get_distance_map(reduced_graph, anchor, tau_cap, distance_map_cache=distance_map_cache)
-        for anchor in anchors
-        if anchor in reduced_graph
-    }
     for run in run_results:
         full_nodes = _ordered_unique(list(run.get("candidates", [])) + list(run.get("seeds", [])))
         if not full_nodes:
@@ -3537,21 +4004,44 @@ def run_graphrag_core(
         w_struct = max(0.0, float(getattr(cfg, "run_score_structure_weight", 0.25)))
         w_bridge = max(0.0, float(getattr(cfg, "run_score_bridge_weight", 0.15)))
         w_redundancy = max(0.0, float(getattr(cfg, "run_score_redundancy_weight", 0.10)))
-        total = w_sem + w_anchor + w_struct + w_bridge + w_redundancy
+        w_pair_cov = max(0.0, float(getattr(cfg, "run_score_pair_coverage_weight", 0.0)))
+        w_bridge_complete = max(0.0, float(getattr(cfg, "run_score_bridge_completeness_weight", 0.0)))
+        w_grounding = max(0.0, float(getattr(cfg, "run_score_entity_chunk_grounding_weight", 0.0)))
+        w_anchor_disp = max(0.0, float(getattr(cfg, "run_score_anchor_dispersion_penalty", 0.0)))
+        total = (
+            w_sem
+            + w_anchor
+            + w_struct
+            + w_bridge
+            + w_redundancy
+            + w_pair_cov
+            + w_bridge_complete
+            + w_grounding
+            + w_anchor_disp
+        )
         if total <= 0.0:
             w_sem, w_anchor, w_struct, w_bridge, w_redundancy = 0.30, 0.20, 0.25, 0.15, 0.10
+            w_pair_cov, w_bridge_complete, w_grounding, w_anchor_disp = 0.0, 0.0, 0.0, 0.0
             total = 1.0
         w_sem /= total
         w_anchor /= total
         w_struct /= total
         w_bridge /= total
         w_redundancy /= total
+        w_pair_cov /= total
+        w_bridge_complete /= total
+        w_grounding /= total
+        w_anchor_disp /= total
 
         best = None
         best_score = float("-inf")
         structural_cache = {}
         redundancy_cache = {}
         bridge_cache = {}
+        pair_cov_cache = {}
+        bridge_complete_cache = {}
+        grounding_cache = {}
+        anchor_disp_cache = {}
         for run in full_eval_runs:
             run_nodes = list(run.get("score_nodes", []) or [])
             semantic_cov = float(run.get("semantic_coverage_pre", 0.0))
@@ -3585,11 +4075,53 @@ def run_graphrag_core(
                     node_vectors=node_vectors,
                 )
             redundancy = float(redundancy_cache[seeds_key])
+
+            if seeds_key not in pair_cov_cache:
+                pair_cov_cache[seeds_key] = _run_pair_coverage_score(
+                    anchors=anchors,
+                    seeds=run.get("seeds", set()),
+                    anchor_distance_maps=anchor_distance_maps,
+                    tau=int(getattr(cfg, "tau", 4)),
+                )
+            pair_coverage = float(pair_cov_cache[seeds_key])
+
+            bridge_complete_key = tuple(run_nodes)
+            if bridge_complete_key not in bridge_complete_cache:
+                bridge_complete_cache[bridge_complete_key] = _run_bridge_path_completeness(
+                    anchors=anchors,
+                    run_nodes=run_nodes,
+                    anchor_distance_maps=anchor_distance_maps,
+                    tau=int(getattr(cfg, "tau", 4)),
+                )
+            bridge_completeness = float(bridge_complete_cache[bridge_complete_key])
+
+            grounding_key = (seeds_key, bridge_complete_key)
+            if grounding_key not in grounding_cache:
+                grounding_cache[grounding_key] = _run_entity_chunk_grounding_score(
+                    seeds=run.get("seeds", set()),
+                    run_nodes=run_nodes,
+                    semantic_state=semantic_state,
+                )
+            grounding_score = float(grounding_cache[grounding_key])
+
+            if seeds_key not in anchor_disp_cache:
+                anchor_disp_cache[seeds_key] = _run_anchor_dispersion_penalty(
+                    anchors=anchors,
+                    seeds=run.get("seeds", set()),
+                    anchor_distance_maps=anchor_distance_maps,
+                    tau=int(getattr(cfg, "tau", 4)),
+                )
+            anchor_dispersion = float(anchor_disp_cache[seeds_key])
+
             run_score = (
                 w_sem * semantic_cov
                 + w_anchor * anchor_align
                 + w_struct * structural_conn
                 + w_bridge * bridge
+                + w_pair_cov * pair_coverage
+                + w_bridge_complete * bridge_completeness
+                + w_grounding * grounding_score
+                - w_anchor_disp * anchor_dispersion
                 - w_redundancy * redundancy
             )
             surrogate_loss = (
@@ -3597,6 +4129,10 @@ def run_graphrag_core(
                 + w_anchor * (1.0 - anchor_align)
                 + w_struct * (1.0 - structural_conn)
                 + w_bridge * (1.0 - bridge)
+                + w_pair_cov * (1.0 - pair_coverage)
+                + w_bridge_complete * (1.0 - bridge_completeness)
+                + w_grounding * (1.0 - grounding_score)
+                + w_anchor_disp * anchor_dispersion
                 + w_redundancy * redundancy
                 + 0.25 * dispersion_penalty
             )
@@ -3605,6 +4141,10 @@ def run_graphrag_core(
                 "anchor_alignment": float(anchor_align),
                 "structural_connectivity": float(structural_conn),
                 "bridge_utility": float(bridge),
+                "pair_coverage_score": float(pair_coverage),
+                "bridge_path_completeness": float(bridge_completeness),
+                "entity_chunk_grounding_score": float(grounding_score),
+                "anchor_dispersion_penalty": float(anchor_dispersion),
                 "redundancy_penalty": float(redundancy),
                 "dispersion_penalty": float(dispersion_penalty),
                 "cheap_pre_score": float(run.get("cheap_pre_score", 0.0)),
@@ -3628,7 +4168,7 @@ def run_graphrag_core(
             "seeds": set(),
             "agg_scores": {},
             "seed_score_map": {},
-            "seed_score_components": {"graph": {}, "semantic": {}, "anchor": {}},
+            "seed_score_components": {"graph": {}, "semantic": {}, "anchor": {}, "bridge": {}, "grounding": {}},
             "run_score_components": {},
             "hybrid_run_score": 0.0,
             "surrogate_loss": 0.0,
@@ -3726,7 +4266,35 @@ def run_graphrag_core(
             rho=float(getattr(cfg, "trim_rho", 0.6)),
         )
 
+    entity_chunk_diag = {
+        "enabled": str(getattr(cfg, "graph_mode", "current_entity_graph") or "current_entity_graph").strip().lower()
+        == "entity_chunk_graph",
+        "applied": False,
+        "chunk_scoring_mode": str(getattr(cfg, "chunk_scoring_mode", "entity_aggregate") or "entity_aggregate"),
+        "chunk_score_topk": int(getattr(cfg, "chunk_score_topk", 20)),
+        "chunk_package_enabled": bool(getattr(cfg, "chunk_package_enabled", False)),
+        "selected_chunks": [],
+    }
+    if entity_chunk_diag["enabled"]:
+        ranked_chunks, chunk_graph_diag = _entity_chunk_graph_chunk_scoring(
+            reduced_graph=reduced_graph,
+            final_graph=final_graph,
+            chosen_run=chosen,
+            shortlisted_runs=shortlisted_runs,
+            semantic_state=semantic_state,
+            cfg=cfg,
+        )
+        entity_chunk_diag.update(chunk_graph_diag or {})
+        if bool(getattr(cfg, "chunk_package_enabled", False)) and ranked_chunks:
+            for chunk_node, c_score in ranked_chunks:
+                sentence_scores[chunk_node] = max(float(sentence_scores.get(chunk_node, 0.0)), float(c_score))
+            entity_chunk_diag["applied"] = True
+            entity_chunk_diag["selected_chunks"] = [str(c) for c, _ in ranked_chunks]
+            entity_chunk_diag["selected_chunk_scores"] = {str(c): float(s) for c, s in ranked_chunks}
+
     selected_nodes = set(final_graph.nodes())
+    if entity_chunk_diag.get("applied", False):
+        selected_nodes.update(entity_chunk_diag.get("selected_chunks", []))
     selected_sentence_ids, selected_sentences, selected_sentence_score_map = _extract_sentence_payload(
         g,
         selected_nodes,
@@ -3849,8 +4417,16 @@ def run_graphrag_core(
             "phase2_refine_mode": str(getattr(cfg, "phase2_refine_mode", "bounded_local") or "bounded_local"),
             "phase2_bidirectional_full_ppr": bool(getattr(cfg, "phase2_bidirectional_full_ppr", False)),
             "reuse_semantic_scores_in_final": bool(getattr(cfg, "reuse_semantic_scores_in_final", True)),
-            "ppr_graph_nodes": int(reduced_graph.number_of_nodes()),
-            "ppr_graph_edges": int(reduced_graph.number_of_edges()),
+            "graph_mode": str(getattr(cfg, "graph_mode", "current_entity_graph") or "current_entity_graph"),
+            "chunk_scoring_mode": str(getattr(cfg, "chunk_scoring_mode", "entity_aggregate") or "entity_aggregate"),
+            "entity_chunk_transition_weight": float(getattr(cfg, "entity_chunk_transition_weight", 0.35)),
+            "chunk_node_enabled_in_diffusion": bool(getattr(cfg, "chunk_node_enabled_in_diffusion", False)),
+            "chunk_score_topk": int(getattr(cfg, "chunk_score_topk", 20)),
+            "chunk_package_enabled": bool(getattr(cfg, "chunk_package_enabled", False)),
+            "ppr_graph_nodes": int(diffusion_graph.number_of_nodes()),
+            "ppr_graph_edges": int(diffusion_graph.number_of_edges()),
+            "entity_chunk_graph": entity_chunk_diag,
+            "diffusion_graph_diag": diffusion_diag,
             "proposal_reduced_subgraph": reduced_diag,
             "proposal_entity_count": int(proposal_diag.get("proposal_entity_count", 0)),
             "proposal_chunk_count": int(proposal_diag.get("proposal_chunk_count", 0)),

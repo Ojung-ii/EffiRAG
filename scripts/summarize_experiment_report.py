@@ -226,6 +226,15 @@ def main():
     parser.add_argument("--output-json", type=str, required=True)
     parser.add_argument("--output-md", type=str, required=True)
     parser.add_argument("--analysis-md", type=str, default="")
+    parser.add_argument("--experiment-family", type=str, default="")
+    parser.add_argument("--question-being-answered", type=str, default="")
+    parser.add_argument("--baseline-reference", type=str, default="")
+    parser.add_argument("--frozen-config-reference", type=str, default="")
+    parser.add_argument("--dataset-scope", type=str, default="")
+    parser.add_argument("--changed-components", action="append", default=[])
+    parser.add_argument("--git-branch", type=str, default="")
+    parser.add_argument("--git-commit", type=str, default="")
+    parser.add_argument("--git-tag", type=str, default="")
     args = parser.parse_args()
 
     rows = []
@@ -277,13 +286,43 @@ def main():
         "schema": args.schema,
         "baseline_variant": args.baseline_variant,
         "n_runs": len(rows),
+        "metadata": {
+            "experiment_family": str(args.experiment_family or ""),
+            "question_being_answered": str(args.question_being_answered or ""),
+            "baseline_reference": str(args.baseline_reference or ""),
+            "frozen_config_reference": str(args.frozen_config_reference or ""),
+            "dataset_scope": str(args.dataset_scope or ""),
+            "changed_components": [str(x) for x in list(args.changed_components or []) if str(x).strip()],
+            "git_branch": str(args.git_branch or ""),
+            "git_commit": str(args.git_commit or ""),
+            "git_tag": str(args.git_tag or ""),
+        },
         "rows": rows,
     }
     out_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     md_rows = [_format_row(r, args.schema) for r in rows]
     cols = _schema_columns(args.schema)
-    lines = [f"# {args.title}", "", _markdown_table(cols, md_rows), ""]
+    md_meta = payload.get("metadata", {}) or {}
+    lines = [f"# {args.title}", ""]
+    if any(str(v).strip() for v in md_meta.values() if not isinstance(v, list)) or md_meta.get("changed_components"):
+        lines.extend(
+            [
+                "## Metadata",
+                "",
+                f"- experiment_family: `{md_meta.get('experiment_family', '')}`",
+                f"- question_being_answered: `{md_meta.get('question_being_answered', '')}`",
+                f"- baseline_reference: `{md_meta.get('baseline_reference', '')}`",
+                f"- frozen_config_reference: `{md_meta.get('frozen_config_reference', '')}`",
+                f"- dataset_scope: `{md_meta.get('dataset_scope', '')}`",
+                f"- changed_components: `{', '.join(md_meta.get('changed_components', []) or [])}`",
+                f"- git_branch: `{md_meta.get('git_branch', '')}`",
+                f"- git_commit: `{md_meta.get('git_commit', '')}`",
+                f"- git_tag: `{md_meta.get('git_tag', '')}`",
+                "",
+            ]
+        )
+    lines.extend([_markdown_table(cols, md_rows), ""])
     out_md.write_text("\n".join(lines), encoding="utf-8")
 
     if str(args.analysis_md or "").strip():

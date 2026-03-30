@@ -386,6 +386,487 @@ def pack_corridors_with_budget(
     return kept, rendered_sentence_ids, rendered_corridor_ids, truncated_corridors, truncated_sentences
 
 
+def _sentence_id_parts(sentence_id):
+    sid = str(sentence_id or "")
+    if "::" not in sid:
+        return sid, None
+    title, idx_str = sid.rsplit("::", 1)
+    try:
+        return title, int(idx_str)
+    except Exception:
+        return title, None
+
+
+def _context_doc_sentence_map(sample):
+    docs = {}
+    for doc in sample.contexts:
+        title = str(doc.title or "")
+        if not title:
+            continue
+        existing = docs.get(title)
+        current = list(doc.sentences or [])
+        if existing is None or len(current) > len(existing):
+            docs[title] = current
+    return docs
+
+
+def _extract_chunk_window_sentences(doc_sentences, title, center_idx, before_n, after_n):
+    if not doc_sentences:
+        return []
+    if center_idx is None:
+        center_idx = 0
+    center_idx = max(0, min(int(center_idx), len(doc_sentences) - 1))
+    start = max(0, int(center_idx) - max(0, int(before_n)))
+    end = min(len(doc_sentences) - 1, int(center_idx) + max(0, int(after_n)))
+    pairs = []
+    for idx in range(start, end + 1):
+        text = str(doc_sentences[idx] or "").strip()
+        if not text:
+            continue
+        sid = f"{title}::{idx}"
+        pairs.append((sid, text))
+    return pairs
+
+
+def _ordered_corridors(corridors):
+    ranked = []
+    for idx, corridor in enumerate(corridors or [], start=1):
+        if not isinstance(corridor, dict):
+            continue
+        cid = str(corridor.get("corridor_id", f"c{idx:02d}") or f"c{idx:02d}")
+        ranked.append((cid, corridor))
+    ranked.sort(key=lambda x: float((x[1] or {}).get("corridor_score", 0.0)), reverse=True)
+    return ranked
+
+
+def _build_sentence_to_corridor_maps(corridors):
+    sent_to_corridors = {}
+    corridor_rank = {}
+    corridor_support_counts = {}
+    corridor_bridge_flags = {}
+    for rank, (cid, corridor) in enumerate(_ordered_corridors(corridors), start=1):
+        corridor_rank[cid] = rank
+        support_ids = list((corridor or {}).get("support_sentence_ids", []) or [])
+        main_ids = list((corridor or {}).get("main_path_sentence_ids", []) or [])
+        corridor_support_counts[cid] = len(support_ids)
+        anchors = list((corridor or {}).get("anchors", []) or [])
+        corridor_bridge_flags[cid] = bool(len([a for a in anchors if str(a or "").strip()]) >= 2)
+        for sid in _ordered_unique(main_ids + support_ids):
+            sent_to_corridors.setdefault(str(sid), []).append(cid)
+    return sent_to_corridors, corridor_rank, corridor_support_counts, corridor_bridge_flags
+
+
+def _select_excerpt_sentences_from_packages(
+    packages,
+    base_sentence_ids,
+    max_excerpt_sentences,
+    dedup_enabled,
+):
+    max_excerpt = max(0, int(max_excerpt_sentences))
+    if max_excerpt <= 0:
+        return [], 0, 0
+
+    used = set(base_sentence_ids or [])
+    kept_pairs = []
+    kept_package_count = 0
+    candidate_sentence_count = 0
+
+    for pkg in packages:
+        pkg_pairs = list((pkg or {}).get("pairs", []) or [])
+        pkg_added = False
+        for sid, sent in pkg_pairs:
+            sid = str(sid or "")
+            text = str(sent or "").strip()
+            if not sid or not text:
+                continue
+            if dedup_enabled and sid in used:
+                continue
+            candidate_sentence_count += 1
+            if len(kept_pairs) >= max_excerpt:
+                continue
+            kept_pairs.append((sid, text))
+            pkg_added = True
+            if dedup_enabled:
+                used.add(sid)
+        if pkg_added:
+            kept_package_count += 1
+
+    return kept_pairs, kept_package_count, candidate_sentence_count
+
+
+def _build_sentence_backfill_packages(
+    sample,
+    retrieval_result,
+    base_sentence_ids,
+    rendered_corridor_ids,
+    max_per_corridor,
+    before_n,
+    after_n,
+):
+    doc_map = _context_doc_sentence_map(sample)
+    sentence_rank = {sid: idx for idx, sid in enumerate(base_sentence_ids or [])}
+    ranked_corridors = _ordered_corridors(retrieval_result.corridors or [])
+    corridor_map = {cid: corridor for cid, corridor in ranked_corridors}
+    selected_corridors = [cid for cid in (rendered_corridor_ids or []) if cid in corridor_map]
+    if not selected_corridors:
+        selected_corridors = [cid for cid, _ in ranked_corridors[:3]]
+
+    packages = []
+    per_corr = max(1, int(max_per_corridor))
+    for cid in selected_corridors:
+        corridor = corridor_map.get(cid, {})
+        candidates = _ordered_unique(
+            list((corridor or {}).get("main_path_sentence_ids", []) or [])
+            + list((corridor or {}).get("support_sentence_ids", []) or [])
+        )
+        if not candidates:
+            continue
+        candidates.sort(key=lambda sid: sentence_rank.get(sid, 10**9))
+        centers = candidates[:per_corr]
+        for center_sid in centers:
+            title, center_idx = _sentence_id_parts(center_sid)
+            doc_sentences = doc_map.get(title, [])
+            excerpt_pairs = _extract_chunk_window_sentences(
+                doc_sentences=doc_sentences,
+                title=title,
+                center_idx=center_idx,
+                before_n=before_n,
+                after_n=after_n,
+            )
+            if excerpt_pairs:
+                packages.append(
+                    {
+                        "package_id": f"{cid}:{center_sid}",
+                        "pairs": excerpt_pairs,
+                    }
+                )
+
+    if packages:
+        return packages
+
+    # Corridor map may be sparse for some runs; fall back to sentence-centered backfill.
+    for idx, sid in enumerate(list(base_sentence_ids or [])[: max(1, per_corr * 2)]):
+        title, center_idx = _sentence_id_parts(sid)
+        doc_sentences = doc_map.get(title, [])
+        excerpt_pairs = _extract_chunk_window_sentences(
+            doc_sentences=doc_sentences,
+            title=title,
+            center_idx=center_idx,
+            before_n=before_n,
+            after_n=after_n,
+        )
+        if excerpt_pairs:
+            packages.append(
+                {
+                    "package_id": f"fallback:{idx}:{sid}",
+                    "pairs": excerpt_pairs,
+                }
+            )
+    return packages
+
+
+def _build_corridor_lift_packages(
+    sample,
+    retrieval_result,
+    rendered_corridor_ids,
+    before_n,
+    after_n,
+    top_chunks_per_corridor,
+):
+    doc_map = _context_doc_sentence_map(sample)
+    question_tokens = _token_set(sample.question)
+    ranked_corridors = _ordered_corridors(retrieval_result.corridors or [])
+    corridor_map = {cid: corridor for cid, corridor in ranked_corridors}
+    selected_corridors = [cid for cid in (rendered_corridor_ids or []) if cid in corridor_map]
+    if not selected_corridors:
+        selected_corridors = [cid for cid, _ in ranked_corridors[:3]]
+
+    packages = []
+    topn = max(1, int(top_chunks_per_corridor))
+    for cid in selected_corridors:
+        corridor = corridor_map.get(cid, {})
+        sentence_ids = _ordered_unique(
+            list((corridor or {}).get("main_path_sentence_ids", []) or [])
+            + list((corridor or {}).get("support_sentence_ids", []) or [])
+        )
+        if not sentence_ids:
+            continue
+        by_title = {}
+        for sid in sentence_ids:
+            title, sent_idx = _sentence_id_parts(sid)
+            if sent_idx is None:
+                continue
+            by_title.setdefault(title, []).append(sent_idx)
+
+        ranked_titles = []
+        for title, idx_list in by_title.items():
+            doc_sentences = doc_map.get(title, [])
+            if not doc_sentences:
+                continue
+            title_tokens = _token_set(title)
+            center = sorted(idx_list)[len(idx_list) // 2]
+            center_sent = str(doc_sentences[min(center, len(doc_sentences) - 1)] or "")
+            overlap = len(question_tokens.intersection(title_tokens.union(_token_set(center_sent))))
+            score = float(len(idx_list)) + 0.1 * float(overlap)
+            ranked_titles.append((title, center, score))
+
+        ranked_titles.sort(key=lambda x: x[2], reverse=True)
+        for title, center_idx, _ in ranked_titles[:topn]:
+            excerpt_pairs = _extract_chunk_window_sentences(
+                doc_sentences=doc_map.get(title, []),
+                title=title,
+                center_idx=center_idx,
+                before_n=before_n,
+                after_n=after_n,
+            )
+            if excerpt_pairs:
+                packages.append(
+                    {
+                        "package_id": f"{cid}:{title}:{center_idx}",
+                        "pairs": excerpt_pairs,
+                    }
+                )
+    return packages
+
+
+def _build_package_score_packages(
+    sample,
+    retrieval_result,
+    base_sentence_ids,
+    before_n,
+    after_n,
+    top_k_packages,
+    w_answer,
+    w_bridge,
+    w_support,
+    w_chunk_grounding,
+    w_redundancy,
+):
+    doc_map = _context_doc_sentence_map(sample)
+    sent_to_corridors, corridor_rank, corridor_support_counts, corridor_bridge_flags = _build_sentence_to_corridor_maps(
+        retrieval_result.corridors or []
+    )
+    question_tokens = _token_set(sample.question)
+    sentence_token_cache = {}
+
+    candidates = []
+    for rank, sid in enumerate(base_sentence_ids or [], start=1):
+        title, sent_idx = _sentence_id_parts(sid)
+        if sent_idx is None:
+            continue
+        doc_sentences = doc_map.get(title, [])
+        if not doc_sentences:
+            continue
+        excerpt_pairs = _extract_chunk_window_sentences(
+            doc_sentences=doc_sentences,
+            title=title,
+            center_idx=sent_idx,
+            before_n=before_n,
+            after_n=after_n,
+        )
+        if not excerpt_pairs:
+            continue
+        excerpt_text = " ".join([txt for _, txt in excerpt_pairs])
+        excerpt_tokens = _token_set(excerpt_text)
+        sentence_token_cache[sid] = excerpt_tokens
+        cids = sent_to_corridors.get(sid, [])
+        best_rank = min([corridor_rank.get(cid, 10**9) for cid in cids], default=10**9)
+        answer_score = 1.0 / float(rank)
+        bridge_score = max([1.0 if corridor_bridge_flags.get(cid, False) else 0.0 for cid in cids], default=0.0)
+        support_score = 0.0
+        if cids:
+            support_score = max([float(corridor_support_counts.get(cid, 0)) for cid in cids]) / 4.0
+        grounding_score = 0.0
+        if question_tokens:
+            grounding_score = float(len(question_tokens.intersection(excerpt_tokens)) / len(question_tokens))
+        base_score = (
+            float(w_answer) * answer_score
+            + float(w_bridge) * bridge_score
+            + float(w_support) * support_score
+            + float(w_chunk_grounding) * grounding_score
+            + (0.05 / float(best_rank + 1 if best_rank < 10**9 else 1000))
+        )
+        candidates.append(
+            {
+                "sid": sid,
+                "score": float(base_score),
+                "pairs": excerpt_pairs,
+            }
+        )
+
+    if not candidates:
+        return []
+
+    k = max(1, int(top_k_packages))
+    selected = []
+    selected_token_sets = []
+    remaining = list(candidates)
+    while remaining and len(selected) < k:
+        best = None
+        best_score = None
+        for cand in remaining:
+            c_tokens = sentence_token_cache.get(cand["sid"], set())
+            redundancy = 0.0
+            if selected_token_sets:
+                redundancy = max(_jaccard(c_tokens, prev) for prev in selected_token_sets)
+            score = float(cand.get("score", 0.0)) - float(w_redundancy) * redundancy
+            if best is None or score > best_score:
+                best = cand
+                best_score = score
+        if best is None:
+            break
+        selected.append(
+            {
+                "package_id": f"pkg:{best['sid']}",
+                "pairs": list(best.get("pairs", []) or []),
+            }
+        )
+        selected_token_sets.append(sentence_token_cache.get(best["sid"], set()))
+        remaining = [x for x in remaining if x.get("sid") != best.get("sid")]
+    return selected
+
+
+def _apply_chunk_grounding(
+    sample,
+    retrieval_result,
+    rendered,
+    max_context_sentences,
+    chunk_grounding_mode,
+    chunk_excerpt_max_per_corridor,
+    chunk_excerpt_window_sentences_before,
+    chunk_excerpt_window_sentences_after,
+    chunk_excerpt_max_total_sentences,
+    chunk_excerpt_dedup_enabled,
+    chunk_grounding_top_corridor_chunks,
+    chunk_grounding_top_k_packages,
+    package_score_answer_weight,
+    package_score_bridge_weight,
+    package_score_support_weight,
+    package_score_chunk_grounding_weight,
+    package_score_redundancy_weight,
+):
+    sentence_map = _sample_sentence_lookup(sample)
+    base_ids = list(rendered.sentence_ids or [])
+    if not base_ids:
+        meta = dict(rendered.metadata or {})
+        meta.update(
+            {
+                "chunk_grounding_enabled": True,
+                "chunk_grounding_mode": str(chunk_grounding_mode or ""),
+                "chunk_excerpts_used": 0,
+                "chunk_excerpt_sentence_count": 0,
+                "evidence_package_count": 0,
+                "chunk_excerpt_truncated_count": 0,
+            }
+        )
+        rendered.metadata = meta
+        return rendered
+
+    extra_budget = max(0, int(chunk_excerpt_max_total_sentences))
+    if max_context_sentences is not None:
+        allowed = max(0, int(max_context_sentences) - len(base_ids))
+        extra_budget = min(extra_budget, allowed)
+    if extra_budget <= 0:
+        meta = dict(rendered.metadata or {})
+        meta.update(
+            {
+                "chunk_grounding_enabled": True,
+                "chunk_grounding_mode": str(chunk_grounding_mode or ""),
+                "chunk_excerpts_used": 0,
+                "chunk_excerpt_sentence_count": 0,
+                "evidence_package_count": 0,
+                "chunk_excerpt_truncated_count": 0,
+            }
+        )
+        rendered.metadata = meta
+        return rendered
+
+    mode = str(chunk_grounding_mode or "sentence_backfill").strip().lower()
+    if mode == "corridor_lift":
+        packages = _build_corridor_lift_packages(
+            sample=sample,
+            retrieval_result=retrieval_result,
+            rendered_corridor_ids=rendered.rendered_corridor_ids,
+            before_n=chunk_excerpt_window_sentences_before,
+            after_n=chunk_excerpt_window_sentences_after,
+            top_chunks_per_corridor=chunk_grounding_top_corridor_chunks,
+        )
+    elif mode == "package_score":
+        packages = _build_package_score_packages(
+            sample=sample,
+            retrieval_result=retrieval_result,
+            base_sentence_ids=base_ids,
+            before_n=chunk_excerpt_window_sentences_before,
+            after_n=chunk_excerpt_window_sentences_after,
+            top_k_packages=chunk_grounding_top_k_packages,
+            w_answer=package_score_answer_weight,
+            w_bridge=package_score_bridge_weight,
+            w_support=package_score_support_weight,
+            w_chunk_grounding=package_score_chunk_grounding_weight,
+            w_redundancy=package_score_redundancy_weight,
+        )
+    else:
+        packages = _build_sentence_backfill_packages(
+            sample=sample,
+            retrieval_result=retrieval_result,
+            base_sentence_ids=base_ids,
+            rendered_corridor_ids=rendered.rendered_corridor_ids,
+            max_per_corridor=chunk_excerpt_max_per_corridor,
+            before_n=chunk_excerpt_window_sentences_before,
+            after_n=chunk_excerpt_window_sentences_after,
+        )
+
+    excerpt_pairs, package_count, candidate_sentence_count = _select_excerpt_sentences_from_packages(
+        packages=packages,
+        base_sentence_ids=base_ids,
+        max_excerpt_sentences=extra_budget,
+        dedup_enabled=bool(chunk_excerpt_dedup_enabled),
+    )
+
+    if not excerpt_pairs:
+        meta = dict(rendered.metadata or {})
+        meta.update(
+            {
+                "chunk_grounding_enabled": True,
+                "chunk_grounding_mode": mode,
+                "chunk_excerpts_used": 0,
+                "chunk_excerpt_sentence_count": 0,
+                "evidence_package_count": 0,
+                "chunk_excerpt_truncated_count": max(0, int(candidate_sentence_count)),
+            }
+        )
+        rendered.metadata = meta
+        return rendered
+
+    extra_ids = [sid for sid, _ in excerpt_pairs]
+    extra_sentences = [txt for _, txt in excerpt_pairs]
+    rendered.sentence_ids = list(base_ids) + extra_ids
+    rendered.sentences = [sentence_map.get(sid, "") for sid in base_ids] + extra_sentences
+
+    lines = []
+    if str(rendered.text or "").strip():
+        lines.append(str(rendered.text))
+        lines.append("")
+    lines.append("[Grounded Chunk Excerpts]")
+    for idx, (sid, sent) in enumerate(excerpt_pairs, start=1):
+        lines.append(f"[G{idx}] ({sid}) {sent}")
+    rendered.text = "\n".join(lines)
+
+    meta = dict(rendered.metadata or {})
+    meta.update(
+        {
+            "chunk_grounding_enabled": True,
+            "chunk_grounding_mode": mode,
+            "chunk_excerpts_used": int(package_count),
+            "chunk_excerpt_sentence_count": int(len(excerpt_pairs)),
+            "evidence_package_count": int(package_count),
+            "chunk_excerpt_truncated_count": max(0, int(candidate_sentence_count - len(excerpt_pairs))),
+        }
+    )
+    rendered.metadata = meta
+    return rendered
+
+
 def render_flat_context(sample, retrieval_result, max_context_sentences):
     max_n = max(1, int(max_context_sentences))
     lookup = _sample_sentence_lookup(sample)
@@ -663,6 +1144,20 @@ def render_context(
     max_main_sentences_per_corridor=3,
     max_support_per_corridor=2,
     max_total_sentences=12,
+    chunk_grounding_enabled=False,
+    chunk_grounding_mode="sentence_backfill",
+    chunk_excerpt_max_per_corridor=1,
+    chunk_excerpt_window_sentences_before=1,
+    chunk_excerpt_window_sentences_after=1,
+    chunk_excerpt_max_total_sentences=4,
+    chunk_excerpt_dedup_enabled=True,
+    chunk_grounding_top_corridor_chunks=2,
+    chunk_grounding_top_k_packages=4,
+    package_score_answer_weight=0.50,
+    package_score_bridge_weight=0.20,
+    package_score_support_weight=0.15,
+    package_score_chunk_grounding_weight=0.15,
+    package_score_redundancy_weight=0.10,
     alpha=1.0,
     beta=0.35,
     gamma_main=0.45,
@@ -677,8 +1172,9 @@ def render_context(
     order_strategy="score",
 ):
     mode = str(render_mode or "flat").strip().lower()
+    rendered = None
     if mode == "corridor_aware_flat":
-        return render_corridor_aware_flat_context(
+        rendered = render_corridor_aware_flat_context(
             sample,
             retrieval_result,
             max_context_sentences=max_context_sentences,
@@ -695,8 +1191,7 @@ def render_context(
             reserve_top_corridor=bool(reserve_top_corridor),
             order_strategy=order_strategy,
         )
-
-    if mode == "corridor":
+    elif mode == "corridor":
         max_corridors = max(1, int(max_corridors_in_context))
         max_main = max(1, int(max_main_sentences_per_corridor))
         max_support = max(0, int(max_support_per_corridor))
@@ -704,7 +1199,7 @@ def render_context(
         if max_context_sentences is not None:
             max_total = min(int(max_total), int(max_context_sentences))
         max_total = max(1, int(max_total))
-        return render_corridor_context(
+        rendered = render_corridor_context(
             sample,
             retrieval_result,
             max_corridors_in_context=max_corridors,
@@ -712,5 +1207,28 @@ def render_context(
             max_support_per_corridor=max_support,
             max_total_sentences=max_total,
         )
+    else:
+        rendered = render_flat_context(sample, retrieval_result, max_context_sentences=max_context_sentences)
 
-    return render_flat_context(sample, retrieval_result, max_context_sentences=max_context_sentences)
+    if not bool(chunk_grounding_enabled):
+        return rendered
+
+    return _apply_chunk_grounding(
+        sample=sample,
+        retrieval_result=retrieval_result,
+        rendered=rendered,
+        max_context_sentences=max_context_sentences,
+        chunk_grounding_mode=chunk_grounding_mode,
+        chunk_excerpt_max_per_corridor=chunk_excerpt_max_per_corridor,
+        chunk_excerpt_window_sentences_before=chunk_excerpt_window_sentences_before,
+        chunk_excerpt_window_sentences_after=chunk_excerpt_window_sentences_after,
+        chunk_excerpt_max_total_sentences=chunk_excerpt_max_total_sentences,
+        chunk_excerpt_dedup_enabled=chunk_excerpt_dedup_enabled,
+        chunk_grounding_top_corridor_chunks=chunk_grounding_top_corridor_chunks,
+        chunk_grounding_top_k_packages=chunk_grounding_top_k_packages,
+        package_score_answer_weight=package_score_answer_weight,
+        package_score_bridge_weight=package_score_bridge_weight,
+        package_score_support_weight=package_score_support_weight,
+        package_score_chunk_grounding_weight=package_score_chunk_grounding_weight,
+        package_score_redundancy_weight=package_score_redundancy_weight,
+    )

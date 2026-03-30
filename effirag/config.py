@@ -49,6 +49,19 @@ class RetrievalConfig:
     semantic_topn_chunk: int = 15
     graph_reserve_topn: int = 15
     semantic_topn: int = 50
+    # auto: current_entity_graph->sentence, entity_chunk_graph->passage
+    # sentence: legacy sentence node as chunk
+    # passage: HippoRAG2-like document/passage chunk node
+    index_chunk_unit: str = "auto"
+    # current_entity_graph (frozen path) | entity_chunk_graph (next-method-design experiment path)
+    graph_mode: str = "current_entity_graph"
+    # entity_aggregate: seed/entity scores lifted to chunk via support map
+    # direct_chunk: direct chunk-centric score aggregation
+    chunk_scoring_mode: str = "entity_aggregate"
+    entity_chunk_transition_weight: float = 0.35
+    chunk_node_enabled_in_diffusion: bool = False
+    chunk_score_topk: int = 20
+    chunk_package_enabled: bool = False
     entity_lookup_use_two_tier: bool = True
     entity_lookup_tier1_topk: int = 256
     entity_lookup_alias_token_limit: int = 12
@@ -68,9 +81,20 @@ class RetrievalConfig:
     run_score_structure_weight: float = 0.25
     run_score_bridge_weight: float = 0.15
     run_score_redundancy_weight: float = 0.10
+    # Optional next-method-design run-level objective terms (default off).
+    run_score_pair_coverage_weight: float = 0.0
+    run_score_bridge_completeness_weight: float = 0.0
+    run_score_entity_chunk_grounding_weight: float = 0.0
+    run_score_anchor_dispersion_penalty: float = 0.0
     seed_score_semantic_weight: float = 0.35
     seed_score_graph_weight: float = 0.45
     seed_score_anchor_weight: float = 0.20
+    # Optional seed-level bridge/grounding boosts (default off).
+    seed_score_bridge_weight: float = 0.0
+    seed_score_chunk_grounding_weight: float = 0.0
+    # Optional final corridor grounding boosts (default off).
+    corridor_score_chunk_support_weight: float = 0.0
+    corridor_score_answer_alignment_weight: float = 0.0
     top1_correction_enabled: bool = False
     top1_correction_topk: int = 3
     top1_correction_corridor_weight_base: float = 0.75
@@ -145,6 +169,7 @@ class RetrievalConfig:
 class RagConfig(RetrievalConfig):
     output_dir: str = "outputs/rag"
     run_qa: bool = True
+    evaluator_mode: str = "legacy"  # legacy | hipporag2_parity
     generator: str = "heuristic"
     model_name: str = ""
     llm_base_url: str = ""
@@ -157,6 +182,25 @@ class RagConfig(RetrievalConfig):
     max_main_sentences_per_corridor: int = 3
     max_support_per_corridor: int = 2
     max_total_sentences: int = 14
+    # sentence_compressed (legacy/frozen) | chunk_package_basic | chunk_grounded_bridge | chunk_package_grounded_support
+    delivery_mode: str = "sentence_compressed"
+    max_chunk_packages: int = 4
+    max_excerpt_sentences_per_package: int = 3
+    # Chunk-grounded context packaging (default off; frozen behavior preserved).
+    chunk_grounding_enabled: bool = False
+    chunk_grounding_mode: str = "sentence_backfill"  # sentence_backfill | corridor_lift | package_score
+    chunk_excerpt_max_per_corridor: int = 1
+    chunk_excerpt_window_sentences_before: int = 1
+    chunk_excerpt_window_sentences_after: int = 1
+    chunk_excerpt_max_total_sentences: int = 4
+    chunk_excerpt_dedup_enabled: bool = True
+    chunk_grounding_top_corridor_chunks: int = 2
+    chunk_grounding_top_k_packages: int = 4
+    package_score_answer_weight: float = 0.50
+    package_score_bridge_weight: float = 0.20
+    package_score_support_weight: float = 0.15
+    package_score_chunk_grounding_weight: float = 0.15
+    package_score_redundancy_weight: float = 0.10
     alpha: float = 1.0
     beta: float = 0.35
     gamma_main: float = 0.45
@@ -220,6 +264,10 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["candidate_embedding_fallback_enabled"] = parse_bool(merged["candidate_embedding_fallback_enabled"])
     if "semantic_candidate_union" in merged:
         merged["semantic_candidate_union"] = parse_bool(merged["semantic_candidate_union"])
+    if "chunk_node_enabled_in_diffusion" in merged:
+        merged["chunk_node_enabled_in_diffusion"] = parse_bool(merged["chunk_node_enabled_in_diffusion"])
+    if "chunk_package_enabled" in merged:
+        merged["chunk_package_enabled"] = parse_bool(merged["chunk_package_enabled"])
     if "entity_lookup_use_two_tier" in merged:
         merged["entity_lookup_use_two_tier"] = parse_bool(merged["entity_lookup_use_two_tier"])
     if "proposal_reserve_bfs_fallback" in merged:
@@ -232,6 +280,8 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["proposal_sparse_subgraph_build"] = parse_bool(merged["proposal_sparse_subgraph_build"])
     if "proposal_union_experiment_mode" in merged:
         merged["proposal_union_experiment_mode"] = str(merged["proposal_union_experiment_mode"]).strip().lower()
+    if "index_chunk_unit" in merged:
+        merged["index_chunk_unit"] = str(merged["index_chunk_unit"]).strip().lower()
     if "phase1_parallel_ppr" in merged:
         merged["phase1_parallel_ppr"] = parse_bool(merged["phase1_parallel_ppr"])
     if "phase2_bidirectional_full_ppr" in merged:
@@ -246,4 +296,8 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["profile_stages"] = parse_bool(merged["profile_stages"])
     if "retrieval_only" in merged:
         merged["retrieval_only"] = parse_bool(merged["retrieval_only"])
+    if "chunk_grounding_enabled" in merged:
+        merged["chunk_grounding_enabled"] = parse_bool(merged["chunk_grounding_enabled"])
+    if "chunk_excerpt_dedup_enabled" in merged:
+        merged["chunk_excerpt_dedup_enabled"] = parse_bool(merged["chunk_excerpt_dedup_enabled"])
     return merged
