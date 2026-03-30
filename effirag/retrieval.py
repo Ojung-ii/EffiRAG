@@ -1772,9 +1772,12 @@ def _run_anchor_dispersion_penalty(anchors, seeds, anchor_distance_maps, tau):
 
 
 def _sentence_node_to_id(g, node):
-    if g.nodes[node].get("node_type") != "sentence":
-        return None
-    return str(g.nodes[node].get("sentence_id", node))
+    node_type = str(g.nodes[node].get("node_type", "") or "").strip().lower()
+    if node_type == "sentence":
+        return str(g.nodes[node].get("sentence_id", node))
+    if node_type in {"chunk", "passage", "document"}:
+        return str(g.nodes[node].get("chunk_id", node))
+    return None
 
 
 def _build_single_corridor_payload(g, anchor, seed, corridor_id, corridor_score, node_scores):
@@ -1789,16 +1792,16 @@ def _build_single_corridor_payload(g, anchor, seed, corridor_id, corridor_score,
         except Exception:
             path_nodes = []
 
-    main_sentence_nodes = [node for node in path_nodes if g.nodes[node].get("node_type") == "sentence"]
+    main_sentence_nodes = [node for node in path_nodes if _sentence_node_to_id(g, node) is not None]
     if not main_sentence_nodes:
-        main_sentence_nodes = [node for node, _ in node_scores if g.nodes[node].get("node_type") == "sentence"]
+        main_sentence_nodes = [node for node, _ in node_scores if _sentence_node_to_id(g, node) is not None]
 
-    connector_nodes = {node for node in path_nodes if g.nodes[node].get("node_type") != "sentence"}
+    connector_nodes = {node for node in path_nodes if _sentence_node_to_id(g, node) is None}
     main_sentence_set = set(main_sentence_nodes)
     candidate_support_nodes = [
         node
         for node, _ in node_scores
-        if g.nodes[node].get("node_type") == "sentence" and node not in main_sentence_set
+        if _sentence_node_to_id(g, node) is not None and node not in main_sentence_set
     ]
 
     adjacent_support_nodes = []
@@ -1975,9 +1978,9 @@ def _greedy_trim(h, anchors, seeds, rho):
 def _extract_sentence_payload(g, selected_nodes, sentence_scores):
     sentences = []
     for node in selected_nodes:
-        if g.nodes[node].get("node_type") != "sentence":
+        sid = _sentence_node_to_id(g, node)
+        if sid is None:
             continue
-        sid = str(g.nodes[node].get("sentence_id", node))
         text = str(g.nodes[node].get("text", ""))
         score = sentence_scores.get(node, 0.0)
         sentences.append((sid, text, score))
