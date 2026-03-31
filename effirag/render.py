@@ -1,3 +1,4 @@
+import re
 from .types import RenderedContext
 from .utils import content_tokens
 
@@ -22,6 +23,19 @@ def _retrieval_graph_mode(retrieval_result):
 def _is_chunk_like_id(unit_id):
     sid = str(unit_id or "")
     return sid.startswith("chunk::")
+
+
+def _split_chunk_text_to_sentences(text):
+    raw = str(text or "").strip()
+    if not raw:
+        return []
+    normalized = re.sub(r"\s+", " ", raw)
+    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", normalized) if p.strip()]
+    if len(parts) <= 1:
+        parts = [p.strip() for p in re.split(r"\s*\n+\s*", raw) if p.strip()]
+    if len(parts) <= 1:
+        parts = [normalized]
+    return parts
 
 
 def _build_retrieval_text_lookup(sample, retrieval_result):
@@ -769,6 +783,101 @@ def _build_package_score_packages(
     return selected
 
 
+def _build_chunk_native_package_score_packages(
+    sample,
+    retrieval_result,
+    base_sentence_ids,
+    base_text_lookup,
+    top_k_packages,
+    w_answer,
+    w_bridge,
+    w_support,
+    w_chunk_grounding,
+    w_redundancy,
+):
+    question_tokens = _token_set(sample.question)
+    feature_table = _get_sentence_feature_table(sample, retrieval_result, base_sentence_ids, base_text_lookup)
+    sentence_token_cache = {}
+    candidates = []
+
+    for rank, sid in enumerate(base_sentence_ids or [], start=1):
+        sid = str(sid or "")
+        if not _is_chunk_like_id(sid):
+            continue
+        chunk_text = str(base_text_lookup.get(sid, "") or "").strip()
+        if not chunk_text:
+            continue
+        chunk_sents = _split_chunk_text_to_sentences(chunk_text)
+        if not chunk_sents:
+            continue
+        scored_sents = []
+        for idx, sent in enumerate(chunk_sents):
+            sent_tokens = _token_set(sent)
+            overlap = 0.0
+            if question_tokens:
+                overlap = float(len(question_tokens.intersection(sent_tokens)) / max(1, len(question_tokens)))
+            prior = 1.0 / float(idx + 1)
+            sent_score = overlap + 0.15 * prior
+            scored_sents.append((sent_score, idx, sent, sent_tokens))
+        scored_sents.sort(key=lambda x: x[0], reverse=True)
+        top_sentences = scored_sents[:2]
+        excerpt_pairs = [(f"{sid}#e{idx}", sent) for _, idx, sent, _ in top_sentences]
+        if not excerpt_pairs:
+            continue
+        excerpt_tokens = set()
+        for _, _, _, toks in top_sentences:
+            excerpt_tokens.update(toks)
+        sentence_token_cache[sid] = excerpt_tokens
+
+        feat = feature_table.get(sid, {}) or {}
+        answer_score = 1.0 / float(rank)
+        bridge_score = 1.0 if bool(feat.get("is_connector_adjacent", False)) else 0.0
+        support_score = 1.0 if bool(feat.get("is_support_candidate", False)) else 0.0
+        grounding_score = 0.0
+        if question_tokens:
+            grounding_score = float(len(question_tokens.intersection(excerpt_tokens)) / len(question_tokens))
+        base_score = (
+            float(w_answer) * answer_score
+            + float(w_bridge) * bridge_score
+            + float(w_support) * support_score
+            + float(w_chunk_grounding) * grounding_score
+        )
+        candidates.append({
+            "sid": sid,
+            "score": float(base_score),
+            "pairs": excerpt_pairs,
+        })
+
+    if not candidates:
+        return []
+
+    k = max(1, int(top_k_packages))
+    selected = []
+    selected_token_sets = []
+    remaining = list(candidates)
+    while remaining and len(selected) < k:
+        best = None
+        best_score = None
+        for cand in remaining:
+            c_tokens = sentence_token_cache.get(cand["sid"], set())
+            redundancy = 0.0
+            if selected_token_sets:
+                redundancy = max(_jaccard(c_tokens, prev) for prev in selected_token_sets)
+            score = float(cand.get("score", 0.0)) - float(w_redundancy) * redundancy
+            if best is None or score > best_score:
+                best = cand
+                best_score = score
+        if best is None:
+            break
+        selected.append({
+            "package_id": f"pkg:{best['sid']}",
+            "pairs": list(best.get("pairs", []) or []),
+        })
+        selected_token_sets.append(sentence_token_cache.get(best["sid"], set()))
+        remaining = [x for x in remaining if x.get("sid") != best.get("sid")]
+    return selected
+
+
 def _apply_chunk_grounding(
     sample,
     retrieval_result,
@@ -825,7 +934,31 @@ def _apply_chunk_grounding(
         return rendered
 
     mode = str(chunk_grounding_mode or "sentence_backfill").strip().lower()
-    if mode == "corridor_lift":
+    chunk_like_base = any(_is_chunk_like_id(sid) for sid in base_ids)
+    if chunk_like_base:
+        if mode != "package_score":
+            meta = dict(rendered.metadata or {})
+            meta.update({
+                "chunk_grounding_enabled": False,
+                "chunk_grounding_skipped": True,
+                "chunk_grounding_skip_reason": "entity_chunk_graph_only_supports_package_score",
+            })
+            rendered.metadata = meta
+            return rendered
+        base_text_lookup = _build_retrieval_text_lookup(sample, retrieval_result)
+        packages = _build_chunk_native_package_score_packages(
+            sample=sample,
+            retrieval_result=retrieval_result,
+            base_sentence_ids=base_ids,
+            base_text_lookup=base_text_lookup,
+            top_k_packages=chunk_grounding_top_k_packages,
+            w_answer=package_score_answer_weight,
+            w_bridge=package_score_bridge_weight,
+            w_support=package_score_support_weight,
+            w_chunk_grounding=package_score_chunk_grounding_weight,
+            w_redundancy=package_score_redundancy_weight,
+        )
+    elif mode == "corridor_lift":
         packages = _build_corridor_lift_packages(
             sample=sample,
             retrieval_result=retrieval_result,
@@ -884,7 +1017,11 @@ def _apply_chunk_grounding(
     extra_ids = [sid for sid, _ in excerpt_pairs]
     extra_sentences = [txt for _, txt in excerpt_pairs]
     rendered.sentence_ids = list(base_ids) + extra_ids
-    rendered.sentences = [sentence_map.get(sid, "") for sid in base_ids] + extra_sentences
+    if chunk_like_base:
+        base_lookup = _build_retrieval_text_lookup(sample, retrieval_result)
+        rendered.sentences = [base_lookup.get(sid, "") for sid in base_ids] + extra_sentences
+    else:
+        rendered.sentences = [sentence_map.get(sid, "") for sid in base_ids] + extra_sentences
 
     lines = []
     if str(rendered.text or "").strip():
@@ -1254,14 +1391,24 @@ def render_context(
         rendered = render_flat_context(sample, retrieval_result, max_context_sentences=max_context_sentences)
 
     if _retrieval_graph_mode(retrieval_result) == "entity_chunk_graph":
-        meta = dict(rendered.metadata or {})
-        meta.update({
-            "chunk_grounding_enabled": False,
-            "chunk_grounding_skipped": True,
-            "chunk_grounding_skip_reason": "entity_chunk_graph_uses_chunk_level_context",
-        })
-        rendered.metadata = meta
-        return rendered
+        if not bool(chunk_grounding_enabled):
+            meta = dict(rendered.metadata or {})
+            meta.update({
+                "chunk_grounding_enabled": False,
+                "chunk_grounding_skipped": True,
+                "chunk_grounding_skip_reason": "entity_chunk_graph_chunk_package_disabled",
+            })
+            rendered.metadata = meta
+            return rendered
+        if str(chunk_grounding_mode or "").strip().lower() != "package_score":
+            meta = dict(rendered.metadata or {})
+            meta.update({
+                "chunk_grounding_enabled": False,
+                "chunk_grounding_skipped": True,
+                "chunk_grounding_skip_reason": "entity_chunk_graph_only_supports_package_score",
+            })
+            rendered.metadata = meta
+            return rendered
 
     if not bool(chunk_grounding_enabled):
         return rendered
