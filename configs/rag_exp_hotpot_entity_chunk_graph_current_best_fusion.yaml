@@ -2,10 +2,10 @@ embedding_enabled: true
 sentence_rerank_enabled: false
 embedding_model_name: nvidia/NV-Embed-v2
 candidate_embedding_fallback_enabled: false
-embedding_max_length: 192
-embedding_text_max_chars: 600
-query_embedding_max_length: 192
-query_embedding_text_max_chars: 600
+embedding_max_length: 384
+embedding_text_max_chars: 1200
+query_embedding_max_length: 384
+query_embedding_text_max_chars: 1200
 query_embedding_cache_enabled: true
 query_embedding_cache_dir: outputs/query_embedding_cache
 
