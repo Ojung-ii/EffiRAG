@@ -300,4 +300,24 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["chunk_grounding_enabled"] = parse_bool(merged["chunk_grounding_enabled"])
     if "chunk_excerpt_dedup_enabled" in merged:
         merged["chunk_excerpt_dedup_enabled"] = parse_bool(merged["chunk_excerpt_dedup_enabled"])
+
+    graph_mode = str(merged.get("graph_mode", "current_entity_graph") or "current_entity_graph").strip().lower()
+    index_chunk_unit = str(merged.get("index_chunk_unit", "auto") or "auto").strip().lower()
+    if index_chunk_unit in {"", "auto"}:
+        index_chunk_unit = "passage" if graph_mode == "entity_chunk_graph" else "sentence"
+    elif index_chunk_unit in {"chunk", "document", "doc"}:
+        index_chunk_unit = "passage"
+
+    if graph_mode == "entity_chunk_graph" and index_chunk_unit == "passage":
+        try:
+            if int(merged.get("embedding_max_length", 192) or 192) <= 192:
+                merged["embedding_max_length"] = 384
+        except Exception:
+            merged["embedding_max_length"] = 384
+        try:
+            if int(merged.get("embedding_text_max_chars", 600) or 600) <= 600:
+                merged["embedding_text_max_chars"] = 1200
+        except Exception:
+            merged["embedding_text_max_chars"] = 1200
+
     return merged
