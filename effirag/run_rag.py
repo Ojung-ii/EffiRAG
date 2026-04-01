@@ -935,7 +935,11 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                 elif delivery_mode == "chunk_package_grounded_support":
                     eff_chunk_grounding_mode = "package_score"
             elif retrieval_graph_mode == "entity_chunk_graph":
-                eff_chunk_grounding_enabled = False
+                if delivery_mode in {"chunk_package_basic", "chunk_package_grounded_support"}:
+                    eff_chunk_grounding_enabled = True
+                    eff_chunk_grounding_mode = "package_score"
+                else:
+                    eff_chunk_grounding_enabled = False
 
             eff_chunk_top_packages = int(cfg.chunk_grounding_top_k_packages)
             if int(getattr(cfg, "max_chunk_packages", 0) or 0) > 0:
@@ -971,6 +975,7 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     chunk_excerpt_dedup_enabled=cfg.chunk_excerpt_dedup_enabled,
                     chunk_grounding_top_corridor_chunks=cfg.chunk_grounding_top_corridor_chunks,
                     chunk_grounding_top_k_packages=eff_chunk_top_packages,
+                    max_excerpt_sentences_per_package=cfg.max_excerpt_sentences_per_package,
                     package_score_answer_weight=cfg.package_score_answer_weight,
                     package_score_bridge_weight=cfg.package_score_bridge_weight,
                     package_score_support_weight=eff_package_support_weight,

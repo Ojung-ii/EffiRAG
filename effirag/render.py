@@ -794,6 +794,7 @@ def _build_chunk_native_package_score_packages(
     w_support,
     w_chunk_grounding,
     w_redundancy,
+    max_sentences_per_package=2,
 ):
     question_tokens = _token_set(sample.question)
     feature_table = _get_sentence_feature_table(sample, retrieval_result, base_sentence_ids, base_text_lookup)
@@ -820,7 +821,8 @@ def _build_chunk_native_package_score_packages(
             sent_score = overlap + 0.15 * prior
             scored_sents.append((sent_score, idx, sent, sent_tokens))
         scored_sents.sort(key=lambda x: x[0], reverse=True)
-        top_sentences = scored_sents[:2]
+        topn = max(1, int(max_sentences_per_package))
+        top_sentences = scored_sents[:topn]
         excerpt_pairs = [(f"{sid}#e{idx}", sent) for _, idx, sent, _ in top_sentences]
         if not excerpt_pairs:
             continue
@@ -878,6 +880,33 @@ def _build_chunk_native_package_score_packages(
     return selected
 
 
+def _build_chunk_native_fallback_packages(base_sentence_ids, base_text_lookup, top_k_packages, max_sentences_per_package=2):
+    candidates = []
+    for rank, sid in enumerate(base_sentence_ids or [], start=1):
+        sid = str(sid or "")
+        if not _is_chunk_like_id(sid):
+            continue
+        chunk_text = str((base_text_lookup or {}).get(sid, "") or "").strip()
+        if not chunk_text:
+            continue
+        chunk_sents = _split_chunk_text_to_sentences(chunk_text)
+        if not chunk_sents:
+            continue
+        topn = max(1, int(max_sentences_per_package))
+        excerpt_pairs = [(f"{sid}#e{idx}", sent) for idx, sent in enumerate(chunk_sents[:topn]) if str(sent or "").strip()]
+        if not excerpt_pairs:
+            continue
+        candidates.append({
+            "package_id": f"fallback:{sid}",
+            "score": 1.0 / float(rank),
+            "pairs": excerpt_pairs,
+        })
+    if not candidates:
+        return []
+    candidates.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
+    return candidates[: max(1, int(top_k_packages))]
+
+
 def _apply_chunk_grounding(
     sample,
     retrieval_result,
@@ -896,6 +925,7 @@ def _apply_chunk_grounding(
     package_score_support_weight,
     package_score_chunk_grounding_weight,
     package_score_redundancy_weight,
+    max_excerpt_sentences_per_package=2,
 ):
     sentence_map = _sample_sentence_lookup(sample)
     base_ids = list(rendered.sentence_ids or [])
@@ -957,7 +987,15 @@ def _apply_chunk_grounding(
             w_support=package_score_support_weight,
             w_chunk_grounding=package_score_chunk_grounding_weight,
             w_redundancy=package_score_redundancy_weight,
+            max_sentences_per_package=max_excerpt_sentences_per_package,
         )
+        if not packages:
+            packages = _build_chunk_native_fallback_packages(
+                base_sentence_ids=base_ids,
+                base_text_lookup=base_text_lookup,
+                top_k_packages=chunk_grounding_top_k_packages,
+                max_sentences_per_package=max_excerpt_sentences_per_package,
+            )
     elif mode == "corridor_lift":
         packages = _build_corridor_lift_packages(
             sample=sample,
@@ -998,6 +1036,21 @@ def _apply_chunk_grounding(
         max_excerpt_sentences=extra_budget,
         dedup_enabled=bool(chunk_excerpt_dedup_enabled),
     )
+    fallback_pkg_used = False
+    if chunk_like_base and not excerpt_pairs:
+        fallback_packages = _build_chunk_native_fallback_packages(
+            base_sentence_ids=base_ids,
+            base_text_lookup=base_text_lookup,
+            top_k_packages=chunk_grounding_top_k_packages,
+            max_sentences_per_package=max_excerpt_sentences_per_package,
+        )
+        excerpt_pairs, package_count, candidate_sentence_count = _select_excerpt_sentences_from_packages(
+            packages=fallback_packages,
+            base_sentence_ids=base_ids,
+            max_excerpt_sentences=extra_budget,
+            dedup_enabled=bool(chunk_excerpt_dedup_enabled),
+        )
+        fallback_pkg_used = bool(excerpt_pairs)
 
     if not excerpt_pairs:
         meta = dict(rendered.metadata or {})
@@ -1009,6 +1062,8 @@ def _apply_chunk_grounding(
                 "chunk_excerpt_sentence_count": 0,
                 "evidence_package_count": 0,
                 "chunk_excerpt_truncated_count": max(0, int(candidate_sentence_count)),
+                "chunk_package_candidates": int(len(packages or [])),
+                "chunk_package_fallback_used": bool(fallback_pkg_used),
             }
         )
         rendered.metadata = meta
@@ -1041,6 +1096,8 @@ def _apply_chunk_grounding(
             "chunk_excerpt_sentence_count": int(len(excerpt_pairs)),
             "evidence_package_count": int(package_count),
             "chunk_excerpt_truncated_count": max(0, int(candidate_sentence_count - len(excerpt_pairs))),
+            "chunk_package_candidates": int(len(packages or [])),
+            "chunk_package_fallback_used": bool(fallback_pkg_used),
         }
     )
     rendered.metadata = meta
@@ -1333,6 +1390,7 @@ def render_context(
     chunk_excerpt_dedup_enabled=True,
     chunk_grounding_top_corridor_chunks=2,
     chunk_grounding_top_k_packages=4,
+    max_excerpt_sentences_per_package=2,
     package_score_answer_weight=0.50,
     package_score_bridge_weight=0.20,
     package_score_support_weight=0.15,
@@ -1426,6 +1484,7 @@ def render_context(
         chunk_excerpt_dedup_enabled=chunk_excerpt_dedup_enabled,
         chunk_grounding_top_corridor_chunks=chunk_grounding_top_corridor_chunks,
         chunk_grounding_top_k_packages=chunk_grounding_top_k_packages,
+        max_excerpt_sentences_per_package=max_excerpt_sentences_per_package,
         package_score_answer_weight=package_score_answer_weight,
         package_score_bridge_weight=package_score_bridge_weight,
         package_score_support_weight=package_score_support_weight,
