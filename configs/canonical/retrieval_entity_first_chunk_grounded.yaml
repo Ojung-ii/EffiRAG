@@ -61,11 +61,10 @@ answer_support_pinning_enabled: false
 answer_support_pinning_min: 1
 # Diagnostic-only oracle support injection for D2 upper-bound checks.
 oracle_support_injection_enabled: false
-# A2 (s1_diversity) keeps retrieval config mostly fixed; use RAG-side diversity params.
-# B-set (Hotpot rerank) toggles:
-# - run_light_rerank_enabled: true
-# - run_light_rerank_weight_bridge_completeness: up for bridge-focused variant
-# - run_light_rerank_weight_grounding: up for grounding-focused variant
+# Track H/W retrieval-expansion knobs (change one axis at a time):
+# - Proposal-only: semantic_topn_entity / semantic_topn_chunk / graph_reserve_topn
+# - Exploration-only: max_anchors / samples_per_anchor / phase1_run_preshortlist_topm / phase1_full_run_score_topk
+# - Minimal downstream preservation: final_top_slice_reorder_enabled or answer_support_pinning_enabled (one at a time)
 seed_score_semantic_weight: 0.35
 seed_score_graph_weight: 0.45
 seed_score_anchor_weight: 0.20
@@ -83,10 +82,9 @@ pair_top_lp: 3
 corridor_top_bc: 20
 phase1_parallel_ppr: true
 phase1_run_shortlist_topk: 2
-# Retrieval budget knobs for E-set ablation (change one axis at a time):
-# - semantic_topn_entity / semantic_topn_chunk / graph_reserve_topn
-# - max_anchors / samples_per_anchor
-# - phase1_run_preshortlist_topm / phase1_full_run_score_topk
+# Conservative starter bumps for this round:
+# - Proposal-only: 30/15/15 -> 36/18/18
+# - Exploration-only: 3/3/2/2 -> 4/4/3/3
 phase1_run_preshortlist_topm: 2
 phase1_full_run_score_topk: 2
 pair_shortlist_topb: 4

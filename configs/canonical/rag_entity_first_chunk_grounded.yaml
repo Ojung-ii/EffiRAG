@@ -100,13 +100,12 @@ eta_connector: 0.20
 lambda_redundancy: 0.25
 reserve_top_corridor: false
 order_strategy: score
-# Minimal downstream options (Set F): use config-level toggles.
-# - final_top_slice_reorder_enabled: true
-# - answer_support_pinning_enabled: true
-# D2 oracle upper-bound (diagnostic only): oracle_support_injection_enabled: true
-# A2 (s1_diversity): lambda_redundancy=0.30 (3/2)
-# C1 (relation-aware ordering): order_strategy=relation_on
-# C2 (relation-aware + connector priority): order_strategy=relation_on + eta_connector up
+# Retrieval-first round guardrails:
+# - Keep D1 baseline: entity-first + chunk 3/2 + order_strategy=score
+# - Proposal-only expansion: semantic_topn_entity / semantic_topn_chunk / graph_reserve_topn
+# - Exploration-only expansion: max_anchors / samples_per_anchor / phase1_run_preshortlist_topm / phase1_full_run_score_topk
+# - Minimal downstream preservation (one at a time): final_top_slice_reorder_enabled or answer_support_pinning_enabled
+# - D2 ceiling check only: oracle_support_injection_enabled=true (not mainline comparison)
 measure_gpu_peak: false
 measure_cpu_ram: true
 

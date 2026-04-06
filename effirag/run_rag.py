@@ -729,6 +729,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-score-structure-weight", type=float, default=None)
     parser.add_argument("--run-score-bridge-weight", type=float, default=None)
     parser.add_argument("--run-score-redundancy-weight", type=float, default=None)
+    parser.add_argument("--canonical-variant-name", type=str, default=None)
+    parser.add_argument("--run-light-rerank-enabled", type=str, default=None)
+    parser.add_argument("--run-light-rerank-topk", type=int, default=None)
+    parser.add_argument("--run-light-rerank-weight-base", type=float, default=None)
+    parser.add_argument("--run-light-rerank-weight-bridge-completeness", type=float, default=None)
+    parser.add_argument("--run-light-rerank-weight-anchor-coverage", type=float, default=None)
+    parser.add_argument("--run-light-rerank-weight-grounding", type=float, default=None)
     parser.add_argument("--run-score-pair-coverage-weight", type=float, default=None)
     parser.add_argument("--run-score-bridge-completeness-weight", type=float, default=None)
     parser.add_argument("--run-score-entity-chunk-grounding-weight", type=float, default=None)
@@ -1281,6 +1288,13 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "run_score_structure_weight": cfg.run_score_structure_weight,
             "run_score_bridge_weight": cfg.run_score_bridge_weight,
             "run_score_redundancy_weight": cfg.run_score_redundancy_weight,
+            "canonical_variant_name": cfg.canonical_variant_name,
+            "run_light_rerank_enabled": cfg.run_light_rerank_enabled,
+            "run_light_rerank_topk": cfg.run_light_rerank_topk,
+            "run_light_rerank_weight_base": cfg.run_light_rerank_weight_base,
+            "run_light_rerank_weight_bridge_completeness": cfg.run_light_rerank_weight_bridge_completeness,
+            "run_light_rerank_weight_anchor_coverage": cfg.run_light_rerank_weight_anchor_coverage,
+            "run_light_rerank_weight_grounding": cfg.run_light_rerank_weight_grounding,
             "run_score_pair_coverage_weight": cfg.run_score_pair_coverage_weight,
             "run_score_bridge_completeness_weight": cfg.run_score_bridge_completeness_weight,
             "run_score_entity_chunk_grounding_weight": cfg.run_score_entity_chunk_grounding_weight,
@@ -1309,16 +1323,24 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "top1_correction_sentence_weight_redundancy": cfg.top1_correction_sentence_weight_redundancy,
             "max_anchors": cfg.max_anchors,
             "samples_per_anchor": cfg.samples_per_anchor,
+            "num_workers": cfg.num_workers,
             "candidate_top_t": cfg.candidate_top_t,
             "seed_k": cfg.seed_k,
             "pair_top_lp": cfg.pair_top_lp,
             "corridor_top_bc": cfg.corridor_top_bc,
             "phase1_parallel_ppr": cfg.phase1_parallel_ppr,
             "phase1_run_shortlist_topk": cfg.phase1_run_shortlist_topk,
+            "phase1_run_preshortlist_topm": cfg.phase1_run_preshortlist_topm,
+            "phase1_full_run_score_topk": cfg.phase1_full_run_score_topk,
             "pair_shortlist_topb": cfg.pair_shortlist_topb,
             "phase2_refine_mode": cfg.phase2_refine_mode,
             "phase2_bidirectional_full_ppr": cfg.phase2_bidirectional_full_ppr,
             "reuse_semantic_scores_in_final": cfg.reuse_semantic_scores_in_final,
+            "final_top_slice_reorder_enabled": cfg.final_top_slice_reorder_enabled,
+            "final_top_slice_reorder_topk": cfg.final_top_slice_reorder_topk,
+            "answer_support_pinning_enabled": cfg.answer_support_pinning_enabled,
+            "answer_support_pinning_min": cfg.answer_support_pinning_min,
+            "oracle_support_injection_enabled": cfg.oracle_support_injection_enabled,
             "trim_on": cfg.trim_on,
             "trim_rho": cfg.trim_rho,
             "ppr_alpha": cfg.ppr_alpha,
