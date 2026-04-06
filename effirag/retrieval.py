@@ -18,6 +18,7 @@ from .config import RetrievalConfig
 from .embedding import cosine_similarity, encode_texts, rerank_sentences_by_embedding, topk_cosine_similarity
 from .global_index import load_or_build_global_index, load_semantic_index
 from .graph import build_document_entity_graph
+from .metrics import supporting_fact_match_details
 from .registry import register_method
 from .types import AnchorResult, RetrievalResult
 from .utils import content_tokens
@@ -1581,6 +1582,38 @@ def _seed_hybrid_scores(
     return score, graph_norm, semantic_norm, anchor_norm, bridge_norm, grounding_norm
 
 
+def _seed_selection_objective_weights(
+    candidates,
+    seed_score_map,
+    bridge_bonus_map,
+    chunk_grounding_bonus_map,
+    anchors,
+    anchor_distance_maps,
+    cfg,
+    tau,
+):
+    base = {node: float(seed_score_map.get(node, 0.0)) for node in candidates}
+    bridge_w = max(0.0, float(getattr(cfg, "seed_objective_bridge_weight", 0.20)))
+    ground_w = max(0.0, float(getattr(cfg, "seed_objective_grounding_weight", 0.15)))
+    anchor_cov_w = max(0.0, float(getattr(cfg, "seed_objective_anchor_coverage_weight", 0.10)))
+    cap = max(1, int(tau))
+    out = {}
+    for node in candidates:
+        anchor_hits = 0
+        for anchor in anchors:
+            dmap = anchor_distance_maps.get(anchor, {}) if isinstance(anchor_distance_maps, dict) else {}
+            if int(dmap.get(node, cap + 1)) <= cap:
+                anchor_hits += 1
+        anchor_cov = float(anchor_hits) / float(max(len(anchors), 1))
+        out[node] = (
+            float(base.get(node, 0.0))
+            + bridge_w * float((bridge_bonus_map or {}).get(node, 0.0))
+            + ground_w * float((chunk_grounding_bonus_map or {}).get(node, 0.0))
+            + anchor_cov_w * float(anchor_cov)
+        )
+    return out
+
+
 def _bridge_utility(g, anchors, nodes, tau, distance_map_cache=None):
     if not anchors or len(anchors) < 2 or not nodes:
         return 0.0
@@ -1771,16 +1804,190 @@ def _run_anchor_dispersion_penalty(anchors, seeds, anchor_distance_maps, tau):
     return float(np.std(arr))
 
 
-def _sentence_node_to_id(g, node):
+def _text_unit_type_for_node(g, node):
     node_type = str(g.nodes[node].get("node_type", "") or "").strip().lower()
     if node_type == "sentence":
-        return str(g.nodes[node].get("sentence_id", node))
+        return "sentence"
     if node_type in {"chunk", "passage", "document"}:
+        return "chunk"
+    return "non_text"
+
+
+def _text_unit_id(g, node):
+    unit_type = _text_unit_type_for_node(g, node)
+    if unit_type == "sentence":
+        return str(g.nodes[node].get("sentence_id", node))
+    if unit_type == "chunk":
         return str(g.nodes[node].get("chunk_id", node))
     return None
 
 
-def _build_single_corridor_payload(g, anchor, seed, corridor_id, corridor_score, node_scores):
+def _sentence_node_to_id(g, node):
+    return _text_unit_id(g, node)
+
+
+def _safe_ratio(numer, denom):
+    try:
+        n = float(numer)
+        d = float(denom)
+    except Exception:
+        return 0.0
+    if d <= 0.0:
+        return 0.0
+    return float(n / d)
+
+
+def _gold_text_unit_ids_from_sample(sample, graph_mode):
+    _ = graph_mode
+    ids = set()
+    for title, sent_idx in list(getattr(sample, "supporting_facts", []) or []):
+        t = str(title or "").strip()
+        if not t:
+            continue
+        try:
+            idx = int(sent_idx)
+        except Exception:
+            idx = 0
+        ids.add(f"{t}::{idx}")
+    return ids
+
+
+def _gold_entity_tokens_from_sample(sample):
+    doc_map = {}
+    for doc in list(getattr(sample, "contexts", []) or []):
+        title = str(getattr(doc, "title", "") or "").strip()
+        if not title:
+            continue
+        if title not in doc_map:
+            doc_map[title] = list(getattr(doc, "sentences", []) or [])
+
+    tokens = set()
+    for title, sent_idx in list(getattr(sample, "supporting_facts", []) or []):
+        t = str(title or "").strip()
+        if not t:
+            continue
+        tokens.update(content_tokens(t))
+        sentences = list(doc_map.get(t, []) or [])
+        try:
+            idx = int(sent_idx)
+        except Exception:
+            idx = -1
+        if 0 <= idx < len(sentences):
+            tokens.update(content_tokens(str(sentences[idx] or "")))
+    return {str(tok).strip().lower() for tok in tokens if str(tok).strip()}
+
+
+def _candidate_text_unit_ids(g, nodes):
+    out = set()
+    text_map = {}
+    if g is None:
+        return out, text_map
+    for node in list(nodes or []):
+        if node not in g:
+            continue
+        unit_id = _text_unit_id(g, node)
+        if unit_id:
+            sid = str(unit_id)
+            out.add(sid)
+            txt = str((g.nodes[node] or {}).get("text", "") or "").strip()
+            if txt and sid not in text_map:
+                text_map[sid] = txt
+    return out, text_map
+
+
+def _phase1_candidate_nodes(shortlisted_runs):
+    nodes = set()
+    for run in list(shortlisted_runs or []):
+        if not isinstance(run, dict):
+            continue
+        for key in ("candidates", "graph_candidates", "semantic_candidates"):
+            for node in list(run.get(key, []) or []):
+                nodes.add(node)
+        for node in list(run.get("seeds", set()) or []):
+            nodes.add(node)
+    return nodes
+
+
+def _compute_stagewise_loss_funnel(
+    sample,
+    g,
+    reduced_graph,
+    anchors,
+    proposal_nodes,
+    shortlisted_runs,
+    selected_text_unit_ids,
+    selected_text_map,
+    graph_mode,
+):
+    gold_unit_ids = set(_gold_text_unit_ids_from_sample(sample, graph_mode))
+    gold_entity_tokens = set(_gold_entity_tokens_from_sample(sample))
+
+    anchor_tokens = set()
+    for anchor in list(anchors or []):
+        raw = str(anchor or "").strip().lower()
+        if not raw:
+            continue
+        anchor_tokens.add(raw)
+        anchor_tokens.update(content_tokens(raw.replace("_", " ")))
+
+    anchor_hits = sorted(anchor_tokens.intersection(gold_entity_tokens))
+    proposal_unit_ids, proposal_text_map = _candidate_text_unit_ids(g, proposal_nodes)
+    proposal_match = supporting_fact_match_details(
+        sample=sample,
+        unit_ids=sorted(proposal_unit_ids),
+        unit_texts=[proposal_text_map.get(sid, "") for sid in sorted(proposal_unit_ids)],
+        graph_mode=graph_mode,
+    )
+    proposal_hits = sorted(set(proposal_match.get("matched_gold_sentence_ids", []) or []))
+
+    phase1_nodes = _phase1_candidate_nodes(shortlisted_runs)
+    phase1_unit_ids, phase1_text_map = _candidate_text_unit_ids(reduced_graph if reduced_graph is not None else g, phase1_nodes)
+    phase1_match = supporting_fact_match_details(
+        sample=sample,
+        unit_ids=sorted(phase1_unit_ids),
+        unit_texts=[phase1_text_map.get(sid, "") for sid in sorted(phase1_unit_ids)],
+        graph_mode=graph_mode,
+    )
+    phase1_hits = sorted(set(phase1_match.get("matched_gold_sentence_ids", []) or []))
+
+    final_unit_ids = [str(x) for x in list(selected_text_unit_ids or []) if str(x)]
+    final_match = supporting_fact_match_details(
+        sample=sample,
+        unit_ids=final_unit_ids,
+        unit_texts=[str((selected_text_map or {}).get(sid, "") or "") for sid in final_unit_ids],
+        graph_mode=graph_mode,
+    )
+    final_hits = sorted(set(final_match.get("matched_gold_sentence_ids", []) or []))
+
+    return {
+        "enabled": True,
+        "graph_mode": str(graph_mode or "current_entity_graph"),
+        "gold_unit_type": "support_sentence",
+        "gold_text_unit_total": int(len(gold_unit_ids)),
+        "gold_entity_total": int(len(gold_entity_tokens)),
+        "gold_text_unit_ids": sorted(gold_unit_ids),
+        "gold_entity_tokens": sorted(gold_entity_tokens)[:128],
+        "anchor_hit_count": int(len(anchor_hits)),
+        "anchor_hit_rate": float(_safe_ratio(len(anchor_hits), len(gold_entity_tokens))),
+        "anchor_hit_entities": list(anchor_hits),
+        "proposal_hit_count": int(len(proposal_hits)),
+        "proposal_hit_rate": float(_safe_ratio(len(proposal_hits), len(gold_unit_ids))),
+        "proposal_hit_unit_ids": list(proposal_hits),
+        "phase1_hit_count": int(len(phase1_hits)),
+        "phase1_hit_rate": float(_safe_ratio(len(phase1_hits), len(gold_unit_ids))),
+        "phase1_hit_unit_ids": list(phase1_hits),
+        "final_chunk_hit_count": int(len(final_hits)),
+        "final_chunk_hit_rate": float(_safe_ratio(len(final_hits), len(gold_unit_ids))),
+        "final_chunk_hit_unit_ids": list(final_hits),
+        # Filled in render stage (render_context) after context packaging.
+        "rendered_hit_count": 0,
+        "rendered_hit_rate": 0.0,
+        "rendered_retention": 0.0,
+    }
+
+
+def _build_single_corridor_payload(g, anchor, seed, corridor_id, corridor_score, node_scores, fallback_text_cap=4):
+    fallback_cap = max(1, int(fallback_text_cap))
     ordered_nodes = [node for node, _ in node_scores]
     local_nodes = set(ordered_nodes) | {anchor, seed}
     local_graph = g.subgraph(local_nodes).copy()
@@ -1792,54 +1999,78 @@ def _build_single_corridor_payload(g, anchor, seed, corridor_id, corridor_score,
         except Exception:
             path_nodes = []
 
-    main_sentence_nodes = [node for node in path_nodes if _sentence_node_to_id(g, node) is not None]
-    if not main_sentence_nodes:
-        main_sentence_nodes = [node for node, _ in node_scores if _sentence_node_to_id(g, node) is not None]
+    path_found = bool(path_nodes)
+    main_text_nodes = [node for node in path_nodes if _text_unit_id(g, node) is not None]
+    fallback_reason = ""
+    if not main_text_nodes:
+        fallback_reason = "no_shortest_path" if not path_found else "path_without_text_units"
+        scored_text_nodes = [node for node, _ in node_scores if _text_unit_id(g, node) is not None]
+        anchor_local = []
+        seed_local = []
+        if anchor in local_graph:
+            anchor_local = [node for node in local_graph.neighbors(anchor) if _text_unit_id(g, node) is not None]
+        if seed in local_graph:
+            seed_local = [node for node in local_graph.neighbors(seed) if _text_unit_id(g, node) is not None]
+        seed_local_set = set(seed_local)
+        shared_local = [node for node in anchor_local if node in seed_local_set]
+        fallback_pool = _ordered_unique(shared_local + anchor_local + seed_local + scored_text_nodes)
+        main_text_nodes = fallback_pool[:fallback_cap]
 
-    connector_nodes = {node for node in path_nodes if _sentence_node_to_id(g, node) is None}
-    main_sentence_set = set(main_sentence_nodes)
+    connector_nodes = {node for node in path_nodes if _text_unit_id(g, node) is None}
+    main_text_set = set(main_text_nodes)
     candidate_support_nodes = [
         node
         for node, _ in node_scores
-        if _sentence_node_to_id(g, node) is not None and node not in main_sentence_set
+        if _text_unit_id(g, node) is not None and node not in main_text_set
     ]
 
     adjacent_support_nodes = []
     for node in candidate_support_nodes:
         nbrs = set(g.neighbors(node))
-        if nbrs.intersection(main_sentence_set) or nbrs.intersection(connector_nodes):
+        if nbrs.intersection(main_text_set) or nbrs.intersection(connector_nodes):
             adjacent_support_nodes.append(node)
 
-    support_sentence_nodes = _ordered_unique(adjacent_support_nodes + candidate_support_nodes)
+    support_text_nodes = _ordered_unique(adjacent_support_nodes + candidate_support_nodes)
 
-    sentence_score_map = {}
+    unit_score_map = {}
+    main_unit_types = []
     for node, score in node_scores:
-        sid = _sentence_node_to_id(g, node)
+        sid = _text_unit_id(g, node)
         if sid is None:
             continue
-        sentence_score_map[sid] = max(float(score), sentence_score_map.get(sid, 0.0))
+        unit_score_map[sid] = max(float(score), unit_score_map.get(sid, 0.0))
 
-    main_sentence_ids = _ordered_unique([_sentence_node_to_id(g, node) for node in main_sentence_nodes if node in g])
-    main_sentence_ids = [sid for sid in main_sentence_ids if sid]
+    main_unit_ids = _ordered_unique([_text_unit_id(g, node) for node in main_text_nodes if node in g])
+    main_unit_ids = [sid for sid in main_unit_ids if sid]
+    main_unit_type = "mixed"
+    if main_text_nodes:
+        main_unit_types = [_text_unit_type_for_node(g, node) for node in main_text_nodes if node in g]
+        uniq = {u for u in main_unit_types if u != "non_text"}
+        if len(uniq) == 1:
+            main_unit_type = list(uniq)[0]
 
-    support_sentence_ids = _ordered_unique([_sentence_node_to_id(g, node) for node in support_sentence_nodes if node in g])
-    support_sentence_ids = [sid for sid in support_sentence_ids if sid and sid not in set(main_sentence_ids)]
-    connector_adjacent_sentence_ids = _ordered_unique(
-        [_sentence_node_to_id(g, node) for node in adjacent_support_nodes if node in g]
-    )
-    connector_adjacent_sentence_ids = [
-        sid for sid in connector_adjacent_sentence_ids if sid and sid not in set(main_sentence_ids)
-    ]
+    support_unit_ids = _ordered_unique([_text_unit_id(g, node) for node in support_text_nodes if node in g])
+    support_unit_ids = [sid for sid in support_unit_ids if sid and sid not in set(main_unit_ids)]
+    connector_adjacent_unit_ids = _ordered_unique([_text_unit_id(g, node) for node in adjacent_support_nodes if node in g])
+    connector_adjacent_unit_ids = [sid for sid in connector_adjacent_unit_ids if sid and sid not in set(main_unit_ids)]
 
     return {
         "corridor_id": corridor_id,
         "corridor_score": float(corridor_score),
         "anchors": [str(anchor), str(seed)],
-        "main_path_sentence_ids": main_sentence_ids,
-        "support_sentence_ids": support_sentence_ids,
-        "connector_adjacent_sentence_ids": connector_adjacent_sentence_ids,
-        "sentence_score_map": sentence_score_map,
+        "main_path_unit_ids": main_unit_ids,
+        "support_unit_ids": support_unit_ids,
+        "connector_adjacent_unit_ids": connector_adjacent_unit_ids,
+        "unit_score_map": unit_score_map,
+        "unit_type": main_unit_type,
+        # legacy aliases
+        "main_path_sentence_ids": list(main_unit_ids),
+        "support_sentence_ids": list(support_unit_ids),
+        "connector_adjacent_sentence_ids": list(connector_adjacent_unit_ids),
+        "sentence_score_map": dict(unit_score_map),
         "path_node_ids": [str(node) for node in path_nodes],
+        "path_found": bool(path_found),
+        "fallback_reason": str(fallback_reason),
     }
 
 
@@ -1890,6 +2121,7 @@ def _build_corridor(
     corridor_nodes = set()
     sentence_scores = {}
     corridor_payloads = []
+    fallback_text_cap = max(1, int(getattr(cfg, "corridor_fallback_text_cap", 4)))
 
     for idx, (anchor, seed) in enumerate(
         tqdm(
@@ -1926,6 +2158,7 @@ def _build_corridor(
                 corridor_id=f"c{idx:02d}",
                 corridor_score=pair_score_map.get((anchor, seed), 0.0),
                 node_scores=top_node_scores,
+                fallback_text_cap=fallback_text_cap,
             )
         )
 
@@ -1992,21 +2225,25 @@ def _extract_sentence_payload(g, selected_nodes, sentence_scores):
     return sentence_ids, sentence_text, sentence_score_map
 
 
-def _filter_corridor_payloads(corridors, selected_sentence_ids):
-    selected = set(selected_sentence_ids)
+def _filter_corridor_payloads(corridors, selected_unit_ids):
+    selected = set(selected_unit_ids)
     filtered = []
 
     for corridor in corridors:
-        main_ids = [sid for sid in corridor.get("main_path_sentence_ids", []) if sid in selected]
+        main_ids = [
+            sid
+            for sid in corridor.get("main_path_unit_ids", corridor.get("main_path_sentence_ids", []))
+            if sid in selected
+        ]
         main_set = set(main_ids)
         support_ids = [
             sid
-            for sid in corridor.get("support_sentence_ids", [])
+            for sid in corridor.get("support_unit_ids", corridor.get("support_sentence_ids", []))
             if sid in selected and sid not in main_set
         ]
         connector_adjacent_ids = [
             sid
-            for sid in corridor.get("connector_adjacent_sentence_ids", [])
+            for sid in corridor.get("connector_adjacent_unit_ids", corridor.get("connector_adjacent_sentence_ids", []))
             if sid in selected and sid not in main_set
         ]
 
@@ -2014,9 +2251,12 @@ def _filter_corridor_payloads(corridors, selected_sentence_ids):
             continue
 
         payload = dict(corridor)
-        payload["main_path_sentence_ids"] = main_ids
-        payload["support_sentence_ids"] = support_ids
-        payload["connector_adjacent_sentence_ids"] = connector_adjacent_ids
+        payload["main_path_unit_ids"] = list(main_ids)
+        payload["support_unit_ids"] = list(support_ids)
+        payload["connector_adjacent_unit_ids"] = list(connector_adjacent_ids)
+        payload["main_path_sentence_ids"] = list(main_ids)
+        payload["support_sentence_ids"] = list(support_ids)
+        payload["connector_adjacent_sentence_ids"] = list(connector_adjacent_ids)
         filtered.append(payload)
 
     return filtered
@@ -2025,7 +2265,6 @@ def _filter_corridor_payloads(corridors, selected_sentence_ids):
 def _build_sentence_feature_table(sample, selected_sentence_ids, sentence_texts, sentence_score_map, corridors):
     question_tokens = set(content_tokens(sample.question))
     sentence_text_map = {sid: text for sid, text in zip(selected_sentence_ids, sentence_texts)}
-    selected_set = set(selected_sentence_ids)
 
     ranked_corridors = sorted(corridors or [], key=lambda c: float(c.get("corridor_score", 0.0)), reverse=True)
     corridor_rank = {str(c.get("corridor_id", f"c{idx:02d}")): idx for idx, c in enumerate(ranked_corridors, start=1)}
@@ -2047,9 +2286,22 @@ def _build_sentence_feature_table(sample, selected_sentence_ids, sentence_texts,
     for idx, corridor in enumerate(ranked_corridors, start=1):
         cid = str(corridor.get("corridor_id", f"c{idx:02d}"))
         cscore = float(corridor.get("corridor_score", 0.0))
-        main_ids = [sid for sid in corridor.get("main_path_sentence_ids", []) if sid in selected_set]
-        support_ids = [sid for sid in corridor.get("support_sentence_ids", []) if sid in selected_set]
-        connector_ids = [sid for sid in corridor.get("connector_adjacent_sentence_ids", []) if sid in selected_set]
+        main_ids = [
+            sid
+            for sid in corridor.get("main_path_unit_ids", corridor.get("main_path_sentence_ids", []))
+            if sid in feature_table
+        ]
+        main_set = set(main_ids)
+        support_ids = [
+            sid
+            for sid in corridor.get("support_unit_ids", corridor.get("support_sentence_ids", []))
+            if sid in feature_table and sid not in main_set
+        ]
+        connector_ids = [
+            sid
+            for sid in corridor.get("connector_adjacent_unit_ids", corridor.get("connector_adjacent_sentence_ids", []))
+            if sid in feature_table and sid not in main_set
+        ]
 
         for mpos, sid in enumerate(main_ids):
             item = feature_table.get(sid)
@@ -2085,10 +2337,7 @@ def _build_sentence_feature_table(sample, selected_sentence_ids, sentence_texts,
         sent = sentence_text_map.get(sid, "")
         sent_tokens = set(content_tokens(sent))
         item["query_overlap_score"] = float(len(question_tokens.intersection(sent_tokens)))
-        item["corridor_ids"] = sorted(
-            item["corridor_ids"],
-            key=lambda cid: corridor_rank.get(cid, 10**9),
-        )
+        item["corridor_ids"] = sorted(item["corridor_ids"], key=lambda cid: corridor_rank.get(cid, 10**9))
         if item["best_corridor_rank"] is None and item["corridor_ids"]:
             item["best_corridor_rank"] = corridor_rank.get(item["corridor_ids"][0])
         if item["best_corridor_rank"] is None:
@@ -2868,6 +3117,7 @@ def _phase2_refine_pair_bounded_local(g, pair_item, run_by_id, query_sim_map, su
         corridor_id=f"c{int(run_id):02d}_{anchor}_{seed}",
         corridor_score=float(pair_item.get("pair_proxy_score", 0.0)),
         node_scores=top_node_scores,
+        fallback_text_cap=max(1, int(getattr(cfg, "corridor_fallback_text_cap", 4))),
     )
     payload["pair_proxy_score"] = float(pair_item.get("pair_proxy_score", 0.0))
     payload["anchor_alignment"] = float(pair_item.get("anchor_alignment", 0.0))
@@ -3035,6 +3285,95 @@ def _normalize_small_vector(values):
         return [1.0 for _ in arr]
     out = (arr - vmin) / (vmax - vmin)
     return [float(x) for x in out.tolist()]
+
+
+def _apply_lightweight_run_rerank(ranked_runs, cfg):
+    topk = max(0, int(getattr(cfg, "run_light_rerank_topk", 0)))
+    enabled_flag = bool(getattr(cfg, "run_light_rerank_enabled", False))
+    diag = {
+        "enabled": bool(enabled_flag and topk > 1),
+        "applied": False,
+        "enabled_flag": bool(enabled_flag),
+        "topk": int(topk),
+        "head_size": 0,
+        "reordered": 0,
+    }
+    if (not enabled_flag) or topk <= 1 or (not ranked_runs) or len(ranked_runs) <= 1:
+        return ranked_runs, diag
+
+    head_size = min(len(ranked_runs), topk)
+    if head_size <= 1:
+        diag["head_size"] = int(head_size)
+        return ranked_runs, diag
+
+    head = list(ranked_runs[:head_size])
+    tail = list(ranked_runs[head_size:])
+    before = [int((item or {}).get("run_id", idx)) for idx, item in enumerate(head)]
+
+    base_vals = []
+    bridge_vals = []
+    anchor_cov_vals = []
+    grounding_vals = []
+    for item in head:
+        comp = ((item or {}).get("run_score_components", {}) or {})
+        cheap = (comp.get("cheap_pre_components", {}) or {}) if isinstance(comp, dict) else {}
+        base_vals.append(float((item or {}).get("hybrid_run_score", 0.0) or 0.0))
+        bridge_vals.append(
+            float(
+                comp.get(
+                    "bridge_path_completeness",
+                    comp.get("bridge_utility", cheap.get("bridge_proxy", 0.0)),
+                )
+                or 0.0
+            )
+        )
+        anchor_cov_vals.append(float(comp.get("pair_coverage_score", cheap.get("anchor_coverage", 0.0)) or 0.0))
+        grounding_vals.append(float(comp.get("entity_chunk_grounding_score", 0.0) or 0.0))
+
+    base_norm = _normalize_small_vector(base_vals)
+    bridge_norm = _normalize_small_vector(bridge_vals)
+    anchor_cov_norm = _normalize_small_vector(anchor_cov_vals)
+    grounding_norm = _normalize_small_vector(grounding_vals)
+
+    w_base = float(getattr(cfg, "run_light_rerank_weight_base", 0.72))
+    w_bridge = float(getattr(cfg, "run_light_rerank_weight_bridge_completeness", 0.12))
+    w_anchor_cov = float(getattr(cfg, "run_light_rerank_weight_anchor_coverage", 0.08))
+    w_ground = float(getattr(cfg, "run_light_rerank_weight_grounding", 0.08))
+
+    diag["head_size"] = int(head_size)
+    diag["weights"] = {
+        "base": float(w_base),
+        "bridge_completeness": float(w_bridge),
+        "anchor_coverage": float(w_anchor_cov),
+        "grounding": float(w_ground),
+    }
+
+    for idx, item in enumerate(head):
+        light_score = (
+            w_base * float(base_norm[idx])
+            + w_bridge * float(bridge_norm[idx])
+            + w_anchor_cov * float(anchor_cov_norm[idx])
+            + w_ground * float(grounding_norm[idx])
+        )
+        item["light_rerank_score"] = float(light_score)
+        item["light_rerank_components"] = {
+            "base_norm": float(base_norm[idx]),
+            "bridge_completeness_norm": float(bridge_norm[idx]),
+            "anchor_coverage_norm": float(anchor_cov_norm[idx]),
+            "grounding_norm": float(grounding_norm[idx]),
+        }
+
+    head.sort(
+        key=lambda x: (
+            float((x or {}).get("light_rerank_score", 0.0) or 0.0),
+            float((x or {}).get("hybrid_run_score", 0.0) or 0.0),
+        ),
+        reverse=True,
+    )
+    after = [int((item or {}).get("run_id", idx)) for idx, item in enumerate(head)]
+    diag["reordered"] = int(sum(1 for i in range(head_size) if before[i] != after[i]))
+    diag["applied"] = bool(diag["reordered"] > 0)
+    return head + tail, diag
 
 
 def _apply_lightweight_corridor_top1_correction(reranked_corridors, cfg):
@@ -3457,7 +3796,7 @@ def run_graphrag_core(
         artifacts = build_document_entity_graph(sample)
         g = artifacts.graph
 
-    anchors = select_lexical_anchors(sample, g, int(getattr(cfg, "max_anchors", 5)))
+    anchors = select_lexical_anchors(sample, g, int(getattr(cfg, "max_anchors", 5)), cfg=cfg)
     if not anchors:
         entities = [n for n in g.nodes if g.nodes[n].get("node_type") == "entity"]
         entities.sort(key=lambda n: g.degree(n), reverse=True)
@@ -3831,7 +4170,16 @@ def run_graphrag_core(
             bridge_norm = {node: 0.0 for node in candidates}
             grounding_norm = {node: 0.0 for node in candidates}
 
-        objective_weights = {node: float(seed_score_map.get(node, 0.0)) for node in candidates}
+        objective_weights = _seed_selection_objective_weights(
+            candidates=candidates,
+            seed_score_map=seed_score_map,
+            bridge_bonus_map=bridge_bonus_map if semantic_diag["enabled"] and query_vec is not None else {},
+            chunk_grounding_bonus_map=chunk_grounding_bonus_map if semantic_diag["enabled"] and query_vec is not None else {},
+            anchors=anchors,
+            anchor_distance_maps=anchor_distance_maps,
+            cfg=cfg,
+            tau=int(getattr(cfg, "tau", 4)),
+        )
         if max(objective_weights.values(), default=0.0) <= 0.0:
             objective_weights = {node: float(run["agg_scores"].get(node, 0.0)) for node in candidates}
         seeds = _greedy_seed_set(
@@ -4191,6 +4539,10 @@ def run_graphrag_core(
     )
     ranked_runs = sorted(run_results, key=lambda r: float(r.get("hybrid_run_score", 0.0)), reverse=True)
     ranked_runs = ranked_runs[: min(len(ranked_runs), full_score_topk)]
+    ranked_runs, run_light_rerank_diag = _apply_lightweight_run_rerank(
+        ranked_runs=ranked_runs,
+        cfg=cfg,
+    )
     shortlisted_runs = ranked_runs[:shortlist_k] if ranked_runs else [chosen]
     chosen = shortlisted_runs[0]
     stage_ms["phase1_run_scoring_ms"] = float((time.perf_counter() - run_score_start) * 1000.0)
@@ -4381,6 +4733,21 @@ def run_graphrag_core(
     )
     stage_ms["final_render_time_ms"] = float(stage_ms["render_ms"])
 
+    graph_mode_diag = str(getattr(cfg, "graph_mode", "current_entity_graph") or "current_entity_graph")
+    stagewise_loss_funnel = {"enabled": False}
+    if bool(getattr(cfg, "stagewise_loss_funnel_enabled", True)):
+        stagewise_loss_funnel = _compute_stagewise_loss_funnel(
+            sample=sample,
+            g=g,
+            reduced_graph=reduced_graph,
+            anchors=anchors,
+            proposal_nodes=proposal_nodes,
+            shortlisted_runs=shortlisted_runs,
+            selected_text_unit_ids=selected_sentence_ids,
+            selected_text_map=selected_text_map,
+            graph_mode=graph_mode_diag,
+        )
+
     anchor_results = []
     diag_topn = max(1, int(getattr(cfg, "anchor_diag_topn", 10)))
     diag_full = bool(getattr(cfg, "anchor_diag_store_full_scores", False))
@@ -4427,8 +4794,17 @@ def run_graphrag_core(
             "chunk_node_enabled_in_diffusion": bool(getattr(cfg, "chunk_node_enabled_in_diffusion", False)),
             "chunk_score_topk": int(getattr(cfg, "chunk_score_topk", 20)),
             "chunk_package_enabled": bool(getattr(cfg, "chunk_package_enabled", False)),
+            "corridor_fallback_text_cap": int(getattr(cfg, "corridor_fallback_text_cap", 4)),
+            "canonical_variant_name": str(getattr(cfg, "canonical_variant_name", "a1_baseline_3_2") or "a1_baseline_3_2"),
             "selected_unit_type": ("chunk" if str(getattr(cfg, "graph_mode", "current_entity_graph") or "current_entity_graph").strip().lower() == "entity_chunk_graph" else "sentence"),
             "selected_text_map": selected_text_map,
+            "selected_text_unit_ids": list(selected_sentence_ids),
+            "selected_texts": list(selected_sentences),
+            "stagewise_loss_funnel": stagewise_loss_funnel,
+            "anchor_hit_rate": float((stagewise_loss_funnel or {}).get("anchor_hit_rate", 0.0)),
+            "proposal_hit_rate": float((stagewise_loss_funnel or {}).get("proposal_hit_rate", 0.0)),
+            "phase1_hit_rate": float((stagewise_loss_funnel or {}).get("phase1_hit_rate", 0.0)),
+            "final_chunk_hit_rate": float((stagewise_loss_funnel or {}).get("final_chunk_hit_rate", 0.0)),
             "ppr_graph_nodes": int(diffusion_graph.number_of_nodes()),
             "ppr_graph_edges": int(diffusion_graph.number_of_edges()),
             "entity_chunk_graph": entity_chunk_diag,
@@ -4465,6 +4841,7 @@ def run_graphrag_core(
             "corridor_nodes_after_trim": int(final_graph.number_of_nodes()),
             "sentence_scores": sentence_scores,
             "sentence_feature_table": sentence_feature_table,
+            "text_unit_feature_table": sentence_feature_table,
             "semantic_selection": semantic_diag,
             "query_embedding_recomputed": bool(query_embedding_recomputed),
             "query_embedding_cache_hit": bool(query_embedding_cache_hit),
@@ -4479,6 +4856,7 @@ def run_graphrag_core(
                 "corridor": top1_corridor_diag,
                 "sentence": top1_sentence_diag,
             },
+            "run_light_rerank": run_light_rerank_diag,
             "run_selection_mode": (
                 "semantic_hybrid"
                 if (stable_seed_selection and semantic_diag["enabled"] and query_vec is not None)
@@ -4500,6 +4878,12 @@ def run_graphrag_core(
             ],
             "shortlisted_run_ids": [int(r.get("run_id", 0)) for r in shortlisted_runs],
             "embedding_rerank": embedding_diag,
+            "stagewise_loss_funnel_enabled": bool(getattr(cfg, "stagewise_loss_funnel_enabled", True)),
+            "final_top_slice_reorder_enabled": bool(getattr(cfg, "final_top_slice_reorder_enabled", False)),
+            "final_top_slice_reorder_topk": int(getattr(cfg, "final_top_slice_reorder_topk", 4)),
+            "answer_support_pinning_enabled": bool(getattr(cfg, "answer_support_pinning_enabled", False)),
+            "answer_support_pinning_min": int(getattr(cfg, "answer_support_pinning_min", 1)),
+            "oracle_support_injection_enabled": bool(getattr(cfg, "oracle_support_injection_enabled", False)),
             "stable_seed_selection": stable_seed_selection,
             "trim_enabled": bool(enable_trim and getattr(cfg, "trim_on", True)),
             "anchor_diag_topn": int(diag_topn),

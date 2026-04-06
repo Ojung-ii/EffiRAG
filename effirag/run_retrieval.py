@@ -10,6 +10,7 @@ from .config import RetrievalConfig, apply_cli_overrides, dataclass_from_dict
 from .metrics import (
     DEFAULT_RECALL_KS,
     aggregate_retrieval_metrics,
+    build_support_fact_debug_payload,
     supporting_fact_precision,
     supporting_fact_recall,
     supporting_fact_recall_at_ks,
@@ -63,6 +64,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--openie-parallel-workers", type=int, default=None)
     parser.add_argument("--openie-log-every", type=int, default=None)
     parser.add_argument("--embedding-enabled", type=str, default=None)
+    parser.add_argument("--sentence-rerank-enabled", type=str, default=None)
     parser.add_argument("--top1-correction-enabled", type=str, default=None)
     parser.add_argument("--top1-correction-topk", type=int, default=None)
     parser.add_argument("--top1-correction-corridor-weight-base", type=float, default=None)
@@ -108,10 +110,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--corridor-top-bc", type=int, default=None)
     parser.add_argument("--phase1-parallel-ppr", type=str, default=None)
     parser.add_argument("--phase1-run-shortlist-topk", type=int, default=None)
+    parser.add_argument("--phase1-run-preshortlist-topm", type=int, default=None)
+    parser.add_argument("--phase1-full-run-score-topk", type=int, default=None)
     parser.add_argument("--pair-shortlist-topb", type=int, default=None)
     parser.add_argument("--phase2-refine-mode", type=str, default=None)
     parser.add_argument("--phase2-bidirectional-full-ppr", type=str, default=None)
     parser.add_argument("--reuse-semantic-scores-in-final", type=str, default=None)
+    parser.add_argument("--oracle-support-injection-enabled", type=str, default=None)
     parser.add_argument("--trim-on", type=str, default=None)
     parser.add_argument("--trim-rho", type=float, default=None)
     parser.add_argument("--run-qa", type=str, default=None)
@@ -137,6 +142,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ppr-subgraph-max-nodes", type=int, default=None)
     parser.add_argument("--anchor-diag-topn", type=int, default=None)
     parser.add_argument("--anchor-diag-store-full-scores", type=str, default=None)
+    parser.add_argument("--sf-debug-sample-limit", type=int, default=None)
+    parser.add_argument("--sf-debug-output", type=str, default=None)
     return parser
 
 
@@ -180,12 +187,19 @@ def execute_retrieval_experiment(cfg, show_progress: bool = True):
     samples = loader(split=cfg.split, limit=cfg.limit, data_path=cfg.data_path)
 
     rows = []
+    sf_debug_rows = []
+    sf_debug_limit = max(0, int(getattr(cfg, "sf_debug_sample_limit", 0) or 0))
+    debug_enabled = bool(sf_debug_limit > 0)
     cfg_values = asdict(cfg)
     run_stamp = timestamp_for_filename()
     run_iso = timestamp_iso_utc()
+    effective_workers = int(cfg.num_workers)
+    if debug_enabled and effective_workers > 1:
+        # Keep debug rows aligned with sample objects and avoid worker-side payload bloat.
+        effective_workers = 1
 
-    if cfg.num_workers > 1 and len(samples) > 1:
-        with ProcessPoolExecutor(max_workers=cfg.num_workers) as executor:
+    if effective_workers > 1 and len(samples) > 1:
+        with ProcessPoolExecutor(max_workers=effective_workers) as executor:
             futures = [executor.submit(_worker, sample, cfg_values) for sample in samples]
             for fut in tqdm(
                 as_completed(futures),
@@ -221,6 +235,14 @@ def execute_retrieval_experiment(cfg, show_progress: bool = True):
                     "retrieval": asdict(retrieval),
                 }
             )
+            if debug_enabled and len(sf_debug_rows) < sf_debug_limit:
+                sf_debug_rows.append(
+                    build_support_fact_debug_payload(
+                        sample=sample,
+                        retrieval=retrieval,
+                        rendered=None,
+                    )
+                )
 
     for row in rows:
         row["run_timestamp"] = run_stamp
@@ -285,6 +307,8 @@ def execute_retrieval_experiment(cfg, show_progress: bool = True):
     summary["reuse_semantic_scores_in_final"] = bool(cfg.reuse_semantic_scores_in_final)
     summary["anchor_diag_topn"] = int(cfg.anchor_diag_topn)
     summary["anchor_diag_store_full_scores"] = bool(cfg.anchor_diag_store_full_scores)
+    summary["oracle_support_injection_enabled"] = bool(getattr(cfg, "oracle_support_injection_enabled", False))
+    summary["oracle_mode"] = "oracle_upper_bound" if bool(getattr(cfg, "oracle_support_injection_enabled", False)) else "non_oracle"
     summary["run_timestamp"] = run_stamp
     summary["run_timestamp_utc"] = run_iso
 
@@ -311,6 +335,12 @@ def execute_retrieval_experiment(cfg, show_progress: bool = True):
     summary_path = out_dir / "retrieval_summary.json"
     summary["output_dir"] = str(out_dir.resolve())
     write_jsonl(query_path, rows)
+    if debug_enabled and sf_debug_rows:
+        raw_debug_path = str(getattr(cfg, "sf_debug_output", "") or "").strip()
+        debug_path = Path(raw_debug_path) if raw_debug_path else (out_dir / "supporting_fact_debug.jsonl")
+        write_jsonl(debug_path, sf_debug_rows)
+        summary["supporting_fact_debug_path"] = str(debug_path.resolve())
+        summary["supporting_fact_debug_samples"] = int(len(sf_debug_rows))
     write_json(summary_path, summary)
 
     logs_dir = out_dir / "logs"

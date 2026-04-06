@@ -53,6 +53,12 @@ class RetrievalConfig:
     # sentence: legacy sentence node as chunk
     # passage: HippoRAG2-like document/passage chunk node
     index_chunk_unit: str = "auto"
+    # passage chunking controls for entity_chunk_graph. Default keeps retrieval between sentence and full-passage granularity.
+    passage_chunking_strategy: str = "sentence_window"  # sentence_window | paragraph_then_sentence_window
+    passage_chunk_size_sentences: int = 3
+    passage_chunk_stride_sentences: int = 2
+    passage_chunk_min_sentences: int = 2
+    passage_chunk_max_chars: int = 900
     # current_entity_graph (frozen path) | entity_chunk_graph (next-method-design experiment path)
     graph_mode: str = "current_entity_graph"
     # entity_aggregate: seed/entity scores lifted to chunk via support map
@@ -81,6 +87,15 @@ class RetrievalConfig:
     run_score_structure_weight: float = 0.25
     run_score_bridge_weight: float = 0.15
     run_score_redundancy_weight: float = 0.10
+    # Canonical experiment tag for reproducible variant tracking.
+    canonical_variant_name: str = "a1_baseline_3_2"
+    # Lightweight post-score rerank over top runs (0 disables).
+    run_light_rerank_enabled: bool = False
+    run_light_rerank_topk: int = 0
+    run_light_rerank_weight_base: float = 0.72
+    run_light_rerank_weight_bridge_completeness: float = 0.12
+    run_light_rerank_weight_anchor_coverage: float = 0.08
+    run_light_rerank_weight_grounding: float = 0.08
     # Optional next-method-design run-level objective terms (default off).
     run_score_pair_coverage_weight: float = 0.0
     run_score_bridge_completeness_weight: float = 0.0
@@ -89,12 +104,16 @@ class RetrievalConfig:
     seed_score_semantic_weight: float = 0.35
     seed_score_graph_weight: float = 0.45
     seed_score_anchor_weight: float = 0.20
+    seed_objective_bridge_weight: float = 0.20
+    seed_objective_grounding_weight: float = 0.15
+    seed_objective_anchor_coverage_weight: float = 0.10
     # Optional seed-level bridge/grounding boosts (default off).
     seed_score_bridge_weight: float = 0.0
     seed_score_chunk_grounding_weight: float = 0.0
     # Optional final corridor grounding boosts (default off).
     corridor_score_chunk_support_weight: float = 0.0
     corridor_score_answer_alignment_weight: float = 0.0
+    corridor_fallback_text_cap: int = 4
     top1_correction_enabled: bool = False
     top1_correction_topk: int = 3
     top1_correction_corridor_weight_base: float = 0.75
@@ -110,6 +129,18 @@ class RetrievalConfig:
     top1_correction_sentence_weight_query: float = 0.04
     top1_correction_sentence_weight_locality: float = 0.04
     top1_correction_sentence_weight_redundancy: float = 0.04
+    # Stagewise retrieval-loss funnel diagnostics (anchor -> proposal -> phase1 -> final -> rendered).
+    stagewise_loss_funnel_enabled: bool = True
+    # Minimal downstream controls (default off): keep retrieval objective unchanged, only post-selection adjustment.
+    final_top_slice_reorder_enabled: bool = False
+    final_top_slice_reorder_topk: int = 4
+    answer_support_pinning_enabled: bool = False
+    answer_support_pinning_min: int = 1
+    # Diagnostic-only oracle context injection for upper-bound checks (default off).
+    oracle_support_injection_enabled: bool = False
+    # Debug utility: dump sample-level supporting-fact matching diagnostics.
+    sf_debug_sample_limit: int = 0
+    sf_debug_output: str = ""
 
     max_anchors: int = 5
     samples_per_anchor: int = 3
@@ -258,6 +289,16 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["sentence_rerank_enabled"] = parse_bool(merged["sentence_rerank_enabled"])
     if "top1_correction_enabled" in merged:
         merged["top1_correction_enabled"] = parse_bool(merged["top1_correction_enabled"])
+    if "run_light_rerank_enabled" in merged:
+        merged["run_light_rerank_enabled"] = parse_bool(merged["run_light_rerank_enabled"])
+    if "stagewise_loss_funnel_enabled" in merged:
+        merged["stagewise_loss_funnel_enabled"] = parse_bool(merged["stagewise_loss_funnel_enabled"])
+    if "final_top_slice_reorder_enabled" in merged:
+        merged["final_top_slice_reorder_enabled"] = parse_bool(merged["final_top_slice_reorder_enabled"])
+    if "answer_support_pinning_enabled" in merged:
+        merged["answer_support_pinning_enabled"] = parse_bool(merged["answer_support_pinning_enabled"])
+    if "oracle_support_injection_enabled" in merged:
+        merged["oracle_support_injection_enabled"] = parse_bool(merged["oracle_support_injection_enabled"])
     if "query_embedding_cache_enabled" in merged:
         merged["query_embedding_cache_enabled"] = parse_bool(merged["query_embedding_cache_enabled"])
     if "candidate_embedding_fallback_enabled" in merged:
@@ -300,24 +341,4 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["chunk_grounding_enabled"] = parse_bool(merged["chunk_grounding_enabled"])
     if "chunk_excerpt_dedup_enabled" in merged:
         merged["chunk_excerpt_dedup_enabled"] = parse_bool(merged["chunk_excerpt_dedup_enabled"])
-
-    graph_mode = str(merged.get("graph_mode", "current_entity_graph") or "current_entity_graph").strip().lower()
-    index_chunk_unit = str(merged.get("index_chunk_unit", "auto") or "auto").strip().lower()
-    if index_chunk_unit in {"", "auto"}:
-        index_chunk_unit = "passage" if graph_mode == "entity_chunk_graph" else "sentence"
-    elif index_chunk_unit in {"chunk", "document", "doc"}:
-        index_chunk_unit = "passage"
-
-    if graph_mode == "entity_chunk_graph" and index_chunk_unit == "passage":
-        try:
-            if int(merged.get("embedding_max_length", 192) or 192) <= 192:
-                merged["embedding_max_length"] = 384
-        except Exception:
-            merged["embedding_max_length"] = 384
-        try:
-            if int(merged.get("embedding_text_max_chars", 600) or 600) <= 600:
-                merged["embedding_text_max_chars"] = 1200
-        except Exception:
-            merged["embedding_text_max_chars"] = 1200
-
     return merged

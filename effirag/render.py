@@ -1,5 +1,5 @@
-import re
 from .types import RenderedContext
+from .metrics import supporting_fact_match_details
 from .utils import content_tokens
 
 
@@ -20,22 +20,21 @@ def _retrieval_graph_mode(retrieval_result):
     return mode
 
 
+def _selected_unit_type(retrieval_result):
+    diagnostics = (getattr(retrieval_result, "diagnostics", {}) or {})
+    unit_type = str(diagnostics.get("selected_unit_type", diagnostics.get("selected_text_unit_type", "sentence")) or "sentence").strip().lower()
+    if unit_type not in {"sentence", "chunk"}:
+        unit_type = "sentence"
+    return unit_type
+
+
+def _corridor_get(corridor, key, legacy_key):
+    return corridor.get(key, corridor.get(legacy_key, [])) or []
+
+
 def _is_chunk_like_id(unit_id):
     sid = str(unit_id or "")
     return sid.startswith("chunk::")
-
-
-def _split_chunk_text_to_sentences(text):
-    raw = str(text or "").strip()
-    if not raw:
-        return []
-    normalized = re.sub(r"\s+", " ", raw)
-    parts = [p.strip() for p in re.split(r"(?<=[.!?])\s+", normalized) if p.strip()]
-    if len(parts) <= 1:
-        parts = [p.strip() for p in re.split(r"\s*\n+\s*", raw) if p.strip()]
-    if len(parts) <= 1:
-        parts = [normalized]
-    return parts
 
 
 def _build_retrieval_text_lookup(sample, retrieval_result):
@@ -92,6 +91,294 @@ def _jaccard(a, b):
     return float(len(a.intersection(b)) / len(union))
 
 
+def _unit_title(unit_id):
+    sid = str(unit_id or "")
+    if sid.startswith("chunk::"):
+        parts = sid.split("::")
+        if len(parts) >= 3:
+            return str(parts[1])
+    if "::" in sid:
+        return str(sid.rsplit("::", 1)[0])
+    return sid
+
+
+def _feature_role(feat, query_overlap_threshold=1.0):
+    overlap = float((feat or {}).get("query_overlap_score", 0.0) or 0.0)
+    if overlap >= float(query_overlap_threshold):
+        return "query"
+    if bool((feat or {}).get("is_connector_adjacent", False)) or bool((feat or {}).get("is_support_candidate", False)):
+        return "bridge"
+    return "answer"
+
+
+def _safe_ratio(numer, denom):
+    try:
+        n = float(numer)
+        d = float(denom)
+    except Exception:
+        return 0.0
+    if d <= 0.0:
+        return 0.0
+    return float(n / d)
+
+
+def _int_default(value, default):
+    try:
+        return int(value)
+    except Exception:
+        return int(default)
+
+
+def _bool_default(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return bool(default)
+    text = str(value).strip().lower()
+    if text in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    return bool(default)
+
+
+def _is_support_like(feat):
+    src = feat or {}
+    return bool(src.get("is_support_candidate", False) or src.get("is_connector_adjacent", False))
+
+
+def _parse_order_strategy_flags(order_strategy, retrieval_result):
+    diagnostics = (getattr(retrieval_result, "diagnostics", {}) or {})
+    raw = str(order_strategy or "score").strip().lower()
+    tokens = [tok.strip() for tok in raw.split("+") if tok.strip()]
+    base = tokens[0] if tokens else "score"
+    flags = set(tokens[1:] if len(tokens) > 1 else [])
+    base_strategies = {"score", "retrieval", "corridor_rank", "query_bridge_answer", "qba"}
+    if base not in base_strategies:
+        flags.add(base)
+        base = "score"
+
+    if base in {"relation_off", "relation_disabled", "relation_ordering_off"}:
+        base = "score"
+    elif base in {"relation_on", "relation_enabled", "relation_ordering_on"}:
+        base = "query_bridge_answer"
+
+    if _bool_default(diagnostics.get("final_top_slice_reorder_enabled", False), False):
+        flags.add("top_slice_reorder")
+    if _bool_default(diagnostics.get("answer_support_pinning_enabled", False), False):
+        flags.add("answer_support_pin")
+    if _bool_default(diagnostics.get("oracle_support_injection_enabled", False), False):
+        flags.add("oracle_support")
+
+    if "relation_on" in flags or "relation_enabled" in flags or "relation_ordering_on" in flags:
+        base = "query_bridge_answer"
+    if "relation_off" in flags or "relation_disabled" in flags or "relation_ordering_off" in flags:
+        base = "score"
+
+    top_slice_topk = max(1, _int_default(diagnostics.get("final_top_slice_reorder_topk", 4), 4))
+    support_pin_min = max(0, _int_default(diagnostics.get("answer_support_pinning_min", 1), 1))
+    return base, flags, top_slice_topk, support_pin_min
+
+
+def _apply_top_slice_reorder(selected_ids, features, score_at_pick, base_scores, retrieval_rank, topk):
+    head_size = min(len(selected_ids), max(1, int(topk)))
+    if head_size <= 1:
+        return list(selected_ids), {"applied": False, "head_size": int(head_size), "reordered": 0}
+    head = list(selected_ids[:head_size])
+    tail = list(selected_ids[head_size:])
+    order_map = {sid: idx for idx, sid in enumerate(head)}
+    ranked = sorted(
+        head,
+        key=lambda sid: (
+            -int(1 if _is_support_like(features.get(sid, {})) else 0),
+            -int(1 if bool((features.get(sid, {}) or {}).get("is_main_candidate", False)) else 0),
+            -float((features.get(sid, {}) or {}).get("query_overlap_score", 0.0)),
+            -float(score_at_pick.get(sid, base_scores.get(sid, 0.0))),
+            retrieval_rank.get(sid, 10**9),
+            order_map.get(sid, 10**9),
+        ),
+    )
+    out = ranked + tail
+    changed = int(sum(1 for idx, sid in enumerate(head) if ranked[idx] != sid))
+    return out, {"applied": bool(changed > 0), "head_size": int(head_size), "reordered": int(changed)}
+
+
+def _apply_answer_support_pinning(
+    selected_ids,
+    candidate_ids,
+    features,
+    score_at_pick,
+    base_scores,
+    retrieval_rank,
+    min_support,
+):
+    target = max(0, int(min_support))
+    if target <= 0:
+        return list(selected_ids), {"applied": False, "added": 0, "replaced": 0, "target": 0}
+
+    out = list(selected_ids)
+
+    def _support_count(ids):
+        return sum(1 for sid in ids if _is_support_like(features.get(sid, {})))
+
+    support_now = _support_count(out)
+    need = max(0, target - support_now)
+    if need <= 0:
+        return out, {"applied": False, "added": 0, "replaced": 0, "target": int(target)}
+
+    support_pool = [
+        sid
+        for sid in list(candidate_ids or [])
+        if sid not in set(out) and _is_support_like(features.get(sid, {}))
+    ]
+    support_pool = sorted(
+        support_pool,
+        key=lambda sid: (
+            float(score_at_pick.get(sid, base_scores.get(sid, 0.0))),
+            -retrieval_rank.get(sid, 10**9),
+        ),
+        reverse=True,
+    )
+
+    added = 0
+    replaced = 0
+    for sid in support_pool:
+        if need <= 0:
+            break
+        replace_idx = None
+        for idx in range(len(out) - 1, -1, -1):
+            if not _is_support_like(features.get(out[idx], {})):
+                replace_idx = idx
+                break
+        if replace_idx is None:
+            break
+        out[replace_idx] = sid
+        need -= 1
+        replaced += 1
+        added += 1
+
+    out = _ordered_unique(out)
+    return out, {
+        "applied": bool(added > 0),
+        "added": int(added),
+        "replaced": int(replaced),
+        "target": int(target),
+    }
+
+
+def _gold_support_unit_pairs(sample, retrieval_result):
+    graph_mode = _retrieval_graph_mode(retrieval_result)
+    sentence_lookup = _sample_sentence_lookup(sample)
+    pairs = []
+    seen = set()
+    for title, sent_idx in list(getattr(sample, "supporting_facts", []) or []):
+        t = str(title or "").strip()
+        if not t:
+            continue
+        try:
+            idx = int(sent_idx)
+        except Exception:
+            idx = 0
+        if graph_mode == "entity_chunk_graph":
+            unit_id = f"chunk::{t}::0"
+        else:
+            unit_id = f"{t}::{idx}"
+        if unit_id in seen:
+            continue
+        seen.add(unit_id)
+        text = str(sentence_lookup.get(f"{t}::{idx}", "") or "").strip()
+        if not text:
+            text = str(sentence_lookup.get(f"{t}::0", "") or "").strip()
+        if not text:
+            text = t
+        pairs.append((unit_id, text))
+    return pairs
+
+
+def _apply_oracle_support_injection(selected_ids, candidate_text_map, sample, retrieval_result, max_n):
+    oracle_pairs = _gold_support_unit_pairs(sample, retrieval_result)
+    if not oracle_pairs:
+        return list(selected_ids), {"applied": False, "injected": 0}
+
+    for sid, text in oracle_pairs:
+        if sid and text and sid not in candidate_text_map:
+            candidate_text_map[sid] = text
+
+    out = list(selected_ids)
+    oracle_ids = [sid for sid, _ in oracle_pairs if sid]
+    oracle_set = set(oracle_ids)
+    injected = 0
+    for sid in reversed(oracle_ids):
+        if sid in out:
+            continue
+        if len(out) < int(max_n):
+            out.insert(0, sid)
+            injected += 1
+            continue
+        replace_idx = None
+        for idx in range(len(out) - 1, -1, -1):
+            if out[idx] not in oracle_set:
+                replace_idx = idx
+                break
+        if replace_idx is None:
+            continue
+        out[replace_idx] = sid
+        injected += 1
+
+    out = _ordered_unique(out)
+    if len(out) > int(max_n):
+        out = out[: int(max_n)]
+    return out, {"applied": bool(injected > 0), "injected": int(injected)}
+
+
+def _gold_support_unit_ids(sample, retrieval_result):
+    return {sid for sid, _txt in _gold_support_unit_pairs(sample, retrieval_result) if sid}
+
+
+def _attach_stagewise_render_diagnostics(sample, retrieval_result, rendered):
+    diagnostics = dict((getattr(retrieval_result, "diagnostics", {}) or {}))
+    funnel = dict((diagnostics.get("stagewise_loss_funnel", {}) or {}))
+    if not funnel:
+        return rendered
+
+    graph_mode = _retrieval_graph_mode(retrieval_result)
+    retrieval_match = supporting_fact_match_details(
+        sample=sample,
+        unit_ids=list(getattr(retrieval_result, "selected_sentence_ids", []) or []),
+        unit_texts=list(getattr(retrieval_result, "selected_sentences", []) or []),
+        graph_mode=graph_mode,
+    )
+    rendered_match = supporting_fact_match_details(
+        sample=sample,
+        unit_ids=list(getattr(rendered, "sentence_ids", []) or []),
+        unit_texts=list(getattr(rendered, "sentences", []) or []),
+        graph_mode=graph_mode,
+    )
+
+    gold_total = int(rendered_match.get("gold_total", 0))
+    rendered_hit_count = int(rendered_match.get("matched_gold_total", 0))
+    final_hit_count = int(retrieval_match.get("matched_gold_total", 0))
+
+    funnel["rendered_hit_count"] = int(rendered_hit_count)
+    funnel["rendered_hit_rate"] = float(_safe_ratio(rendered_hit_count, gold_total))
+    funnel["rendered_retention"] = float(_safe_ratio(rendered_hit_count, final_hit_count))
+    funnel["rendered_hit_unit_ids"] = list(rendered_match.get("matched_gold_sentence_ids", []) or [])
+    funnel["rendered_missed_unit_ids"] = list(rendered_match.get("missed_gold_sentence_ids", []) or [])
+    diagnostics["stagewise_loss_funnel"] = funnel
+    retrieval_result.diagnostics = diagnostics
+
+    meta = dict(getattr(rendered, "metadata", {}) or {})
+    meta.update(
+        {
+            "stagewise_rendered_hit_count": int(rendered_hit_count),
+            "stagewise_rendered_hit_rate": float(funnel.get("rendered_hit_rate", 0.0)),
+            "stagewise_rendered_retention": float(funnel.get("rendered_retention", 0.0)),
+        }
+    )
+    rendered.metadata = meta
+    return rendered
+
+
 def _extract_selected_pairs(sample, retrieval_result):
     lookup = _build_retrieval_text_lookup(sample, retrieval_result)
     ids = list(retrieval_result.selected_sentence_ids or [])
@@ -129,10 +416,10 @@ def _build_fallback_feature_table(sample, retrieval_result, candidate_ids, candi
     for idx, corridor in enumerate(corridors, start=1):
         cid = str(corridor.get("corridor_id", f"c{idx:02d}"))
         cscore = float(corridor.get("corridor_score", 0.0))
-        score_map = corridor.get("sentence_score_map", {}) or {}
-        main_ids = corridor.get("main_path_sentence_ids", []) or []
-        support_ids = corridor.get("support_sentence_ids", []) or []
-        connector_ids = corridor.get("connector_adjacent_sentence_ids", []) or []
+        score_map = corridor.get("unit_score_map", corridor.get("sentence_score_map", {})) or {}
+        main_ids = _corridor_get(corridor, "main_path_unit_ids", "main_path_sentence_ids")
+        support_ids = _corridor_get(corridor, "support_unit_ids", "support_sentence_ids")
+        connector_ids = _corridor_get(corridor, "connector_adjacent_unit_ids", "connector_adjacent_sentence_ids")
 
         for mpos, sid in enumerate(main_ids):
             if sid not in feature_table:
@@ -171,7 +458,7 @@ def _build_fallback_feature_table(sample, retrieval_result, candidate_ids, candi
 
 
 def _get_sentence_feature_table(sample, retrieval_result, candidate_ids, candidate_text_map):
-    raw = (retrieval_result.diagnostics or {}).get("sentence_feature_table", {}) or {}
+    raw = (retrieval_result.diagnostics or {}).get("text_unit_feature_table", (retrieval_result.diagnostics or {}).get("sentence_feature_table", {})) or {}
     if not isinstance(raw, dict):
         raw = {}
 
@@ -218,12 +505,12 @@ def _corridor_aware_linear_score(
 
 
 def order_corridor_sentences(corridor, sentence_map=None):
-    main_ids = _ordered_unique(corridor.get("main_path_sentence_ids", []) or [])
+    main_ids = _ordered_unique(_corridor_get(corridor, "main_path_unit_ids", "main_path_sentence_ids"))
     main_ids = [sid for sid in main_ids if sid in sentence_map]
     if main_ids:
         return main_ids
 
-    support_ids = _ordered_unique(corridor.get("support_sentence_ids", []) or [])
+    support_ids = _ordered_unique(_corridor_get(corridor, "support_unit_ids", "support_sentence_ids"))
     support_ids = [sid for sid in support_ids if sid in sentence_map]
     score_map = corridor.get("sentence_score_map", {}) or {}
     if score_map:
@@ -236,7 +523,7 @@ def select_support_sentences(corridor, main_sentence_ids, max_support_per_corrid
         return []
 
     main_set = set(main_sentence_ids)
-    support_ids = _ordered_unique(corridor.get("support_sentence_ids", []) or [])
+    support_ids = _ordered_unique(_corridor_get(corridor, "support_unit_ids", "support_sentence_ids"))
     support_ids = [sid for sid in support_ids if sid not in main_set and sid in sentence_map]
     if max_support_per_corridor is None:
         return support_ids
@@ -297,6 +584,13 @@ def build_corridor_payload(retrieval_result, graph=None, sentence_map=None):
                 "anchors": [str(x) for x in (item.get("anchors", []) or [])],
                 "main_path_sentence_ids": [str(x) for x in (item.get("main_path_sentence_ids", []) or [])],
                 "support_sentence_ids": [str(x) for x in (item.get("support_sentence_ids", []) or [])],
+                "connector_adjacent_sentence_ids": [
+                    str(x)
+                    for x in (
+                        item.get("connector_adjacent_sentence_ids", item.get("connector_adjacent_unit_ids", []))
+                        or []
+                    )
+                ],
                 "sentence_score_map": {str(k): float(v) for k, v in (item.get("sentence_score_map", {}) or {}).items()},
             }
         )
@@ -354,11 +648,17 @@ def pack_corridors_with_budget(
             max_support_per_corridor=None,
             sentence_map=sentence_map,
         )
+        connector_candidates = _ordered_unique(_corridor_get(corridor, "connector_adjacent_unit_ids", "connector_adjacent_sentence_ids"))
+        connector_candidates = [sid for sid in connector_candidates if sid not in set(main_ids) and sid in sentence_map]
+        support_candidates = _ordered_unique(connector_candidates + support_candidates)
         support_candidates = _prefer_non_duplicate(support_candidates, used_sentence_ids)
+        support_score_map = dict(score_map)
+        for sid in connector_candidates:
+            support_score_map[sid] = float(support_score_map.get(sid, 0.0)) + 0.10
         ranked_support = _rank_sentence_ids(
             candidate_ids=support_candidates,
             sentence_map=sentence_map,
-            sentence_score_map=score_map,
+            sentence_score_map=support_score_map,
             question_tokens=question_tokens,
             selected_ids=global_selected_ids + main_ids,
         )
@@ -504,11 +804,12 @@ def _build_sentence_to_corridor_maps(corridors):
     for rank, (cid, corridor) in enumerate(_ordered_corridors(corridors), start=1):
         corridor_rank[cid] = rank
         support_ids = list((corridor or {}).get("support_sentence_ids", []) or [])
+        connector_ids = list((corridor or {}).get("connector_adjacent_sentence_ids", []) or [])
         main_ids = list((corridor or {}).get("main_path_sentence_ids", []) or [])
-        corridor_support_counts[cid] = len(support_ids)
+        corridor_support_counts[cid] = len(_ordered_unique(support_ids + connector_ids))
         anchors = list((corridor or {}).get("anchors", []) or [])
         corridor_bridge_flags[cid] = bool(len([a for a in anchors if str(a or "").strip()]) >= 2)
-        for sid in _ordered_unique(main_ids + support_ids):
+        for sid in _ordered_unique(main_ids + support_ids + connector_ids):
             sent_to_corridors.setdefault(str(sid), []).append(cid)
     return sent_to_corridors, corridor_rank, corridor_support_counts, corridor_bridge_flags
 
@@ -783,130 +1084,6 @@ def _build_package_score_packages(
     return selected
 
 
-def _build_chunk_native_package_score_packages(
-    sample,
-    retrieval_result,
-    base_sentence_ids,
-    base_text_lookup,
-    top_k_packages,
-    w_answer,
-    w_bridge,
-    w_support,
-    w_chunk_grounding,
-    w_redundancy,
-    max_sentences_per_package=2,
-):
-    question_tokens = _token_set(sample.question)
-    feature_table = _get_sentence_feature_table(sample, retrieval_result, base_sentence_ids, base_text_lookup)
-    sentence_token_cache = {}
-    candidates = []
-
-    for rank, sid in enumerate(base_sentence_ids or [], start=1):
-        sid = str(sid or "")
-        if not _is_chunk_like_id(sid):
-            continue
-        chunk_text = str(base_text_lookup.get(sid, "") or "").strip()
-        if not chunk_text:
-            continue
-        chunk_sents = _split_chunk_text_to_sentences(chunk_text)
-        if not chunk_sents:
-            continue
-        scored_sents = []
-        for idx, sent in enumerate(chunk_sents):
-            sent_tokens = _token_set(sent)
-            overlap = 0.0
-            if question_tokens:
-                overlap = float(len(question_tokens.intersection(sent_tokens)) / max(1, len(question_tokens)))
-            prior = 1.0 / float(idx + 1)
-            sent_score = overlap + 0.15 * prior
-            scored_sents.append((sent_score, idx, sent, sent_tokens))
-        scored_sents.sort(key=lambda x: x[0], reverse=True)
-        topn = max(1, int(max_sentences_per_package))
-        top_sentences = scored_sents[:topn]
-        excerpt_pairs = [(f"{sid}#e{idx}", sent) for _, idx, sent, _ in top_sentences]
-        if not excerpt_pairs:
-            continue
-        excerpt_tokens = set()
-        for _, _, _, toks in top_sentences:
-            excerpt_tokens.update(toks)
-        sentence_token_cache[sid] = excerpt_tokens
-
-        feat = feature_table.get(sid, {}) or {}
-        answer_score = 1.0 / float(rank)
-        bridge_score = 1.0 if bool(feat.get("is_connector_adjacent", False)) else 0.0
-        support_score = 1.0 if bool(feat.get("is_support_candidate", False)) else 0.0
-        grounding_score = 0.0
-        if question_tokens:
-            grounding_score = float(len(question_tokens.intersection(excerpt_tokens)) / len(question_tokens))
-        base_score = (
-            float(w_answer) * answer_score
-            + float(w_bridge) * bridge_score
-            + float(w_support) * support_score
-            + float(w_chunk_grounding) * grounding_score
-        )
-        candidates.append({
-            "sid": sid,
-            "score": float(base_score),
-            "pairs": excerpt_pairs,
-        })
-
-    if not candidates:
-        return []
-
-    k = max(1, int(top_k_packages))
-    selected = []
-    selected_token_sets = []
-    remaining = list(candidates)
-    while remaining and len(selected) < k:
-        best = None
-        best_score = None
-        for cand in remaining:
-            c_tokens = sentence_token_cache.get(cand["sid"], set())
-            redundancy = 0.0
-            if selected_token_sets:
-                redundancy = max(_jaccard(c_tokens, prev) for prev in selected_token_sets)
-            score = float(cand.get("score", 0.0)) - float(w_redundancy) * redundancy
-            if best is None or score > best_score:
-                best = cand
-                best_score = score
-        if best is None:
-            break
-        selected.append({
-            "package_id": f"pkg:{best['sid']}",
-            "pairs": list(best.get("pairs", []) or []),
-        })
-        selected_token_sets.append(sentence_token_cache.get(best["sid"], set()))
-        remaining = [x for x in remaining if x.get("sid") != best.get("sid")]
-    return selected
-
-
-def _build_chunk_native_fallback_packages(base_sentence_ids, base_text_lookup, top_k_packages, max_sentences_per_package=2):
-    candidates = []
-    for rank, sid in enumerate(base_sentence_ids or [], start=1):
-        sid = str(sid or "")
-        if not _is_chunk_like_id(sid):
-            continue
-        chunk_text = str((base_text_lookup or {}).get(sid, "") or "").strip()
-        if not chunk_text:
-            continue
-        chunk_sents = _split_chunk_text_to_sentences(chunk_text)
-        if not chunk_sents:
-            continue
-        topn = max(1, int(max_sentences_per_package))
-        excerpt_pairs = [(f"{sid}#e{idx}", sent) for idx, sent in enumerate(chunk_sents[:topn]) if str(sent or "").strip()]
-        if not excerpt_pairs:
-            continue
-        candidates.append({
-            "package_id": f"fallback:{sid}",
-            "score": 1.0 / float(rank),
-            "pairs": excerpt_pairs,
-        })
-    if not candidates:
-        return []
-    candidates.sort(key=lambda x: float(x.get("score", 0.0)), reverse=True)
-    return candidates[: max(1, int(top_k_packages))]
-
-
 def _apply_chunk_grounding(
     sample,
     retrieval_result,
@@ -925,7 +1102,6 @@ def _apply_chunk_grounding(
     package_score_support_weight,
     package_score_chunk_grounding_weight,
     package_score_redundancy_weight,
-    max_excerpt_sentences_per_package=2,
 ):
     sentence_map = _sample_sentence_lookup(sample)
     base_ids = list(rendered.sentence_ids or [])
@@ -964,39 +1140,7 @@ def _apply_chunk_grounding(
         return rendered
 
     mode = str(chunk_grounding_mode or "sentence_backfill").strip().lower()
-    chunk_like_base = any(_is_chunk_like_id(sid) for sid in base_ids)
-    if chunk_like_base:
-        if mode != "package_score":
-            meta = dict(rendered.metadata or {})
-            meta.update({
-                "chunk_grounding_enabled": False,
-                "chunk_grounding_skipped": True,
-                "chunk_grounding_skip_reason": "entity_chunk_graph_only_supports_package_score",
-            })
-            rendered.metadata = meta
-            return rendered
-        base_text_lookup = _build_retrieval_text_lookup(sample, retrieval_result)
-        packages = _build_chunk_native_package_score_packages(
-            sample=sample,
-            retrieval_result=retrieval_result,
-            base_sentence_ids=base_ids,
-            base_text_lookup=base_text_lookup,
-            top_k_packages=chunk_grounding_top_k_packages,
-            w_answer=package_score_answer_weight,
-            w_bridge=package_score_bridge_weight,
-            w_support=package_score_support_weight,
-            w_chunk_grounding=package_score_chunk_grounding_weight,
-            w_redundancy=package_score_redundancy_weight,
-            max_sentences_per_package=max_excerpt_sentences_per_package,
-        )
-        if not packages:
-            packages = _build_chunk_native_fallback_packages(
-                base_sentence_ids=base_ids,
-                base_text_lookup=base_text_lookup,
-                top_k_packages=chunk_grounding_top_k_packages,
-                max_sentences_per_package=max_excerpt_sentences_per_package,
-            )
-    elif mode == "corridor_lift":
+    if mode == "corridor_lift":
         packages = _build_corridor_lift_packages(
             sample=sample,
             retrieval_result=retrieval_result,
@@ -1036,21 +1180,6 @@ def _apply_chunk_grounding(
         max_excerpt_sentences=extra_budget,
         dedup_enabled=bool(chunk_excerpt_dedup_enabled),
     )
-    fallback_pkg_used = False
-    if chunk_like_base and not excerpt_pairs:
-        fallback_packages = _build_chunk_native_fallback_packages(
-            base_sentence_ids=base_ids,
-            base_text_lookup=base_text_lookup,
-            top_k_packages=chunk_grounding_top_k_packages,
-            max_sentences_per_package=max_excerpt_sentences_per_package,
-        )
-        excerpt_pairs, package_count, candidate_sentence_count = _select_excerpt_sentences_from_packages(
-            packages=fallback_packages,
-            base_sentence_ids=base_ids,
-            max_excerpt_sentences=extra_budget,
-            dedup_enabled=bool(chunk_excerpt_dedup_enabled),
-        )
-        fallback_pkg_used = bool(excerpt_pairs)
 
     if not excerpt_pairs:
         meta = dict(rendered.metadata or {})
@@ -1062,8 +1191,6 @@ def _apply_chunk_grounding(
                 "chunk_excerpt_sentence_count": 0,
                 "evidence_package_count": 0,
                 "chunk_excerpt_truncated_count": max(0, int(candidate_sentence_count)),
-                "chunk_package_candidates": int(len(packages or [])),
-                "chunk_package_fallback_used": bool(fallback_pkg_used),
             }
         )
         rendered.metadata = meta
@@ -1072,11 +1199,7 @@ def _apply_chunk_grounding(
     extra_ids = [sid for sid, _ in excerpt_pairs]
     extra_sentences = [txt for _, txt in excerpt_pairs]
     rendered.sentence_ids = list(base_ids) + extra_ids
-    if chunk_like_base:
-        base_lookup = _build_retrieval_text_lookup(sample, retrieval_result)
-        rendered.sentences = [base_lookup.get(sid, "") for sid in base_ids] + extra_sentences
-    else:
-        rendered.sentences = [sentence_map.get(sid, "") for sid in base_ids] + extra_sentences
+    rendered.sentences = [sentence_map.get(sid, "") for sid in base_ids] + extra_sentences
 
     lines = []
     if str(rendered.text or "").strip():
@@ -1096,8 +1219,6 @@ def _apply_chunk_grounding(
             "chunk_excerpt_sentence_count": int(len(excerpt_pairs)),
             "evidence_package_count": int(package_count),
             "chunk_excerpt_truncated_count": max(0, int(candidate_sentence_count - len(excerpt_pairs))),
-            "chunk_package_candidates": int(len(packages or [])),
-            "chunk_package_fallback_used": bool(fallback_pkg_used),
         }
     )
     rendered.metadata = meta
@@ -1205,6 +1326,7 @@ def render_corridor_context(
         truncated_corridor_count=truncated_corridors,
         truncated_sentence_count=truncated_sentences,
         retrieval_selected_sentence_ids=list(retrieval_result.selected_sentence_ids or []),
+        metadata={"selected_unit_type": _selected_unit_type(retrieval_result)},
     )
 
 
@@ -1239,6 +1361,7 @@ def render_corridor_aware_flat_context(
             truncated_corridor_count=0,
             truncated_sentence_count=0,
             retrieval_selected_sentence_ids=list(retrieval_result.selected_sentence_ids or []),
+            metadata={"selected_unit_type": _selected_unit_type(retrieval_result)},
         )
 
     candidate_ids = [sid for sid, _ in pairs]
@@ -1285,42 +1408,97 @@ def render_corridor_aware_flat_context(
     selected_tokens = []
     score_at_pick = {}
     remaining = list(candidate_ids)
+    selected_title_counts = {}
+    selected_role_counts = {"query": 0, "bridge": 0, "answer": 0}
 
-    if reserve_top_corridor:
-        top_candidates = [sid for sid in remaining if int(features.get(sid, {}).get("best_corridor_rank", 10**9)) == 1]
-        if top_candidates:
-            top_candidates.sort(
-                key=lambda sid: (
-                    base_scores.get(sid, 0.0),
-                    -retrieval_rank.get(sid, 10**9),
-                ),
-                reverse=True,
-            )
-            sid = top_candidates[0]
-            selected_ids.append(sid)
-            selected_tokens.append(token_cache.get(sid, set()))
-            score_at_pick[sid] = base_scores.get(sid, 0.0)
-            remaining = [x for x in remaining if x != sid]
+    def _select_score(sid):
+        feat = features.get(sid, {}) or {}
+        role = _feature_role(feat, query_overlap_threshold=1.0)
+        redundancy = 0.0
+        if selected_tokens:
+            redundancy = max(_jaccard(token_cache.get(sid, set()), prev) for prev in selected_tokens)
+        score = float(base_scores.get(sid, 0.0)) - float(lambda_redundancy) * redundancy
 
-    while remaining and len(selected_ids) < max_n:
+        # Bridge-priority boost (connector-side evidence), preserving backward compatibility via eta_connector.
+        if bool(feat.get("is_connector_adjacent", False)):
+            score += 0.25 * max(0.0, float(eta_connector))
+
+        # Diversity control: avoid over-selecting the same title/chunk family.
+        title = _unit_title(sid)
+        title_repeats = int(selected_title_counts.get(title, 0))
+        score -= 0.20 * max(0.0, float(lambda_redundancy)) * float(title_repeats)
+
+        # Keep answer-side and connector-side evidence balanced.
+        balance_w = 0.10 * max(0.0, float(eta_connector) + float(delta_support))
+        bridge_count = int(selected_role_counts.get("bridge", 0))
+        answer_count = int(selected_role_counts.get("answer", 0))
+        if role == "bridge":
+            score -= balance_w * float(max(0, bridge_count - answer_count))
+        elif role == "answer":
+            score -= balance_w * float(max(0, answer_count - bridge_count - 1))
+
+        return float(score), role, title
+
+    def _pick_best(eligible_ids):
         best_sid = None
         best_score = None
-        for sid in remaining:
-            redundancy = 0.0
-            if selected_tokens:
-                redundancy = max(_jaccard(token_cache.get(sid, set()), prev) for prev in selected_tokens)
-            score = float(base_scores.get(sid, 0.0)) - float(lambda_redundancy) * redundancy
-            if best_sid is None or score > best_score:
+        best_role = "answer"
+        best_title = ""
+        for sid in eligible_ids:
+            score, role, title = _select_score(sid)
+            if (
+                (best_sid is None)
+                or (score > best_score)
+                or (
+                    abs(score - best_score) <= 1.0e-12
+                    and retrieval_rank.get(sid, 10**9) < retrieval_rank.get(best_sid, 10**9)
+                )
+            ):
                 best_sid = sid
                 best_score = score
+                best_role = role
+                best_title = title
+        return best_sid, float(best_score or 0.0), best_role, best_title
+
+    def _accept(sid, score, role, title):
+        selected_ids.append(sid)
+        selected_tokens.append(token_cache.get(sid, set()))
+        score_at_pick[sid] = float(score)
+        selected_title_counts[title] = int(selected_title_counts.get(title, 0)) + 1
+        selected_role_counts[role] = int(selected_role_counts.get(role, 0)) + 1
+        if sid in remaining:
+            remaining.remove(sid)
+
+    if reserve_top_corridor:
+        corridor_rank_map = {}
+        for sid in candidate_ids:
+            feat = features.get(sid, {}) or {}
+            rank = int(feat.get("best_corridor_rank", 10**9) or 10**9)
+            for cid in feat.get("corridor_ids", []) or []:
+                corridor_rank_map[cid] = min(int(corridor_rank_map.get(cid, 10**9)), rank)
+        corridor_order = sorted(corridor_rank_map.keys(), key=lambda cid: corridor_rank_map.get(cid, 10**9))
+        quota_corridors = int(top_corridors) if (top_corridors is not None and int(top_corridors) > 0) else len(corridor_order)
+        for cid in corridor_order[:quota_corridors]:
+            if len(selected_ids) >= max_n:
+                break
+            eligible = [sid for sid in remaining if cid in (features.get(sid, {}) or {}).get("corridor_ids", [])]
+            if not eligible:
+                continue
+            sid, score, role, title = _pick_best(eligible)
+            if sid is None:
+                continue
+            _accept(sid, score, role, title)
+
+    while remaining and len(selected_ids) < max_n:
+        best_sid, best_score, best_role, best_title = _pick_best(remaining)
         if best_sid is None:
             break
-        selected_ids.append(best_sid)
-        selected_tokens.append(token_cache.get(best_sid, set()))
-        score_at_pick[best_sid] = float(best_score or 0.0)
-        remaining = [x for x in remaining if x != best_sid]
+        _accept(best_sid, best_score, best_role, best_title)
 
-    strategy = str(order_strategy or "score").strip().lower()
+    strategy, strategy_flags, top_slice_topk, support_pin_min = _parse_order_strategy_flags(
+        order_strategy=order_strategy,
+        retrieval_result=retrieval_result,
+    )
     if strategy == "retrieval":
         selected_ids = sorted(selected_ids, key=lambda sid: retrieval_rank.get(sid, 10**9))
     elif strategy == "corridor_rank":
@@ -1328,6 +1506,17 @@ def render_corridor_aware_flat_context(
             selected_ids,
             key=lambda sid: (
                 int(features.get(sid, {}).get("best_corridor_rank", 10**9)),
+                -float(score_at_pick.get(sid, base_scores.get(sid, 0.0))),
+                retrieval_rank.get(sid, 10**9),
+            ),
+        )
+    elif strategy in {"query_bridge_answer", "qba"}:
+        role_priority = {"query": 0, "bridge": 1, "answer": 2}
+        selected_ids = sorted(
+            selected_ids,
+            key=lambda sid: (
+                int((features.get(sid, {}) or {}).get("best_corridor_rank", 10**9) or 10**9),
+                int(role_priority.get(_feature_role(features.get(sid, {}) or {}, query_overlap_threshold=1.0), 3)),
                 -float(score_at_pick.get(sid, base_scores.get(sid, 0.0))),
                 retrieval_rank.get(sid, 10**9),
             ),
@@ -1340,6 +1529,39 @@ def render_corridor_aware_flat_context(
                 -retrieval_rank.get(sid, 10**9),
             ),
             reverse=True,
+        )
+
+    top_slice_diag = {"applied": False, "head_size": 0, "reordered": 0}
+    if "top_slice_reorder" in strategy_flags:
+        selected_ids, top_slice_diag = _apply_top_slice_reorder(
+            selected_ids=selected_ids,
+            features=features,
+            score_at_pick=score_at_pick,
+            base_scores=base_scores,
+            retrieval_rank=retrieval_rank,
+            topk=top_slice_topk,
+        )
+
+    support_pin_diag = {"applied": False, "added": 0, "replaced": 0, "target": int(max(0, support_pin_min))}
+    if "answer_support_pin" in strategy_flags:
+        selected_ids, support_pin_diag = _apply_answer_support_pinning(
+            selected_ids=selected_ids,
+            candidate_ids=candidate_ids,
+            features=features,
+            score_at_pick=score_at_pick,
+            base_scores=base_scores,
+            retrieval_rank=retrieval_rank,
+            min_support=support_pin_min,
+        )
+
+    oracle_injection_diag = {"applied": False, "injected": 0}
+    if "oracle_support" in strategy_flags:
+        selected_ids, oracle_injection_diag = _apply_oracle_support_injection(
+            selected_ids=selected_ids,
+            candidate_text_map=candidate_text_map,
+            sample=sample,
+            retrieval_result=retrieval_result,
+            max_n=max_n,
         )
 
     lines = []
@@ -1369,6 +1591,19 @@ def render_corridor_aware_flat_context(
         truncated_corridor_count=truncated_corridors,
         truncated_sentence_count=truncated_sentences,
         retrieval_selected_sentence_ids=list(retrieval_result.selected_sentence_ids or []),
+        metadata={
+            "selected_unit_type": _selected_unit_type(retrieval_result),
+            "final_order_strategy": str(strategy),
+            "strategy_flags": sorted(list(strategy_flags)),
+            "top_slice_reorder_applied": bool(top_slice_diag.get("applied", False)),
+            "top_slice_reorder_head_size": int(top_slice_diag.get("head_size", 0)),
+            "top_slice_reorder_reordered": int(top_slice_diag.get("reordered", 0)),
+            "answer_support_pinning_applied": bool(support_pin_diag.get("applied", False)),
+            "answer_support_pinning_target": int(support_pin_diag.get("target", 0)),
+            "answer_support_pinning_added": int(support_pin_diag.get("added", 0)),
+            "oracle_support_injection_applied": bool(oracle_injection_diag.get("applied", False)),
+            "oracle_support_injected": int(oracle_injection_diag.get("injected", 0)),
+        },
     )
 
 
@@ -1390,7 +1625,6 @@ def render_context(
     chunk_excerpt_dedup_enabled=True,
     chunk_grounding_top_corridor_chunks=2,
     chunk_grounding_top_k_packages=4,
-    max_excerpt_sentences_per_package=2,
     package_score_answer_weight=0.50,
     package_score_bridge_weight=0.20,
     package_score_support_weight=0.15,
@@ -1449,29 +1683,18 @@ def render_context(
         rendered = render_flat_context(sample, retrieval_result, max_context_sentences=max_context_sentences)
 
     if _retrieval_graph_mode(retrieval_result) == "entity_chunk_graph":
-        if not bool(chunk_grounding_enabled):
-            meta = dict(rendered.metadata or {})
-            meta.update({
-                "chunk_grounding_enabled": False,
-                "chunk_grounding_skipped": True,
-                "chunk_grounding_skip_reason": "entity_chunk_graph_chunk_package_disabled",
-            })
-            rendered.metadata = meta
-            return rendered
-        if str(chunk_grounding_mode or "").strip().lower() != "package_score":
-            meta = dict(rendered.metadata or {})
-            meta.update({
-                "chunk_grounding_enabled": False,
-                "chunk_grounding_skipped": True,
-                "chunk_grounding_skip_reason": "entity_chunk_graph_only_supports_package_score",
-            })
-            rendered.metadata = meta
-            return rendered
+        meta = dict(rendered.metadata or {})
+        meta.update({
+            "chunk_grounding_enabled": False,
+            "native_chunk_context": bool(_selected_unit_type(retrieval_result) == "chunk"),
+        })
+        rendered.metadata = meta
+        return _attach_stagewise_render_diagnostics(sample=sample, retrieval_result=retrieval_result, rendered=rendered)
 
     if not bool(chunk_grounding_enabled):
-        return rendered
+        return _attach_stagewise_render_diagnostics(sample=sample, retrieval_result=retrieval_result, rendered=rendered)
 
-    return _apply_chunk_grounding(
+    rendered = _apply_chunk_grounding(
         sample=sample,
         retrieval_result=retrieval_result,
         rendered=rendered,
@@ -1484,10 +1707,10 @@ def render_context(
         chunk_excerpt_dedup_enabled=chunk_excerpt_dedup_enabled,
         chunk_grounding_top_corridor_chunks=chunk_grounding_top_corridor_chunks,
         chunk_grounding_top_k_packages=chunk_grounding_top_k_packages,
-        max_excerpt_sentences_per_package=max_excerpt_sentences_per_package,
         package_score_answer_weight=package_score_answer_weight,
         package_score_bridge_weight=package_score_bridge_weight,
         package_score_support_weight=package_score_support_weight,
         package_score_chunk_grounding_weight=package_score_chunk_grounding_weight,
         package_score_redundancy_weight=package_score_redundancy_weight,
     )
+    return _attach_stagewise_render_diagnostics(sample=sample, retrieval_result=retrieval_result, rendered=rendered)

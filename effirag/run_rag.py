@@ -13,7 +13,8 @@ from .eval.evaluator import QAEvaluator, extract_gold_answers
 from .efficiency import Timer, gpu_peak_mb, process_rss_mb, reset_gpu_peak
 from .metrics import (
     DEFAULT_RECALL_KS,
-    supporting_fact_ids,
+    build_support_fact_debug_payload,
+    supporting_fact_match_details,
     supporting_fact_precision,
     supporting_fact_recall,
     supporting_fact_recall_at_ks,
@@ -772,6 +773,11 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--phase2-refine-mode", type=str, default=None)
     parser.add_argument("--phase2-bidirectional-full-ppr", type=str, default=None)
     parser.add_argument("--reuse-semantic-scores-in-final", type=str, default=None)
+    parser.add_argument("--final-top-slice-reorder-enabled", type=str, default=None)
+    parser.add_argument("--final-top-slice-reorder-topk", type=int, default=None)
+    parser.add_argument("--answer-support-pinning-enabled", type=str, default=None)
+    parser.add_argument("--answer-support-pinning-min", type=int, default=None)
+    parser.add_argument("--oracle-support-injection-enabled", type=str, default=None)
     parser.add_argument("--trim-on", type=str, default=None)
     parser.add_argument("--trim-rho", type=float, default=None)
 
@@ -825,6 +831,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--profile-limit", type=int, default=None)
     parser.add_argument("--profile-query-indices", type=str, default=None)
     parser.add_argument("--retrieval-only", type=str, default=None)
+    parser.add_argument("--sf-debug-sample-limit", type=int, default=None)
+    parser.add_argument("--sf-debug-output", type=str, default=None)
 
     parser.add_argument("--random-seed", type=int, default=None)
     parser.add_argument("--ppr-alpha", type=float, default=None)
@@ -877,6 +885,9 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
     out_dir.mkdir(parents=True, exist_ok=True)
     query_path = out_dir / "rag_query_results.jsonl"
     summary_path = out_dir / "rag_summary.json"
+    sf_debug_rows = []
+    sf_debug_limit = max(0, int(getattr(cfg, "sf_debug_sample_limit", 0) or 0))
+    sf_debug_enabled = bool(sf_debug_limit > 0)
     # Stream per-sample outputs so progress is inspectable even before the run ends.
     query_path.write_text("", encoding="utf-8")
     render_mode_requested = str(cfg.render_mode or "").strip()
@@ -935,11 +946,7 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                 elif delivery_mode == "chunk_package_grounded_support":
                     eff_chunk_grounding_mode = "package_score"
             elif retrieval_graph_mode == "entity_chunk_graph":
-                if delivery_mode in {"chunk_package_basic", "chunk_package_grounded_support"}:
-                    eff_chunk_grounding_enabled = True
-                    eff_chunk_grounding_mode = "package_score"
-                else:
-                    eff_chunk_grounding_enabled = False
+                eff_chunk_grounding_enabled = False
 
             eff_chunk_top_packages = int(cfg.chunk_grounding_top_k_packages)
             if int(getattr(cfg, "max_chunk_packages", 0) or 0) > 0:
@@ -975,7 +982,6 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     chunk_excerpt_dedup_enabled=cfg.chunk_excerpt_dedup_enabled,
                     chunk_grounding_top_corridor_chunks=cfg.chunk_grounding_top_corridor_chunks,
                     chunk_grounding_top_k_packages=eff_chunk_top_packages,
-                    max_excerpt_sentences_per_package=cfg.max_excerpt_sentences_per_package,
                     package_score_answer_weight=cfg.package_score_answer_weight,
                     package_score_bridge_weight=cfg.package_score_bridge_weight,
                     package_score_support_weight=eff_package_support_weight,
@@ -1045,10 +1051,16 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             recall = supporting_fact_recall(sample, retrieval)
             precision = supporting_fact_precision(sample, retrieval)
             recall_at_k = supporting_fact_recall_at_ks(sample, retrieval, ks=DEFAULT_RECALL_KS)
-            gold_ids = supporting_fact_ids(sample, retrieval)
-            rendered_ids = set(rendered.sentence_ids)
-            rendered_recall = float(len(gold_ids.intersection(rendered_ids)) / len(gold_ids)) if gold_ids else 0.0
-            rendered_precision = float(len(gold_ids.intersection(rendered_ids)) / len(rendered_ids)) if rendered_ids else 0.0
+            rendered_match = supporting_fact_match_details(
+                sample=sample,
+                unit_ids=list(rendered.sentence_ids or []),
+                unit_texts=list(rendered.sentences or []),
+                graph_mode=retrieval_graph_mode,
+            )
+            rendered_gold_total = int(rendered_match.get("gold_total", 0))
+            rendered_pred_total = int(rendered_match.get("predicted_unit_total", 0))
+            rendered_recall = float(rendered_match.get("matched_gold_total", 0)) / float(rendered_gold_total) if rendered_gold_total > 0 else 0.0
+            rendered_precision = float(rendered_match.get("matched_unit_total", 0)) / float(rendered_pred_total) if rendered_pred_total > 0 else 0.0
 
             efficiency = {
                 "retrieval_latency_ms": retrieval.latency_ms,
@@ -1109,6 +1121,8 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     "chunk_excerpt_avg_len": float(chunk_excerpt_avg_len),
                     "evidence_package_count": int(evidence_package_count),
                     "chunk_excerpt_truncated_count": int(chunk_excerpt_truncated_count),
+                    "oracle_support_injection_applied": bool(rendered_meta.get("oracle_support_injection_applied", False)),
+                    "oracle_support_injected": int(_safe_int(rendered_meta.get("oracle_support_injected", 0), 0)),
                 },
                 "generation_diagnostics": {
                     "prompt_tokens": prompt_tokens,
@@ -1124,11 +1138,20 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     "chunk_excerpt_truncated_count": int(chunk_excerpt_truncated_count),
                 },
                 "retrieval_source": retrieval_source,
+                "oracle_support_injection_enabled": bool(getattr(cfg, "oracle_support_injection_enabled", False)),
                 "generation": asdict(generation) if generation else None,
                 "run_timestamp": run_stamp,
             }
             rows.append(row)
             append_jsonl(query_path, row)
+            if sf_debug_enabled and len(sf_debug_rows) < sf_debug_limit:
+                sf_debug_rows.append(
+                    build_support_fact_debug_payload(
+                        sample=sample,
+                        retrieval=retrieval,
+                        rendered=rendered,
+                    )
+                )
             if bool(getattr(cfg, "profile_stages", False)):
                 profile_rows.append(_build_profile_record(row=row, retrieval_only=bool(getattr(cfg, "retrieval_only", False))))
     finally:
@@ -1145,6 +1168,8 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         "run_qa": bool(run_qa_enabled),
         "run_qa_requested": bool(getattr(cfg, "run_qa", True)),
         "retrieval_only": bool(getattr(cfg, "retrieval_only", False)),
+        "oracle_support_injection_enabled": bool(getattr(cfg, "oracle_support_injection_enabled", False)),
+        "oracle_mode": "oracle_upper_bound" if bool(getattr(cfg, "oracle_support_injection_enabled", False)) else "non_oracle",
         "qa_executed_samples": float(sum(1 for r in rows if r.get("qa_executed"))),
         "qa_skipped_samples": float(sum(1 for r in rows if not r.get("qa_executed"))),
         "render_mode_requested": render_mode_requested or "(auto)",
@@ -1154,6 +1179,14 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         "fallback_count": int(fallback_count),
         "fallback_rate": mean_or_zero(
             [1.0 if r.get("generation_fallback", False) else 0.0 for r in rows if r.get("qa_executed", False)]
+        ),
+        "oracle_support_injection_applied_rate": mean_or_zero(
+            [
+                1.0
+                if bool((r.get("rendering", {}) or {}).get("oracle_support_injection_applied", False))
+                else 0.0
+                for r in rows
+            ]
         ),
         "supporting_fact_recall": mean_or_zero([r["metrics"]["supporting_fact_recall"] for r in rows]),
         "supporting_fact_precision": mean_or_zero([r["metrics"]["supporting_fact_precision"] for r in rows]),
@@ -1399,6 +1432,13 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         summary["gpu_peak_mb"] = mean_or_zero([r["efficiency"].get("gpu_peak_mb", 0.0) for r in rows])
     if cfg.measure_cpu_ram:
         summary["cpu_ram_peak_mb"] = mean_or_zero([r["efficiency"].get("cpu_ram_peak_mb", 0.0) for r in rows])
+
+    if sf_debug_enabled and sf_debug_rows:
+        raw_debug_path = str(getattr(cfg, "sf_debug_output", "") or "").strip()
+        debug_path = Path(raw_debug_path) if raw_debug_path else (out_dir / "supporting_fact_debug.jsonl")
+        write_jsonl(debug_path, sf_debug_rows)
+        summary["supporting_fact_debug_path"] = str(debug_path.resolve())
+        summary["supporting_fact_debug_samples"] = int(len(sf_debug_rows))
 
     write_json(summary_path, summary)
 

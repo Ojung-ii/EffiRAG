@@ -25,6 +25,7 @@ except Exception:  # pragma: no cover
         return iterable
 
 SENT_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+PARAGRAPH_SPLIT_RE = re.compile(r"\n\s*\n+")
 CODE_FENCE_RE = re.compile(r"```(?:json)?(.*?)```", re.IGNORECASE | re.DOTALL)
 SEMANTIC_TEXT_CONSTRUCTION_VERSION = "entity_alias_context_v1__chunk_title_passage_v1"
 SEMANTIC_NORMALIZATION_VERSION = "l2_unit_norm"
@@ -187,6 +188,73 @@ def _split_sentences(text):
         return []
     parts = [p.strip() for p in SENT_SPLIT_RE.split(text) if p.strip()]
     return parts or [text]
+
+
+def _split_passage_chunks(
+    text,
+    strategy="sentence_window",
+    size_sentences=3,
+    stride_sentences=2,
+    min_sentences=2,
+    max_chars=900,
+):
+    text = str(text or "").strip()
+    if not text:
+        return []
+
+    size_sentences = max(1, int(size_sentences))
+    stride_sentences = max(1, int(stride_sentences))
+    min_sentences = max(1, int(min_sentences))
+    max_chars = max(0, int(max_chars))
+    strategy = str(strategy or "sentence_window").strip().lower()
+
+    paragraphs = [p.strip() for p in PARAGRAPH_SPLIT_RE.split(text) if p.strip()]
+    if not paragraphs:
+        paragraphs = [text]
+
+    sentence_groups = []
+    if strategy == "paragraph_then_sentence_window":
+        for para in paragraphs:
+            sents = _split_sentences(para)
+            if sents:
+                sentence_groups.append(sents)
+    else:
+        sentence_groups = [_split_sentences(text)]
+
+    chunks = []
+    for group in sentence_groups:
+        if not group:
+            continue
+        if len(group) <= size_sentences:
+            chunk_text = " ".join(group).strip()
+            if chunk_text:
+                chunks.append(chunk_text if max_chars <= 0 else chunk_text[:max_chars].strip())
+            continue
+
+        start = 0
+        while start < len(group):
+            end = min(len(group), start + size_sentences)
+            window = group[start:end]
+            if len(window) < min_sentences and chunks:
+                break
+            chunk_text = " ".join(window).strip()
+            if max_chars > 0 and len(chunk_text) > max_chars:
+                chunk_text = chunk_text[:max_chars].rstrip()
+            if chunk_text:
+                chunks.append(chunk_text)
+            if end >= len(group):
+                break
+            start += stride_sentences
+
+    dedup = []
+    seen = set()
+    for chunk in chunks:
+        norm = " ".join(chunk.split())
+        if not norm or norm in seen:
+            continue
+        seen.add(norm)
+        dedup.append(norm)
+    return dedup or [text[:max_chars].strip() if max_chars > 0 else text]
 
 
 def _normalize_corpus_rows(data):
@@ -750,6 +818,11 @@ def build_corpus_graph(
     openie_log_every=200,
     openie_sentence_cache_path="",
     index_chunk_unit="sentence",
+    passage_chunking_strategy="sentence_window",
+    passage_chunk_size_sentences=3,
+    passage_chunk_stride_sentences=2,
+    passage_chunk_min_sentences=2,
+    passage_chunk_max_chars=900,
     show_progress=True,
 ):
     g = nx.Graph()
@@ -836,6 +909,11 @@ def build_corpus_graph(
             )
             if openie_api_base_url:
                 _log(f"[Index/OpenIE] endpoint={openie_api_base_url}")
+            elif openie_backend == "hf_local":
+                _log(
+                    "[Index/OpenIE] note: using local HF generation. "
+                    "For large corpora this can be very slow; pass --openie-api-base-url to use vLLM/OpenAI-compatible serving."
+                )
 
     openie_records = []
     if use_chunk_layer:
@@ -850,46 +928,56 @@ def build_corpus_graph(
             doc_idx = int(row["idx"])
             title = str(row["title"])
             text = str(row.get("text", "") or "").strip()
-            chunk_node = f"c::{doc_idx}"
-            chunk_id = f"chunk::{title}::0"
-            g.add_node(
-                chunk_node,
-                node_type="chunk",
-                chunk_id=chunk_id,
-                title=title,
-                chunk_idx=0,
+            chunk_texts = _split_passage_chunks(
                 text=text,
-                doc_idx=doc_idx,
+                strategy=passage_chunking_strategy,
+                size_sentences=passage_chunk_size_sentences,
+                stride_sentences=passage_chunk_stride_sentences,
+                min_sentences=passage_chunk_min_sentences,
+                max_chars=passage_chunk_max_chars,
             )
-            doc_chunk_nodes[doc_idx] = chunk_node
-            num_chunks += 1
+            doc_chunk_nodes[doc_idx] = []
+            for chunk_idx, chunk_text in enumerate(chunk_texts):
+                chunk_node = f"c::{doc_idx}:{chunk_idx}"
+                chunk_id = f"chunk::{title}::{chunk_idx}"
+                g.add_node(
+                    chunk_node,
+                    node_type="chunk",
+                    chunk_id=chunk_id,
+                    title=title,
+                    chunk_idx=int(chunk_idx),
+                    text=str(chunk_text),
+                    doc_idx=doc_idx,
+                )
+                doc_chunk_nodes[doc_idx].append(chunk_node)
+                num_chunks += 1
 
-            if not build_sentence_layer:
-                for tok in content_tokens(text):
-                    entity_node = _ensure_entity_node(g, tok)
-                    if entity_node is None:
-                        continue
-                    if g.has_edge(chunk_node, entity_node):
-                        g[chunk_node][entity_node]["support_layer"] = "entity_chunk"
-                    else:
-                        g.add_edge(
-                            chunk_node,
-                            entity_node,
-                            edge_type="entity_chunk_support",
-                            support_layer="entity_chunk",
+                if not build_sentence_layer:
+                    for tok in content_tokens(chunk_text):
+                        entity_node = _ensure_entity_node(g, tok)
+                        if entity_node is None:
+                            continue
+                        if g.has_edge(chunk_node, entity_node):
+                            g[chunk_node][entity_node]["support_layer"] = "entity_chunk"
+                        else:
+                            g.add_edge(
+                                chunk_node,
+                                entity_node,
+                                edge_type="entity_chunk_support",
+                                support_layer="entity_chunk",
+                            )
+
+                    if effective_openie_mode == "llm" and extractor is not None:
+                        openie_records.append(
+                            {
+                                "doc_idx": int(doc_idx),
+                                "item_idx": int(chunk_idx),
+                                "source_id": str(chunk_id),
+                                "source_node": str(chunk_node),
+                                "source_unit": "passage",
+                                "text": str(chunk_text),
+                            }
                         )
-
-                if effective_openie_mode == "llm" and extractor is not None:
-                    openie_records.append(
-                        {
-                            "doc_idx": int(doc_idx),
-                            "item_idx": 0,
-                            "source_id": str(chunk_id),
-                            "source_node": str(chunk_node),
-                            "source_unit": "passage",
-                            "text": str(text),
-                        }
-                    )
 
     if build_sentence_layer:
         total_sentences_expected = None
@@ -910,7 +998,8 @@ def build_corpus_graph(
         ):
             doc_idx = int(row["idx"])
             title = str(row["title"])
-            chunk_node = doc_chunk_nodes.get(doc_idx)
+            chunk_candidates = list(doc_chunk_nodes.get(doc_idx, []) or [])
+            chunk_node = chunk_candidates[0] if chunk_candidates else None
             node = f"s::{doc_idx}:{sent_idx}"
             sentence_id = f"{title}::{sent_idx}"
             g.add_node(
@@ -924,13 +1013,19 @@ def build_corpus_graph(
             )
             num_sentences += 1
 
-            if chunk_node is not None and chunk_node in g and not g.has_edge(chunk_node, node):
-                g.add_edge(
-                    chunk_node,
-                    node,
-                    edge_type="chunk_contains_sentence",
-                    containment=True,
-                )
+            for chunk_node in chunk_candidates:
+                if chunk_node is None or chunk_node not in g:
+                    continue
+                chunk_text = str(g.nodes[chunk_node].get("text", "") or "")
+                if sent and sent not in chunk_text:
+                    continue
+                if not g.has_edge(chunk_node, node):
+                    g.add_edge(
+                        chunk_node,
+                        node,
+                        edge_type="chunk_contains_sentence",
+                        containment=True,
+                    )
 
             for tok in content_tokens(sent):
                 entity_node = _ensure_entity_node(g, tok)
@@ -1169,6 +1264,11 @@ def build_corpus_graph(
         "openie_backend_effective": openie_backend,
         "graph_mode": str(graph_mode),
         "index_chunk_unit": str(chunk_unit),
+        "passage_chunking_strategy": str(passage_chunking_strategy),
+        "passage_chunk_size_sentences": int(passage_chunk_size_sentences),
+        "passage_chunk_stride_sentences": int(passage_chunk_stride_sentences),
+        "passage_chunk_min_sentences": int(passage_chunk_min_sentences),
+        "passage_chunk_max_chars": int(passage_chunk_max_chars),
         "openie_record_unit": str(text_unit),
         "build_sentence_layer": bool(build_sentence_layer),
         "openie_model_name": str(openie_model_name or ""),
@@ -2504,6 +2604,11 @@ def load_or_build_global_index(
             openie_retry_backoff_sec=build_config["openie_retry_backoff_sec"],
             openie_error_sample_limit=build_config["openie_error_sample_limit"],
             openie_sentence_cache_path=str(openie_sentence_cache_path),
+            passage_chunking_strategy=build_config.get("passage_chunking_strategy", "sentence_window"),
+            passage_chunk_size_sentences=build_config.get("passage_chunk_size_sentences", 3),
+            passage_chunk_stride_sentences=build_config.get("passage_chunk_stride_sentences", 2),
+            passage_chunk_min_sentences=build_config.get("passage_chunk_min_sentences", 2),
+            passage_chunk_max_chars=build_config.get("passage_chunk_max_chars", 900),
             show_progress=show_progress,
         )
         stats = dict(stats or {})

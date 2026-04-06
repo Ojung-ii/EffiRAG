@@ -513,3 +513,20 @@ Implemented CLI parameters:
 - `retrieval.py` does not depend on `generator.py`.
 - `generator.py` consumes rendered text and does not know retrieval internals.
 - `naive_graphrag` returns the same `RetrievalResult` schema as `effirag`.
+
+## Entity-first chunk-grounded recommendation
+
+For the current entity-chunk branch, the recommended strategy is:
+
+- keep **search/diffusion entity-centric** (`graph_mode=entity_chunk_graph`, `chunk_node_enabled_in_diffusion=false`)
+- use **mid-sized passage chunks** built by sliding sentence windows (`passage_chunk_size_sentences=3`, `passage_chunk_stride_sentences=2`)
+- use chunks for **proposal grounding and final context delivery**, not as the primary diffusion frontier
+- keep stable Phase1 selection enabled (`samples_per_anchor>=2`, `phase1_run_preshortlist_topm>=2`, `phase1_full_run_score_topk>=2`)
+
+Canonical configs are provided under `configs/canonical/`.
+
+You can audit config naming / strategy drift with:
+
+```bash
+python -m effirag.config_audit configs
+```
