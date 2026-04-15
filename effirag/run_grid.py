@@ -38,6 +38,32 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--openie-model-name", type=str, default="Qwen/Qwen2.5-7B-Instruct")
     parser.add_argument("--openie-text-max-chars", type=int, default=2200)
     parser.add_argument("--openie-max-new-tokens", type=int, default=256)
+    parser.add_argument("--openie-api-base-url", type=str, default="")
+    parser.add_argument("--openie-api-key", type=str, default="")
+    parser.add_argument("--openie-api-timeout-sec", type=float, default=120.0)
+    parser.add_argument("--openie-parallel-workers", type=int, default=4)
+    parser.add_argument("--openie-log-every", type=int, default=200)
+    parser.add_argument("--embedding-enabled", type=str, default="false")
+    parser.add_argument("--embedding-model-name", type=str, default="nvidia/NV-Embed-v2")
+    parser.add_argument("--embedding-weight", type=float, default=0.35)
+    parser.add_argument("--embedding-rerank-topn", type=int, default=80)
+    parser.add_argument("--embedding-batch-size", type=int, default=16)
+    parser.add_argument("--embedding-max-length", type=int, default=192)
+    parser.add_argument("--embedding-text-max-chars", type=int, default=600)
+    parser.add_argument("--semantic-topn-entity", type=int, default=30)
+    parser.add_argument("--semantic-topn-chunk", type=int, default=15)
+    parser.add_argument("--graph-reserve-topn", type=int, default=15)
+    parser.add_argument("--semantic-topn", type=int, default=50)
+    parser.add_argument("--semantic-candidate-union", type=str, default="true")
+    parser.add_argument("--semantic-scan-batch-size", type=int, default=8192)
+    parser.add_argument("--run-score-semantic-weight", type=float, default=0.30)
+    parser.add_argument("--run-score-anchor-weight", type=float, default=0.20)
+    parser.add_argument("--run-score-structure-weight", type=float, default=0.25)
+    parser.add_argument("--run-score-bridge-weight", type=float, default=0.15)
+    parser.add_argument("--run-score-redundancy-weight", type=float, default=0.10)
+    parser.add_argument("--seed-score-semantic-weight", type=float, default=0.35)
+    parser.add_argument("--seed-score-graph-weight", type=float, default=0.45)
+    parser.add_argument("--seed-score-anchor-weight", type=float, default=0.20)
 
     parser.add_argument("--grid-method", type=str, default="effirag", choices=["effirag", "naive_graphrag"])
     parser.add_argument("--include-naive-baseline", type=str, default="true")
@@ -46,6 +72,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-qa", type=str, default="true")
     parser.add_argument("--generators", type=str, default="heuristic,hf")
     parser.add_argument("--hf-model", type=str, default="Qwen/Qwen3.5-2B")
+    parser.add_argument("--llm-base-url", type=str, default="")
+    parser.add_argument("--llm-api-key", type=str, default="")
+    parser.add_argument("--llm-timeout-sec", type=float, default=120.0)
+    parser.add_argument("--llm-max-new-tokens", type=int, default=64)
 
     parser.add_argument("--num-workers", type=int, default=1)
     parser.add_argument("--rag-workers", type=int, default=1)
@@ -53,8 +83,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--rag-topk-profiles", type=int, default=0)
     parser.add_argument("--rag-topk-metric", type=str, default="sf_recall", choices=["sf_recall", "sf_precision"])
 
-    parser.add_argument("--samples-per-anchor-grid", type=str, default="8")
-    parser.add_argument("--max-anchors-grid", type=str, default="4")
+    parser.add_argument("--samples-per-anchor-grid", type=str, default="3")
+    parser.add_argument("--max-anchors-grid", type=str, default="5")
     parser.add_argument("--candidate-top-t-grid", type=str, default="20")
     parser.add_argument("--seed-k-grid", type=str, default="4")
     parser.add_argument("--pair-top-lp-grid", type=str, default="4")
@@ -64,6 +94,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-context-sentences-grid", type=str, default="15")
 
     parser.add_argument("--trim-on", type=str, default="true")
+    parser.add_argument("--phase1-parallel-ppr", type=str, default="true")
+    parser.add_argument("--phase1-run-shortlist-topk", type=int, default=2)
+    parser.add_argument("--pair-shortlist-topb", type=int, default=6)
+    parser.add_argument("--phase2-refine-mode", type=str, default="bounded_local")
+    parser.add_argument("--phase2-bidirectional-full-ppr", type=str, default="false")
+    parser.add_argument("--reuse-semantic-scores-in-final", type=str, default="true")
     parser.add_argument("--ppr-alpha", type=float, default=0.15)
     parser.add_argument("--edge-drop-prob", type=float, default=0.1)
     parser.add_argument("--random-seed", type=int, default=42)
@@ -159,6 +195,7 @@ def _retrieval_cfg(args, base_dir: Path, method: str, profile: dict) -> Retrieva
         limit=args.retrieval_limit,
         method=method,
         output_dir=str(base_dir / "retrieval" / method / profile["profile"]),
+        timestamp_output=False,
         global_corpus_path=args.global_corpus_path,
         graph_cache_dir=args.graph_cache_dir,
         force_rebuild_graph_index=parse_bool(args.force_rebuild_graph_index),
@@ -166,6 +203,32 @@ def _retrieval_cfg(args, base_dir: Path, method: str, profile: dict) -> Retrieva
         openie_model_name=args.openie_model_name,
         openie_text_max_chars=args.openie_text_max_chars,
         openie_max_new_tokens=args.openie_max_new_tokens,
+        openie_api_base_url=args.openie_api_base_url,
+        openie_api_key=args.openie_api_key,
+        openie_api_timeout_sec=args.openie_api_timeout_sec,
+        openie_parallel_workers=args.openie_parallel_workers,
+        openie_log_every=args.openie_log_every,
+        embedding_enabled=parse_bool(args.embedding_enabled),
+        embedding_model_name=args.embedding_model_name,
+        embedding_weight=args.embedding_weight,
+        embedding_rerank_topn=args.embedding_rerank_topn,
+        embedding_batch_size=args.embedding_batch_size,
+        embedding_max_length=args.embedding_max_length,
+        embedding_text_max_chars=args.embedding_text_max_chars,
+        semantic_topn_entity=args.semantic_topn_entity,
+        semantic_topn_chunk=args.semantic_topn_chunk,
+        graph_reserve_topn=args.graph_reserve_topn,
+        semantic_topn=args.semantic_topn,
+        semantic_candidate_union=parse_bool(args.semantic_candidate_union),
+        semantic_scan_batch_size=args.semantic_scan_batch_size,
+        run_score_semantic_weight=args.run_score_semantic_weight,
+        run_score_anchor_weight=args.run_score_anchor_weight,
+        run_score_structure_weight=args.run_score_structure_weight,
+        run_score_bridge_weight=args.run_score_bridge_weight,
+        run_score_redundancy_weight=args.run_score_redundancy_weight,
+        seed_score_semantic_weight=args.seed_score_semantic_weight,
+        seed_score_graph_weight=args.seed_score_graph_weight,
+        seed_score_anchor_weight=args.seed_score_anchor_weight,
         max_anchors=profile["max_anchors"],
         samples_per_anchor=profile["samples_per_anchor"],
         num_workers=args.num_workers,
@@ -173,6 +236,12 @@ def _retrieval_cfg(args, base_dir: Path, method: str, profile: dict) -> Retrieva
         seed_k=profile["seed_k"],
         pair_top_lp=profile["pair_top_lp"],
         corridor_top_bc=profile["corridor_top_bc"],
+        phase1_parallel_ppr=parse_bool(args.phase1_parallel_ppr),
+        phase1_run_shortlist_topk=args.phase1_run_shortlist_topk,
+        pair_shortlist_topb=args.pair_shortlist_topb,
+        phase2_refine_mode=args.phase2_refine_mode,
+        phase2_bidirectional_full_ppr=parse_bool(args.phase2_bidirectional_full_ppr),
+        reuse_semantic_scores_in_final=parse_bool(args.reuse_semantic_scores_in_final),
         trim_on=parse_bool(args.trim_on),
         trim_rho=profile["trim_rho"],
         ppr_alpha=args.ppr_alpha,
@@ -183,7 +252,7 @@ def _retrieval_cfg(args, base_dir: Path, method: str, profile: dict) -> Retrieva
 
 
 def _rag_cfg(args, base_dir: Path, method: str, generator: str, profile: dict) -> RagConfig:
-    model_name = args.hf_model if generator == "hf" else ""
+    model_name = args.hf_model if generator in {"hf", "openai_compat", "vllm"} else ""
     return RagConfig(
         dataset=args.dataset,
         data_path=args.data_path,
@@ -191,6 +260,7 @@ def _rag_cfg(args, base_dir: Path, method: str, generator: str, profile: dict) -
         limit=args.rag_limit,
         method=method,
         output_dir=str(base_dir / "rag" / generator / method / profile["profile"]),
+        timestamp_output=False,
         global_corpus_path=args.global_corpus_path,
         graph_cache_dir=args.graph_cache_dir,
         force_rebuild_graph_index=parse_bool(args.force_rebuild_graph_index),
@@ -198,6 +268,32 @@ def _rag_cfg(args, base_dir: Path, method: str, generator: str, profile: dict) -
         openie_model_name=args.openie_model_name,
         openie_text_max_chars=args.openie_text_max_chars,
         openie_max_new_tokens=args.openie_max_new_tokens,
+        openie_api_base_url=args.openie_api_base_url,
+        openie_api_key=args.openie_api_key,
+        openie_api_timeout_sec=args.openie_api_timeout_sec,
+        openie_parallel_workers=args.openie_parallel_workers,
+        openie_log_every=args.openie_log_every,
+        embedding_enabled=parse_bool(args.embedding_enabled),
+        embedding_model_name=args.embedding_model_name,
+        embedding_weight=args.embedding_weight,
+        embedding_rerank_topn=args.embedding_rerank_topn,
+        embedding_batch_size=args.embedding_batch_size,
+        embedding_max_length=args.embedding_max_length,
+        embedding_text_max_chars=args.embedding_text_max_chars,
+        semantic_topn_entity=args.semantic_topn_entity,
+        semantic_topn_chunk=args.semantic_topn_chunk,
+        graph_reserve_topn=args.graph_reserve_topn,
+        semantic_topn=args.semantic_topn,
+        semantic_candidate_union=parse_bool(args.semantic_candidate_union),
+        semantic_scan_batch_size=args.semantic_scan_batch_size,
+        run_score_semantic_weight=args.run_score_semantic_weight,
+        run_score_anchor_weight=args.run_score_anchor_weight,
+        run_score_structure_weight=args.run_score_structure_weight,
+        run_score_bridge_weight=args.run_score_bridge_weight,
+        run_score_redundancy_weight=args.run_score_redundancy_weight,
+        seed_score_semantic_weight=args.seed_score_semantic_weight,
+        seed_score_graph_weight=args.seed_score_graph_weight,
+        seed_score_anchor_weight=args.seed_score_anchor_weight,
         max_anchors=profile["max_anchors"],
         samples_per_anchor=profile["samples_per_anchor"],
         num_workers=args.num_workers,
@@ -205,6 +301,12 @@ def _rag_cfg(args, base_dir: Path, method: str, generator: str, profile: dict) -
         seed_k=profile["seed_k"],
         pair_top_lp=profile["pair_top_lp"],
         corridor_top_bc=profile["corridor_top_bc"],
+        phase1_parallel_ppr=parse_bool(args.phase1_parallel_ppr),
+        phase1_run_shortlist_topk=args.phase1_run_shortlist_topk,
+        pair_shortlist_topb=args.pair_shortlist_topb,
+        phase2_refine_mode=args.phase2_refine_mode,
+        phase2_bidirectional_full_ppr=parse_bool(args.phase2_bidirectional_full_ppr),
+        reuse_semantic_scores_in_final=parse_bool(args.reuse_semantic_scores_in_final),
         trim_on=parse_bool(args.trim_on),
         trim_rho=profile["trim_rho"],
         ppr_alpha=args.ppr_alpha,
@@ -214,6 +316,10 @@ def _rag_cfg(args, base_dir: Path, method: str, generator: str, profile: dict) -
         run_qa=parse_bool(args.run_qa),
         generator=generator,
         model_name=model_name,
+        llm_base_url=args.llm_base_url,
+        llm_api_key=args.llm_api_key,
+        llm_timeout_sec=args.llm_timeout_sec,
+        llm_max_new_tokens=args.llm_max_new_tokens,
         max_context_sentences=profile["max_context_sentences"],
         measure_gpu_peak=False,
         measure_cpu_ram=False,
@@ -323,7 +429,7 @@ def main() -> None:
     if not generators:
         raise ValueError("--generators cannot be empty.")
     for g in generators:
-        if g not in {"heuristic", "hf", "oracle"}:
+        if g not in {"heuristic", "hf", "oracle", "openai_compat", "vllm"}:
             raise ValueError(f"Unsupported generator: {g}")
     if args.rag_workers < 1:
         raise ValueError("--rag-workers must be >= 1.")

@@ -5,25 +5,25 @@
     {
       "dataset": "hotpotqa",
       "n_samples": 1000,
-      "source_path": "/home/ojungii/raptor/data/qa/hotpotqa.json",
+      "source_path": "data/qa/hotpotqa.json",
       "output_path": "data/qa/hotpotqa.json"
     },
     {
       "dataset": "musique",
       "n_samples": 1000,
-      "source_path": "/home/ojungii/raptor/data/qa/musique.json",
+      "source_path": "data/qa/musique.json",
       "output_path": "data/qa/musique.json"
     },
     {
       "dataset": "2wikimultihopqa",
       "n_samples": 1000,
-      "source_path": "/home/ojungii/raptor/data/qa/2wikimultihopqa.json",
+      "source_path": "data/qa/2wikimultihopqa.json",
       "output_path": "data/qa/2wikimultihopqa.json"
     },
     {
       "dataset": "popqa",
       "n_samples": 1000,
-      "source_path": "/home/ojungii/raptor/data/qa/popqa.json",
+      "source_path": "data/qa/popqa.json",
       "output_path": "data/qa/popqa.json"
     }
   ]

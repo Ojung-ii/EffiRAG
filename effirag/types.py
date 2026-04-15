@@ -55,6 +55,7 @@ class RenderedContext:
     truncated_corridor_count: int = 0
     truncated_sentence_count: int = 0
     retrieval_selected_sentence_ids: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -65,6 +66,7 @@ class GenerationResult:
     prediction: str
     raw_text: str
     latency_ms: float
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass

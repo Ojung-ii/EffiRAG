@@ -1,0 +1,1550 @@
+[
+  {
+    "config": "configs/ablation.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 3,
+    "phase1_run_preshortlist_topm": null,
+    "phase1_full_run_score_topk": null,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/canonical/rag_entity_first_chunk_grounded.yaml",
+    "graph_mode": "entity_chunk_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 3,
+    "phase1_run_preshortlist_topm": 2,
+    "phase1_full_run_score_topk": 2,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/canonical/retrieval_entity_first_chunk_grounded.yaml",
+    "graph_mode": "entity_chunk_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 3,
+    "phase1_run_preshortlist_topm": 2,
+    "phase1_full_run_score_topk": 2,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 3,
+    "phase1_run_preshortlist_topm": null,
+    "phase1_full_run_score_topk": null,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_bridge_seed_q1000_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_bridge_seed_q1000_bridge_seed_score_up.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_bridge_seed_q1000_bridge_seed_semantic_mild.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_bridge_seed_q1000_bridge_seed_semantic_mild2.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_chunk_grounded_q1000_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_chunk_grounded_q1000_corridor_lift_grounded.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_chunk_grounded_q1000_package_score_basic.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_chunk_grounded_q1000_sentence_backfill_window_wide.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_entity_chunk_graph_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 1,
+    "warnings": [
+      {
+        "field": "graph_mode",
+        "expected_from_filename": "entity_chunk_graph",
+        "actual_in_yaml": "current_entity_graph"
+      }
+    ]
+  },
+  {
+    "config": "configs/rag_exp_2wiki_entity_chunk_graph_current_best_fusion.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 1,
+    "warnings": [
+      {
+        "field": "graph_mode",
+        "expected_from_filename": "entity_chunk_graph",
+        "actual_in_yaml": "current_entity_graph"
+      }
+    ]
+  },
+  {
+    "config": "configs/rag_exp_2wiki_entity_chunk_graph_entity_chunk_mixed_diffusion_package_basic.yaml",
+    "graph_mode": "entity_chunk_graph",
+    "chunk_node_enabled_in_diffusion": true,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 3,
+    "warnings": [
+      {
+        "field": "samples_per_anchor",
+        "expected_from_strategy": ">=2 for stable run selection",
+        "actual_in_yaml": 1
+      },
+      {
+        "field": "phase1_run_preshortlist_topm",
+        "expected_from_strategy": ">=2 for stable run selection",
+        "actual_in_yaml": 1
+      },
+      {
+        "field": "phase1_full_run_score_topk",
+        "expected_from_strategy": ">=2 for stable run selection",
+        "actual_in_yaml": 1
+      }
+    ]
+  },
+  {
+    "config": "configs/rag_exp_2wiki_entity_chunk_graph_entity_seed_chunk_lift_package_basic.yaml",
+    "graph_mode": "entity_chunk_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 3,
+    "warnings": [
+      {
+        "field": "samples_per_anchor",
+        "expected_from_strategy": ">=2 for stable run selection",
+        "actual_in_yaml": 1
+      },
+      {
+        "field": "phase1_run_preshortlist_topm",
+        "expected_from_strategy": ">=2 for stable run selection",
+        "actual_in_yaml": 1
+      },
+      {
+        "field": "phase1_full_run_score_topk",
+        "expected_from_strategy": ">=2 for stable run selection",
+        "actual_in_yaml": 1
+      }
+    ]
+  },
+  {
+    "config": "configs/rag_exp_2wiki_fusion_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_fusion_bridge_seed_chunk_package_basic.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_fusion_chunk_backfill_window_wide.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_fusion_chunk_package_basic.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_fusion_top1corr_chunk_package_basic.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_semantic_bridge_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_semantic_bridge_bridge_run_score_up.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_semantic_bridge_bridge_seed_score_up.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_semantic_bridge_semantic_bridge_hybrid.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_semantic_bridge_semantic_union_topn_up.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_semantic_bridge_semantic_union_topn_weight_up.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_semantic_bridge_semantic_union_weight_up.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_semantic_bridge_union_topn_up.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_semantic_bridge_union_topn_weight_up.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_2wiki_semantic_bridge_union_weight_up.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_f1_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_f1_variant_a_support.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_f1_variant_b_support_main.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_f1_variant_b_support_main_connector.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_f1_variant_c_support_corridor.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_hotpot_chunk_grounded_q1000_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_hotpot_chunk_grounded_q1000_corridor_lift_grounded.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_hotpot_chunk_grounded_q1000_corridor_lift_grounded_bridge.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_hotpot_chunk_grounded_q1000_package_score_grounded.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_hotpot_entity_chunk_graph_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 1,
+    "warnings": [
+      {
+        "field": "graph_mode",
+        "expected_from_filename": "entity_chunk_graph",
+        "actual_in_yaml": "current_entity_graph"
+      }
+    ]
+  },
+  {
+    "config": "configs/rag_exp_hotpot_entity_chunk_graph_current_best_fusion.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 1,
+    "warnings": [
+      {
+        "field": "graph_mode",
+        "expected_from_filename": "entity_chunk_graph",
+        "actual_in_yaml": "current_entity_graph"
+      }
+    ]
+  },
+  {
+    "config": "configs/rag_exp_hotpot_entity_chunk_graph_entity_chunk_mixed_diffusion_grounded_bridge.yaml",
+    "graph_mode": "entity_chunk_graph",
+    "chunk_node_enabled_in_diffusion": true,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 3,
+    "warnings": [
+      {
+        "field": "samples_per_anchor",
+        "expected_from_strategy": ">=2 for stable run selection",
+        "actual_in_yaml": 1
+      },
+      {
+        "field": "phase1_run_preshortlist_topm",
+        "expected_from_strategy": ">=2 for stable run selection",
+        "actual_in_yaml": 1
+      },
+      {
+        "field": "phase1_full_run_score_topk",
+        "expected_from_strategy": ">=2 for stable run selection",
+        "actual_in_yaml": 1
+      }
+    ]
+  },
+  {
+    "config": "configs/rag_exp_hotpot_entity_chunk_graph_entity_seed_chunk_lift_grounded_bridge.yaml",
+    "graph_mode": "entity_chunk_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 3,
+    "warnings": [
+      {
+        "field": "samples_per_anchor",
+        "expected_from_strategy": ">=2 for stable run selection",
+        "actual_in_yaml": 1
+      },
+      {
+        "field": "phase1_run_preshortlist_topm",
+        "expected_from_strategy": ">=2 for stable run selection",
+        "actual_in_yaml": 1
+      },
+      {
+        "field": "phase1_full_run_score_topk",
+        "expected_from_strategy": ">=2 for stable run selection",
+        "actual_in_yaml": 1
+      }
+    ]
+  },
+  {
+    "config": "configs/rag_exp_hotpot_fusion_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_hotpot_fusion_chunk_grounded_bridge.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_hotpot_fusion_semantic_union.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_hotpot_fusion_semantic_union_chunk_grounded_bridge.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_hotpot_fusion_top1corr_chunk_grounded_bridge.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_hotpot_semantic_union1000_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_hotpot_semantic_union1000_union.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_semantic_ablation_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_semantic_ablation_run_score.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_semantic_ablation_seed_score.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_exp_semantic_ablation_union.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_nextdesign_2wiki_grounding_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_nextdesign_2wiki_grounding_corridor_bonus.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_nextdesign_2wiki_grounding_seed_bonus.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_nextdesign_2wiki_grounding_seed_corridor_hybrid.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_nextdesign_2wiki_run_objective_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_nextdesign_2wiki_run_objective_bridge_complete.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_nextdesign_2wiki_run_objective_grounded_bridge.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_nextdesign_2wiki_run_objective_grounded_bridge_mild_semantic.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_nextdesign_chunk_grounded_cg_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_nextdesign_chunk_grounded_cg_corridor_lift_basic.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_nextdesign_chunk_grounded_cg_corridor_lift_grounded.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_nextdesign_chunk_grounded_cg_corridor_lift_grounded_bridge.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_nextdesign_chunk_grounded_cg_package_score_basic.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_nextdesign_chunk_grounded_cg_package_score_grounded.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_nextdesign_chunk_grounded_cg_package_score_grounded_support.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_nextdesign_chunk_grounded_cg_sentence_backfill_1.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_nextdesign_chunk_grounded_cg_sentence_backfill_2.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_nextdesign_chunk_grounded_cg_sentence_backfill_window_wide.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_nextdesign_musique_diagnosis_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_quality_anchor_boost_a.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_quality_baseline_aggressive.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_quality_chunk_reserve_boost_c2.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_quality_off_ablation.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_quality_profile.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_quality_proposal_expand_b1.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_quality_proposal_expand_b10.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_quality_proposal_expand_b2.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_quality_proposal_expand_b5.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_quality_reserve_boost_c1.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_quality_top1corr_t1.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_quality_top1corr_t2.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_quality_top1corr_t3.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/rag_speed_profile.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 3,
+    "phase1_run_preshortlist_topm": null,
+    "phase1_full_run_score_topk": null,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_2wiki_bridge_seed_q1000_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_2wiki_bridge_seed_q1000_bridge_seed_score_up.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_2wiki_bridge_seed_q1000_bridge_seed_semantic_mild.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_2wiki_bridge_seed_q1000_bridge_seed_semantic_mild2.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_2wiki_semantic_bridge_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_2wiki_semantic_bridge_bridge_run_score_up.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_2wiki_semantic_bridge_bridge_seed_score_up.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_2wiki_semantic_bridge_semantic_bridge_hybrid.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_2wiki_semantic_bridge_semantic_union_topn_up.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_2wiki_semantic_bridge_semantic_union_topn_weight_up.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_2wiki_semantic_bridge_semantic_union_weight_up.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_2wiki_semantic_bridge_union_topn_up.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_2wiki_semantic_bridge_union_topn_weight_up.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_2wiki_semantic_bridge_union_weight_up.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_f1_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_f1_variant_a_support.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_f1_variant_b_support_main.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_f1_variant_c_support_corridor.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_hotpot_semantic_union1000_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_hotpot_semantic_union1000_union.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_semantic_ablation_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_semantic_ablation_run_score.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_semantic_ablation_seed_score.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_exp_semantic_ablation_union.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_nextdesign_2wiki_grounding_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_nextdesign_2wiki_grounding_corridor_bonus.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_nextdesign_2wiki_grounding_seed_bonus.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_nextdesign_2wiki_grounding_seed_corridor_hybrid.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_nextdesign_2wiki_run_objective_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_nextdesign_2wiki_run_objective_bridge_complete.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_nextdesign_2wiki_run_objective_grounded_bridge.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_nextdesign_2wiki_run_objective_grounded_bridge_mild_semantic.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_nextdesign_chunk_grounded_cg_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_nextdesign_chunk_grounded_cg_corridor_lift_basic.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_nextdesign_chunk_grounded_cg_corridor_lift_grounded.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_nextdesign_chunk_grounded_cg_corridor_lift_grounded_bridge.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_nextdesign_chunk_grounded_cg_package_score_basic.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_nextdesign_chunk_grounded_cg_package_score_grounded.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_nextdesign_chunk_grounded_cg_package_score_grounded_support.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_nextdesign_chunk_grounded_cg_sentence_backfill_1.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_nextdesign_chunk_grounded_cg_sentence_backfill_2.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_nextdesign_chunk_grounded_cg_sentence_backfill_window_wide.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_nextdesign_musique_diagnosis_baseline.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_quality_anchor_boost_a.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_quality_baseline_aggressive.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_quality_chunk_reserve_boost_c2.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_quality_off_ablation.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_quality_profile.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_quality_proposal_expand_b1.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_quality_proposal_expand_b10.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_quality_proposal_expand_b2.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_quality_proposal_expand_b5.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_quality_reserve_boost_c1.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_quality_top1corr_t1.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_quality_top1corr_t2.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_quality_top1corr_t3.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  },
+  {
+    "config": "configs/retrieval_speed_profile.yaml",
+    "graph_mode": "current_entity_graph",
+    "chunk_node_enabled_in_diffusion": false,
+    "samples_per_anchor": 1,
+    "phase1_run_preshortlist_topm": 1,
+    "phase1_full_run_score_topk": 1,
+    "warning_count": 0,
+    "warnings": []
+  }
+]

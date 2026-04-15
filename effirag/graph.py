@@ -48,6 +48,6 @@ def build_document_entity_graph(sample):
                 entity_node = f"e::{tok}"
                 if entity_node not in g:
                     g.add_node(entity_node, node_type="entity", token=tok)
-                g.add_edge(node, entity_node, edge_type="mentions")
+                g.add_edge(node, entity_node, edge_type="mentions", support_layer="entity_chunk")
 
     return GraphArtifacts(graph=g, sentence_nodes=sentence_nodes, sentence_id_by_node=sentence_id_by_node)

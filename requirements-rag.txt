@@ -1,5 +1,7 @@
 -r requirements-retrieval.txt
-transformers>=4.40
+transformers>=4.45.2,<5
 torch>=2.1
+einops>=0.7
 datasets>=2.16
 protobuf>=4.25
+fsspec>=2023.1.0,<=2024.9.0
