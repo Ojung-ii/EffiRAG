@@ -93,6 +93,11 @@ class RetrievalConfig:
     # r2_bridge_only | r2_plus_r3_anchor_light | r2_plus_r3_answer_light
     # seed_quality_analysis | run_objective_bridge_aware | run_objective_role_balanced
     # corridor_role_constrained | bridge_aware_run_plus_role_constrained_corridor
+    # seed_run_connector_core
+    # seed_run_connector_core_corridor_compact
+    # seed_run_connector_core_corridor_answer_preserve
+    # seed_run_connector_core_corridor_bridge_purity
+    # seed_run_connector_core_corridor_compact_answer_preserve
     retrieval_objective_mode: str = "baseline"
     hybrid_anchor_recall_enabled: bool = False
     hybrid_anchor_semantic_topn: int = 2
@@ -146,6 +151,14 @@ class RetrievalConfig:
     # Optional final corridor grounding boosts (default off).
     corridor_score_chunk_support_weight: float = 0.0
     corridor_score_answer_alignment_weight: float = 0.0
+    # Optional corridor shaping (default off): compact / answer-preserve / bridge-purity.
+    corridor_compact_shaping_enabled: bool = False
+    corridor_answer_preserve_enabled: bool = False
+    corridor_bridge_purity_shaping_enabled: bool = False
+    corridor_compact_weight: float = 0.0
+    corridor_answer_preserve_weight: float = 0.0
+    corridor_bridge_purity_weight: float = 0.0
+    corridor_answer_preserve_min_density: float = 0.30
     corridor_fallback_text_cap: int = 4
     top1_correction_enabled: bool = False
     top1_correction_topk: int = 3
@@ -346,6 +359,12 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["role_aware_chunk_scoring_enabled"] = parse_bool(merged["role_aware_chunk_scoring_enabled"])
     if "coverage_selection_enabled" in merged:
         merged["coverage_selection_enabled"] = parse_bool(merged["coverage_selection_enabled"])
+    if "corridor_compact_shaping_enabled" in merged:
+        merged["corridor_compact_shaping_enabled"] = parse_bool(merged["corridor_compact_shaping_enabled"])
+    if "corridor_answer_preserve_enabled" in merged:
+        merged["corridor_answer_preserve_enabled"] = parse_bool(merged["corridor_answer_preserve_enabled"])
+    if "corridor_bridge_purity_shaping_enabled" in merged:
+        merged["corridor_bridge_purity_shaping_enabled"] = parse_bool(merged["corridor_bridge_purity_shaping_enabled"])
     if "chunk_node_enabled_in_diffusion" in merged:
         merged["chunk_node_enabled_in_diffusion"] = parse_bool(merged["chunk_node_enabled_in_diffusion"])
     if "chunk_package_enabled" in merged:

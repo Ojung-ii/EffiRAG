@@ -183,6 +183,17 @@ def _resolve_retrieval_objective_mode(cfg):
         "p2_role": "run_objective_role_balanced",
         "p3_corridor": "corridor_role_constrained",
         "p3_combo": "bridge_aware_run_plus_role_constrained_corridor",
+        # PAMAE seed-run-corridor refinement variants
+        "pamae_seed_run_core": "seed_run_connector_core",
+        "seed_run_connector_core": "seed_run_connector_core",
+        "p2_corridor_compact": "seed_run_connector_core_corridor_compact",
+        "seed_run_connector_core_corridor_compact": "seed_run_connector_core_corridor_compact",
+        "p3_corridor_answer_preserve": "seed_run_connector_core_corridor_answer_preserve",
+        "seed_run_connector_core_corridor_answer_preserve": "seed_run_connector_core_corridor_answer_preserve",
+        "p4_corridor_bridge_purity": "seed_run_connector_core_corridor_bridge_purity",
+        "seed_run_connector_core_corridor_bridge_purity": "seed_run_connector_core_corridor_bridge_purity",
+        "p5_compact_answer_preserve": "seed_run_connector_core_corridor_compact_answer_preserve",
+        "seed_run_connector_core_corridor_compact_answer_preserve": "seed_run_connector_core_corridor_compact_answer_preserve",
     }
     mode = aliases.get(mode, mode)
     valid = {
@@ -202,6 +213,12 @@ def _resolve_retrieval_objective_mode(cfg):
         "run_objective_role_balanced",
         "corridor_role_constrained",
         "bridge_aware_run_plus_role_constrained_corridor",
+        # PAMAE seed-run-corridor refinement variants
+        "seed_run_connector_core",
+        "seed_run_connector_core_corridor_compact",
+        "seed_run_connector_core_corridor_answer_preserve",
+        "seed_run_connector_core_corridor_bridge_purity",
+        "seed_run_connector_core_corridor_compact_answer_preserve",
     }
     if mode not in valid:
         mode = "baseline"
@@ -214,6 +231,9 @@ def _resolve_retrieval_objective_flags(cfg):
     bridge_induction = bool(getattr(cfg, "bridge_candidate_induction_enabled", False))
     role_chunk = bool(getattr(cfg, "role_aware_chunk_scoring_enabled", False))
     coverage = bool(getattr(cfg, "coverage_selection_enabled", False))
+    corridor_compact = bool(getattr(cfg, "corridor_compact_shaping_enabled", False))
+    corridor_answer_preserve = bool(getattr(cfg, "corridor_answer_preserve_enabled", False))
+    corridor_bridge_purity = bool(getattr(cfg, "corridor_bridge_purity_shaping_enabled", False))
 
     if mode == "hybrid_anchor_recall":
         hybrid = True
@@ -240,6 +260,41 @@ def _resolve_retrieval_objective_flags(cfg):
         coverage = True
     elif mode == "bridge_aware_run_plus_role_constrained_corridor":
         coverage = True
+    elif mode == "seed_run_connector_core":
+        bridge_induction = True
+        role_chunk = False
+        coverage = False
+        corridor_compact = False
+        corridor_answer_preserve = False
+        corridor_bridge_purity = False
+    elif mode == "seed_run_connector_core_corridor_compact":
+        bridge_induction = True
+        role_chunk = False
+        coverage = False
+        corridor_compact = True
+        corridor_answer_preserve = False
+        corridor_bridge_purity = False
+    elif mode == "seed_run_connector_core_corridor_answer_preserve":
+        bridge_induction = True
+        role_chunk = False
+        coverage = False
+        corridor_compact = False
+        corridor_answer_preserve = True
+        corridor_bridge_purity = False
+    elif mode == "seed_run_connector_core_corridor_bridge_purity":
+        bridge_induction = True
+        role_chunk = False
+        coverage = False
+        corridor_compact = False
+        corridor_answer_preserve = False
+        corridor_bridge_purity = True
+    elif mode == "seed_run_connector_core_corridor_compact_answer_preserve":
+        bridge_induction = True
+        role_chunk = False
+        coverage = False
+        corridor_compact = True
+        corridor_answer_preserve = True
+        corridor_bridge_purity = False
 
     return {
         "mode": str(mode),
@@ -247,6 +302,9 @@ def _resolve_retrieval_objective_flags(cfg):
         "bridge_candidate_induction": bool(bridge_induction),
         "role_aware_chunk_scoring": bool(role_chunk),
         "coverage_selection": bool(coverage),
+        "corridor_compact_shaping": bool(corridor_compact),
+        "corridor_answer_preserve_shaping": bool(corridor_answer_preserve),
+        "corridor_bridge_purity_shaping": bool(corridor_bridge_purity),
     }
 
 
@@ -310,24 +368,61 @@ def _apply_connector_objective_profile(cfg, objective_flags):
         _set_cfg_attr_if_changed(cfg, "seed_objective_bridge_weight", 0.24, updates)
         _set_cfg_attr_if_changed(cfg, "seed_objective_anchor_coverage_weight", 0.14, updates)
 
+    def _apply_run_connector_core():
+        _set_cfg_attr_if_changed(cfg, "run_score_semantic_weight", 0.22, updates)
+        _set_cfg_attr_if_changed(cfg, "run_score_anchor_weight", 0.18, updates)
+        _set_cfg_attr_if_changed(cfg, "run_score_structure_weight", 0.22, updates)
+        _set_cfg_attr_if_changed(cfg, "run_score_bridge_weight", 0.24, updates)
+        _set_cfg_attr_if_changed(cfg, "run_score_redundancy_weight", 0.08, updates)
+        _set_cfg_attr_if_changed(cfg, "run_score_pair_coverage_weight", 0.03, updates)
+        _set_cfg_attr_if_changed(cfg, "run_score_bridge_completeness_weight", 0.03, updates)
+        _set_cfg_attr_if_changed(cfg, "run_score_entity_chunk_grounding_weight", 0.0, updates)
+        _set_cfg_attr_if_changed(cfg, "run_score_anchor_dispersion_penalty", 0.0, updates)
+        _set_cfg_attr_if_changed(cfg, "seed_objective_bridge_weight", 0.28, updates)
+        _set_cfg_attr_if_changed(cfg, "seed_objective_anchor_coverage_weight", 0.16, updates)
+
+    def _configure_corridor_shaping(compact_enabled, answer_preserve_enabled, bridge_purity_enabled):
+        compact_flag = bool(compact_enabled)
+        answer_flag = bool(answer_preserve_enabled)
+        purity_flag = bool(bridge_purity_enabled)
+        _set_cfg_attr_if_changed(cfg, "corridor_compact_shaping_enabled", compact_flag, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_answer_preserve_enabled", answer_flag, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_bridge_purity_shaping_enabled", purity_flag, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_compact_weight", (0.18 if compact_flag else 0.0), updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_answer_preserve_weight", (0.22 if answer_flag else 0.0), updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_bridge_purity_weight", (0.22 if purity_flag else 0.0), updates)
+        # Guard only used when answer-preserve shaping is on.
+        _set_cfg_attr_if_changed(cfg, "corridor_answer_preserve_min_density", 0.30, updates)
+
+    _configure_corridor_shaping(False, False, False)
+
     if mode == "run_objective_bridge_aware":
         profile_applied = "run_bridge_aware"
         _apply_run_bridge_aware()
         flags["bridge_candidate_induction"] = False
         flags["role_aware_chunk_scoring"] = False
         flags["coverage_selection"] = False
+        flags["corridor_compact_shaping"] = False
+        flags["corridor_answer_preserve_shaping"] = False
+        flags["corridor_bridge_purity_shaping"] = False
     elif mode == "run_objective_role_balanced":
         profile_applied = "run_role_balanced"
         _apply_run_role_balanced()
         flags["bridge_candidate_induction"] = False
         flags["role_aware_chunk_scoring"] = False
         flags["coverage_selection"] = False
+        flags["corridor_compact_shaping"] = False
+        flags["corridor_answer_preserve_shaping"] = False
+        flags["corridor_bridge_purity_shaping"] = False
     elif mode == "corridor_role_constrained":
         profile_applied = "corridor_role_constrained"
         flags["coverage_selection"] = True
         flags["bridge_candidate_induction"] = False
         _set_cfg_attr_if_changed(cfg, "coverage_selection_role_weight", 0.55, updates)
         _set_cfg_attr_if_changed(cfg, "coverage_selection_redundancy_weight", 0.22, updates)
+        flags["corridor_compact_shaping"] = False
+        flags["corridor_answer_preserve_shaping"] = False
+        flags["corridor_bridge_purity_shaping"] = False
     elif mode == "bridge_aware_run_plus_role_constrained_corridor":
         profile_applied = "bridge_run_plus_corridor"
         _apply_run_bridge_aware()
@@ -335,17 +430,26 @@ def _apply_connector_objective_profile(cfg, objective_flags):
         flags["bridge_candidate_induction"] = False
         _set_cfg_attr_if_changed(cfg, "coverage_selection_role_weight", 0.55, updates)
         _set_cfg_attr_if_changed(cfg, "coverage_selection_redundancy_weight", 0.22, updates)
+        flags["corridor_compact_shaping"] = False
+        flags["corridor_answer_preserve_shaping"] = False
+        flags["corridor_bridge_purity_shaping"] = False
     elif mode == "seed_quality_analysis":
         profile_applied = "seed_quality_analysis"
         flags["bridge_candidate_induction"] = False
         flags["role_aware_chunk_scoring"] = False
         flags["coverage_selection"] = False
+        flags["corridor_compact_shaping"] = False
+        flags["corridor_answer_preserve_shaping"] = False
+        flags["corridor_bridge_purity_shaping"] = False
     elif mode == "r2_bridge_only":
         profile_applied = "r2_bridge_only_lite"
         _apply_run_bridge_lite()
         flags["bridge_candidate_induction"] = True
         flags["role_aware_chunk_scoring"] = False
         flags["coverage_selection"] = False
+        flags["corridor_compact_shaping"] = False
+        flags["corridor_answer_preserve_shaping"] = False
+        flags["corridor_bridge_purity_shaping"] = False
     elif mode == "r2_plus_r3_anchor_light":
         profile_applied = "r2_plus_r3_anchor_light"
         _apply_run_bridge_lite()
@@ -356,6 +460,9 @@ def _apply_connector_objective_profile(cfg, objective_flags):
         flags["bridge_candidate_induction"] = True
         flags["role_aware_chunk_scoring"] = True
         flags["coverage_selection"] = False
+        flags["corridor_compact_shaping"] = False
+        flags["corridor_answer_preserve_shaping"] = False
+        flags["corridor_bridge_purity_shaping"] = False
     elif mode == "r2_plus_r3_answer_light":
         profile_applied = "r2_plus_r3_answer_light"
         _apply_run_bridge_lite()
@@ -366,6 +473,58 @@ def _apply_connector_objective_profile(cfg, objective_flags):
         flags["bridge_candidate_induction"] = True
         flags["role_aware_chunk_scoring"] = True
         flags["coverage_selection"] = False
+        flags["corridor_compact_shaping"] = False
+        flags["corridor_answer_preserve_shaping"] = False
+        flags["corridor_bridge_purity_shaping"] = False
+    elif mode == "seed_run_connector_core":
+        profile_applied = "seed_run_connector_core"
+        _apply_run_connector_core()
+        flags["bridge_candidate_induction"] = True
+        flags["role_aware_chunk_scoring"] = False
+        flags["coverage_selection"] = False
+        flags["corridor_compact_shaping"] = False
+        flags["corridor_answer_preserve_shaping"] = False
+        flags["corridor_bridge_purity_shaping"] = False
+    elif mode == "seed_run_connector_core_corridor_compact":
+        profile_applied = "seed_run_connector_core_corridor_compact"
+        _apply_run_connector_core()
+        _configure_corridor_shaping(True, False, False)
+        flags["bridge_candidate_induction"] = True
+        flags["role_aware_chunk_scoring"] = False
+        flags["coverage_selection"] = False
+        flags["corridor_compact_shaping"] = True
+        flags["corridor_answer_preserve_shaping"] = False
+        flags["corridor_bridge_purity_shaping"] = False
+    elif mode == "seed_run_connector_core_corridor_answer_preserve":
+        profile_applied = "seed_run_connector_core_corridor_answer_preserve"
+        _apply_run_connector_core()
+        _configure_corridor_shaping(False, True, False)
+        flags["bridge_candidate_induction"] = True
+        flags["role_aware_chunk_scoring"] = False
+        flags["coverage_selection"] = False
+        flags["corridor_compact_shaping"] = False
+        flags["corridor_answer_preserve_shaping"] = True
+        flags["corridor_bridge_purity_shaping"] = False
+    elif mode == "seed_run_connector_core_corridor_bridge_purity":
+        profile_applied = "seed_run_connector_core_corridor_bridge_purity"
+        _apply_run_connector_core()
+        _configure_corridor_shaping(False, False, True)
+        flags["bridge_candidate_induction"] = True
+        flags["role_aware_chunk_scoring"] = False
+        flags["coverage_selection"] = False
+        flags["corridor_compact_shaping"] = False
+        flags["corridor_answer_preserve_shaping"] = False
+        flags["corridor_bridge_purity_shaping"] = True
+    elif mode == "seed_run_connector_core_corridor_compact_answer_preserve":
+        profile_applied = "seed_run_connector_core_corridor_compact_answer_preserve"
+        _apply_run_connector_core()
+        _configure_corridor_shaping(True, True, False)
+        flags["bridge_candidate_induction"] = True
+        flags["role_aware_chunk_scoring"] = False
+        flags["coverage_selection"] = False
+        flags["corridor_compact_shaping"] = True
+        flags["corridor_answer_preserve_shaping"] = True
+        flags["corridor_bridge_purity_shaping"] = False
 
     diag = {
         "mode": mode,
@@ -2438,10 +2597,31 @@ def _compute_connector_retrieval_metrics(
     )
     run_bridge_coverage = float(max(run_bridge_utility, run_bridge_complete, run_bridge_proxy))
 
+    def _weighted_avg(items, default=0.0):
+        total_w = 0.0
+        total_v = 0.0
+        for value, weight in list(items or []):
+            w = max(0.0, float(weight))
+            v = float(value)
+            total_w += w
+            total_v += w * v
+        if total_w <= 0.0:
+            return float(default)
+        return float(total_v / total_w)
+
     max_anchor = 0.0
     max_bridge = 0.0
     max_answer = 0.0
-    for corridor in list(filtered_corridors or []):
+    bridge_purity_items = []
+    answer_side_density_items = []
+    compactness_items = []
+    noise_ratio_items = []
+    ranked_corridors = sorted(
+        list(filtered_corridors or []),
+        key=lambda c: float(c.get("corridor_score", 0.0)),
+        reverse=True,
+    )
+    for ridx, corridor in enumerate(ranked_corridors):
         comp = dict(corridor.get("final_score_components", {}) or {})
         anchor_score = float(comp.get("anchor_alignment", corridor.get("anchor_alignment", 0.0)) or 0.0)
         bridge_score = float(comp.get("bridge_utility", corridor.get("bridge_potential", 0.0)) or 0.0)
@@ -2455,12 +2635,36 @@ def _compute_connector_retrieval_metrics(
         max_anchor = max(float(max_anchor), max(0.0, min(1.0, float(anchor_score))))
         max_bridge = max(float(max_bridge), max(0.0, min(1.0, float(bridge_score))))
         max_answer = max(float(max_answer), max(0.0, min(1.0, float(answer_score))))
+        support_ids = list(corridor.get("support_unit_ids", corridor.get("support_sentence_ids", [])) or [])
+        connector_ids = list(
+            corridor.get("connector_adjacent_unit_ids", corridor.get("connector_adjacent_sentence_ids", [])) or []
+        )
+        support_span = len(_ordered_unique([str(x) for x in (support_ids + connector_ids) if str(x)]))
+        bridge_purity_val = float(comp.get("bridge_purity", bridge_score) or 0.0)
+        answer_side_density_val = float(comp.get("answer_side_density", answer_score) or 0.0)
+        compactness_val = float(comp.get("support_set_compactness", (1.0 / float(1.0 + max(0, support_span - 1)))) or 0.0)
+        noise_ratio_val = float(comp.get("bridge_noise_ratio", (1.0 - bridge_purity_val)) or 0.0)
+        weight = 1.0 / float(ridx + 1)
+        bridge_purity_items.append((max(0.0, min(1.0, bridge_purity_val)), weight))
+        answer_side_density_items.append((max(0.0, min(1.0, answer_side_density_val)), weight))
+        compactness_items.append((max(0.0, min(1.0, compactness_val)), weight))
+        noise_ratio_items.append((max(0.0, min(1.0, noise_ratio_val)), weight))
+
     corridor_role_coverage = float((max_anchor + max_bridge + max_answer) / 3.0)
+    bridge_purity = max(0.0, min(1.0, _weighted_avg(bridge_purity_items, max_bridge)))
+    answer_side_density = max(0.0, min(1.0, _weighted_avg(answer_side_density_items, max_answer)))
+    support_set_compactness = max(0.0, min(1.0, _weighted_avg(compactness_items, 1.0)))
+    bridge_noise_ratio = max(0.0, min(1.0, _weighted_avg(noise_ratio_items, 1.0 - bridge_purity)))
     bridge_present = bool(run_bridge_coverage >= 0.35)
-    answer_side_present = bool(max_answer >= 0.35)
-    useful_bridge_rate = 1.0 if (bridge_present and answer_side_present) else 0.0
+    answer_side_present = bool(max_answer >= 0.35 or answer_side_density >= 0.35)
+    useful_bridge_rate = 1.0 if (bridge_present and answer_side_present and bridge_purity >= 0.40) else 0.0
     bridge_to_answer_path_hit = (
-        1.0 if (bridge_present and answer_side_present and corridor_role_coverage >= 0.45) else 0.0
+        1.0
+        if (bridge_present and answer_side_present and corridor_role_coverage >= 0.45 and bridge_purity >= 0.35)
+        else 0.0
+    )
+    conversion_after_bridge_proxy = (
+        1.0 if (bridge_present and answer_side_present and answer_side_density >= 0.35 and bridge_purity >= 0.35) else 0.0
     )
 
     redundancy_rate = float(_mean_pairwise_jaccard(_corridor_sentence_sets(filtered_corridors)))
@@ -2473,11 +2677,23 @@ def _compute_connector_retrieval_metrics(
         "seed_redundancy": float(seed_redundancy),
         "run_bridge_coverage": float(run_bridge_coverage),
         "corridor_role_coverage": float(corridor_role_coverage),
+        "bridge_purity": float(bridge_purity),
+        "answer_side_density": float(answer_side_density),
+        "support_set_compactness": float(support_set_compactness),
+        "bridge_noise_ratio": float(bridge_noise_ratio),
         "useful_bridge_rate": float(useful_bridge_rate),
         "bridge_to_answer_path_hit": float(bridge_to_answer_path_hit),
+        "conversion_after_bridge_proxy": float(conversion_after_bridge_proxy),
         "redundancy_rate": float(redundancy_rate),
         "connector_quality": float(
-            (seed_bridge_recall + run_bridge_coverage + corridor_role_coverage + useful_bridge_rate) / 4.0
+            (
+                seed_bridge_recall
+                + run_bridge_coverage
+                + corridor_role_coverage
+                + bridge_purity
+                + support_set_compactness
+            )
+            / 5.0
         ),
     }
 
@@ -3847,12 +4063,22 @@ def _rerank_corridors_hybrid(
     )
     coverage_role_w = max(0.0, float(getattr(cfg, "coverage_selection_role_weight", 0.35)))
     coverage_red_w = max(0.0, float(getattr(cfg, "coverage_selection_redundancy_weight", 0.10)))
+    compact_enabled = bool(getattr(cfg, "corridor_compact_shaping_enabled", False))
+    answer_preserve_enabled = bool(getattr(cfg, "corridor_answer_preserve_enabled", False))
+    bridge_purity_enabled = bool(getattr(cfg, "corridor_bridge_purity_shaping_enabled", False))
+    compact_w = max(0.0, float(getattr(cfg, "corridor_compact_weight", 0.0)))
+    answer_preserve_w = max(0.0, float(getattr(cfg, "corridor_answer_preserve_weight", 0.0)))
+    bridge_purity_w = max(0.0, float(getattr(cfg, "corridor_bridge_purity_weight", 0.0)))
+    answer_density_min = max(0.0, min(1.0, float(getattr(cfg, "corridor_answer_preserve_min_density", 0.30))))
 
     base_rows = []
     for corridor in corridors:
         main_ids = list(corridor.get("main_path_sentence_ids", []) or [])
         support_ids = list(corridor.get("support_sentence_ids", []) or [])
-        sent_ids = _ordered_unique(main_ids + support_ids)
+        connector_ids = list(
+            corridor.get("connector_adjacent_unit_ids", corridor.get("connector_adjacent_sentence_ids", [])) or []
+        )
+        sent_ids = _ordered_unique(main_ids + support_ids + connector_ids)
 
         structural = 0.0
         if main_ids:
@@ -3862,6 +4088,7 @@ def _rerank_corridors_hybrid(
 
         sem_vals = []
         support_vals = []
+        answer_like_by_sid = {}
         for sid in sent_ids:
             node = sid_to_node.get(sid)
             if node is None:
@@ -3873,12 +4100,33 @@ def _rerank_corridors_hybrid(
             sup = 0.5 * (float(support_sim_map.get(node, 0.0)) + 1.0)
             sem_vals.append(sem)
             support_vals.append(sup)
+            answer_like_by_sid[sid] = max(0.0, min(1.0, max(float(sem), float(sup))))
         semantic_rel = float(sum(sem_vals) / max(len(sem_vals), 1)) if sem_vals else 0.0
         answer_support = float(sum(support_vals) / max(len(support_vals), 1)) if support_vals else 0.0
         support_density = float(len(support_ids)) / float(max(1, len(sent_ids)))
         anchor_alignment = float(corridor.get("anchor_alignment", 0.0) or 0.0)
         bridge_utility = float(corridor.get("bridge_potential", 0.0) or 0.0)
         answer_alignment = max(float(answer_support), float(semantic_rel), float(anchor_alignment))
+        answer_side_ids = _ordered_unique(connector_ids + support_ids)
+        if not answer_side_ids:
+            answer_side_ids = list(sent_ids)
+        answer_side_vals = [float(answer_like_by_sid.get(sid, 0.0)) for sid in answer_side_ids]
+        answer_side_density = float(sum(answer_side_vals) / max(len(answer_side_vals), 1)) if answer_side_vals else 0.0
+
+        bridge_focus_ids = _ordered_unique(connector_ids + support_ids)
+        bridge_purity = max(0.0, min(1.0, float(bridge_utility)))
+        if bridge_focus_ids:
+            useful = 0
+            for sid in bridge_focus_ids:
+                aval = float(answer_like_by_sid.get(sid, 0.0))
+                if sid in set(connector_ids):
+                    useful += 1 if aval >= 0.35 else 0
+                else:
+                    useful += 1 if aval >= 0.45 else 0
+            bridge_purity = float(useful) / float(max(len(bridge_focus_ids), 1))
+        bridge_noise_ratio = max(0.0, min(1.0, 1.0 - float(bridge_purity)))
+        support_span = len(bridge_focus_ids)
+        support_set_compactness = 1.0 / float(1.0 + max(0, int(support_span) - 1))
 
         pair_proxy = float(corridor.get("pair_proxy_score", corridor.get("corridor_score", 0.0)) or 0.0)
         base_score = 0.45 * structural + 0.25 * semantic_rel + 0.20 * answer_support + 0.10 * pair_proxy
@@ -3886,6 +4134,17 @@ def _rerank_corridors_hybrid(
         answer_align_w = max(0.0, float(getattr(cfg, "corridor_score_answer_alignment_weight", 0.0)))
         if chunk_support_w > 0.0 or answer_align_w > 0.0:
             base_score += chunk_support_w * float(support_density) + answer_align_w * float(answer_alignment)
+        shaping_bonus = 0.0
+        if compact_enabled and compact_w > 0.0:
+            shaping_bonus += float(compact_w) * float(support_set_compactness)
+        if answer_preserve_enabled and answer_preserve_w > 0.0:
+            density_gap = max(0.0, float(answer_density_min) - float(answer_side_density))
+            shaping_bonus += float(answer_preserve_w) * float(answer_side_density)
+            shaping_bonus -= 0.5 * float(answer_preserve_w) * float(density_gap)
+        if bridge_purity_enabled and bridge_purity_w > 0.0:
+            shaping_bonus += float(bridge_purity_w) * float(bridge_purity)
+            shaping_bonus -= 0.5 * float(bridge_purity_w) * float(bridge_noise_ratio)
+        base_score += float(shaping_bonus)
         base_rows.append(
             {
                 "corridor": dict(corridor),
@@ -3905,6 +4164,18 @@ def _rerank_corridors_hybrid(
                     "anchor_alignment": float(anchor_alignment),
                     "answer_alignment": float(answer_alignment),
                     "bridge_utility": float(bridge_utility),
+                    "bridge_purity": float(bridge_purity),
+                    "answer_side_density": float(answer_side_density),
+                    "support_set_compactness": float(support_set_compactness),
+                    "bridge_noise_ratio": float(bridge_noise_ratio),
+                    "corridor_compact_shaping_enabled": bool(compact_enabled),
+                    "corridor_answer_preserve_enabled": bool(answer_preserve_enabled),
+                    "corridor_bridge_purity_shaping_enabled": bool(bridge_purity_enabled),
+                    "corridor_compact_weight": float(compact_w),
+                    "corridor_answer_preserve_weight": float(answer_preserve_w),
+                    "corridor_bridge_purity_weight": float(bridge_purity_w),
+                    "corridor_answer_preserve_min_density": float(answer_density_min),
+                    "corridor_shaping_bonus": float(shaping_bonus),
                     "chunk_support_bonus_weight": float(chunk_support_w),
                     "answer_alignment_bonus_weight": float(answer_align_w),
                 },
@@ -5708,8 +5979,14 @@ def run_graphrag_core(
             "seed_redundancy": float((connector_metrics or {}).get("seed_redundancy", 0.0)),
             "run_bridge_coverage": float((connector_metrics or {}).get("run_bridge_coverage", 0.0)),
             "corridor_role_coverage": float((connector_metrics or {}).get("corridor_role_coverage", 0.0)),
+            "bridge_purity": float((connector_metrics or {}).get("bridge_purity", 0.0)),
+            "answer_side_density": float((connector_metrics or {}).get("answer_side_density", 0.0)),
+            "support_set_compactness": float((connector_metrics or {}).get("support_set_compactness", 0.0)),
+            "bridge_noise_ratio": float((connector_metrics or {}).get("bridge_noise_ratio", 0.0)),
             "useful_bridge_rate": float((connector_metrics or {}).get("useful_bridge_rate", 0.0)),
             "bridge_to_answer_path_hit": float((connector_metrics or {}).get("bridge_to_answer_path_hit", 0.0)),
+            "conversion_after_bridge": float((connector_metrics or {}).get("conversion_after_bridge_proxy", 0.0)),
+            "conversion_after_bridge_proxy": float((connector_metrics or {}).get("conversion_after_bridge_proxy", 0.0)),
             "redundancy_rate": float((connector_metrics or {}).get("redundancy_rate", 0.0)),
             "connector_quality": float((connector_metrics or {}).get("connector_quality", 0.0)),
             "connector_metrics": dict(connector_metrics or {}),

@@ -168,8 +168,13 @@ STAGEWISE_LOSS_KEYS = (
     "seed_redundancy",
     "run_bridge_coverage",
     "corridor_role_coverage",
+    "bridge_purity",
+    "answer_side_density",
+    "support_set_compactness",
+    "bridge_noise_ratio",
     "useful_bridge_rate",
     "bridge_to_answer_path_hit",
+    "conversion_after_bridge",
     "answer_conversion",
     "em_conversion",
     "f1_per_r5",
@@ -234,6 +239,10 @@ def _extract_stagewise_from_row(row):
         "seed_redundancy",
         "run_bridge_coverage",
         "corridor_role_coverage",
+        "bridge_purity",
+        "answer_side_density",
+        "support_set_compactness",
+        "bridge_noise_ratio",
         "useful_bridge_rate",
         "bridge_to_answer_path_hit",
         "redundancy_rate",
@@ -266,28 +275,57 @@ def _extract_stagewise_from_row(row):
     seed_bridge_recall = _safe_float(diagnostics.get("seed_bridge_recall", 0.0), 0.0)
     seed_answer_recall = _safe_float(diagnostics.get("seed_answer_recall", 0.0), 0.0)
     corridor_role_coverage = _safe_float(diagnostics.get("corridor_role_coverage", 0.0), 0.0)
+    bridge_purity = _safe_float(diagnostics.get("bridge_purity", metrics.get("bridge_purity", 0.0)), 0.0)
+    answer_side_density = _safe_float(
+        diagnostics.get("answer_side_density", metrics.get("answer_side_density", 0.0)),
+        0.0,
+    )
+    support_set_compactness = _safe_float(
+        diagnostics.get("support_set_compactness", metrics.get("support_set_compactness", 0.0)),
+        0.0,
+    )
+    bridge_noise_ratio = _safe_float(
+        diagnostics.get("bridge_noise_ratio", metrics.get("bridge_noise_ratio", 1.0 - bridge_purity)),
+        0.0,
+    )
     redundancy_rate = _safe_float(diagnostics.get("redundancy_rate", 0.0), 0.0)
+    bridge_noise_ratio = max(0.0, min(1.0, bridge_noise_ratio))
 
     bridge_signal = max(run_bridge_coverage, seed_bridge_recall)
     answer_signal = max(rendered_sf_recall, seed_answer_recall)
     bridge_present = bool(bridge_signal >= 0.35)
-    answer_side_present = bool(answer_signal >= 0.25)
+    answer_side_present = bool(max(answer_signal, answer_side_density) >= 0.25)
     qa_executed = bool((row or {}).get("qa_executed", True))
     generation_fail = bool(qa_executed and f1 <= 0.01)
     bridge_noisy = bool(
         bridge_present
         and answer_side_present
-        and max(supporting_fact_precision, rendered_supporting_fact_precision) < 0.25
-        and (redundancy_rate >= 0.60 or f1 < 0.25)
+        and (
+            bridge_noise_ratio >= 0.55
+            or (
+                max(supporting_fact_precision, rendered_supporting_fact_precision) < 0.25
+                and (redundancy_rate >= 0.60 or f1 < 0.25)
+            )
+        )
+    )
+
+    metrics["bridge_purity"] = max(0.0, min(1.0, bridge_purity))
+    metrics["answer_side_density"] = max(0.0, min(1.0, answer_side_density))
+    metrics["support_set_compactness"] = max(0.0, min(1.0, support_set_compactness))
+    metrics["bridge_noise_ratio"] = float(bridge_noise_ratio)
+    metrics["conversion_after_bridge"] = (
+        1.0 if (bridge_present and answer_side_present and (f1 > 0.0 or em > 0.0)) else 0.0
     )
 
     metrics.setdefault(
         "useful_bridge_rate",
-        1.0 if (bridge_present and answer_side_present and (f1 > 0.0 or em > 0.0)) else 0.0,
+        1.0 if (bridge_present and answer_side_present and bridge_purity >= 0.35 and (f1 > 0.0 or em > 0.0)) else 0.0,
     )
     metrics.setdefault(
         "bridge_to_answer_path_hit",
-        1.0 if (bridge_present and answer_side_present and corridor_role_coverage >= 0.45) else 0.0,
+        1.0
+        if (bridge_present and answer_side_present and corridor_role_coverage >= 0.45 and bridge_purity >= 0.35)
+        else 0.0,
     )
 
     metrics["error_bucket_bridge_missing"] = 0.0

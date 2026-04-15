@@ -52,6 +52,11 @@ run_score_redundancy_weight: 0.10
 # - r2_bridge_only / r2_plus_r3_anchor_light / r2_plus_r3_answer_light
 # - seed_quality_analysis / run_objective_bridge_aware / run_objective_role_balanced
 # - corridor_role_constrained / bridge_aware_run_plus_role_constrained_corridor
+# - seed_run_connector_core
+# - seed_run_connector_core_corridor_compact
+# - seed_run_connector_core_corridor_answer_preserve
+# - seed_run_connector_core_corridor_bridge_purity
+# - seed_run_connector_core_corridor_compact_answer_preserve
 retrieval_objective_mode: baseline
 hybrid_anchor_recall_enabled: false
 hybrid_anchor_semantic_topn: 2
@@ -97,6 +102,13 @@ seed_score_anchor_weight: 0.20
 seed_objective_bridge_weight: 0.20
 seed_objective_grounding_weight: 0.15
 seed_objective_anchor_coverage_weight: 0.10
+corridor_compact_shaping_enabled: false
+corridor_answer_preserve_enabled: false
+corridor_bridge_purity_shaping_enabled: false
+corridor_compact_weight: 0.00
+corridor_answer_preserve_weight: 0.00
+corridor_bridge_purity_weight: 0.00
+corridor_answer_preserve_min_density: 0.30
 
 max_anchors: 3
 samples_per_anchor: 3
