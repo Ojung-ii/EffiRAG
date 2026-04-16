@@ -339,7 +339,7 @@ def _attach_stagewise_render_diagnostics(sample, retrieval_result, rendered):
     diagnostics = dict((getattr(retrieval_result, "diagnostics", {}) or {}))
     funnel = dict((diagnostics.get("stagewise_loss_funnel", {}) or {}))
     if not funnel:
-        return rendered
+        funnel = {}
 
     graph_mode = _retrieval_graph_mode(retrieval_result)
     retrieval_match = supporting_fact_match_details(
@@ -364,6 +364,22 @@ def _attach_stagewise_render_diagnostics(sample, retrieval_result, rendered):
     funnel["rendered_retention"] = float(_safe_ratio(rendered_hit_count, final_hit_count))
     funnel["rendered_hit_unit_ids"] = list(rendered_match.get("matched_gold_sentence_ids", []) or [])
     funnel["rendered_missed_unit_ids"] = list(rendered_match.get("missed_gold_sentence_ids", []) or [])
+    rendered_meta = dict(getattr(rendered, "metadata", {}) or {})
+    for key in (
+        "path_bundle_count",
+        "avg_chunks_per_bundle",
+        "bridge_answer_adjacency_rate",
+        "first_complete_path_rank",
+        "bundle_dedup_ratio",
+        "answer_path_coverage",
+        "conversion_after_path_bundle",
+    ):
+        if key in rendered_meta:
+            try:
+                funnel[key] = float(rendered_meta.get(key, 0.0) or 0.0)
+            except Exception:
+                funnel[key] = 0.0
+            diagnostics[key] = funnel[key]
     diagnostics["stagewise_loss_funnel"] = funnel
     retrieval_result.diagnostics = diagnostics
 
@@ -741,6 +757,276 @@ def pack_corridors_with_budget(
         rendered_sentence_ids.extend(corridor.get("support_sentence_ids", []))
 
     return kept, rendered_sentence_ids, rendered_corridor_ids, truncated_corridors, truncated_sentences
+
+
+def _parse_path_bundle_flags(order_strategy):
+    raw = str(order_strategy or "").strip().lower()
+    tokens = [tok.strip() for tok in raw.split("+") if tok.strip()]
+    flags = set(tokens)
+    return {
+        "ordered": True,
+        "dedup": bool("path_bundle_dedup" in flags or "bundle_dedup" in flags),
+        "compact_lite": bool("path_bundle_compactlite" in flags or "compact_lite" in flags),
+    }
+
+
+def _clip_path_bundles_to_budget(bundles, max_total_sentences):
+    max_total = max(1, int(max_total_sentences))
+    kept = []
+    rendered_sentence_ids = []
+    truncated_sentences = 0
+    truncated_bundles = 0
+    remaining = int(max_total)
+
+    for bundle in list(bundles or []):
+        if remaining <= 0:
+            truncated_bundles += 1
+            continue
+        anchors = list(bundle.get("anchor_sentence_ids", []) or [])
+        bridges = list(bundle.get("bridge_sentence_ids", []) or [])
+        answers = list(bundle.get("answer_sentence_ids", []) or [])
+        ordered_ids = list(bundle.get("ordered_sentence_ids", []) or [])
+        min_keep = int(bool(anchors)) + int(bool(bridges)) + int(bool(answers))
+        if min_keep > remaining:
+            truncated_bundles += 1
+            continue
+
+        chosen = []
+        if anchors:
+            chosen.append(anchors[0])
+        if bridges:
+            chosen.append(bridges[0])
+        if answers:
+            chosen.append(answers[0])
+        chosen = _ordered_unique(chosen)
+
+        extra_budget = max(0, remaining - len(chosen))
+        for sid in ordered_ids:
+            if sid in set(chosen):
+                continue
+            if extra_budget <= 0:
+                truncated_sentences += 1
+                continue
+            chosen.append(sid)
+            extra_budget -= 1
+
+        if not chosen:
+            truncated_bundles += 1
+            continue
+
+        chosen_set = set(chosen)
+        kept_bundle = dict(bundle)
+        kept_bundle["ordered_sentence_ids"] = list(chosen)
+        kept_bundle["anchor_sentence_ids"] = [sid for sid in anchors if sid in chosen_set]
+        kept_bundle["bridge_sentence_ids"] = [sid for sid in bridges if sid in chosen_set]
+        kept_bundle["answer_sentence_ids"] = [sid for sid in answers if sid in chosen_set]
+        kept.append(kept_bundle)
+
+        rendered_sentence_ids.extend(chosen)
+        remaining -= len(chosen)
+
+    rendered_sentence_ids = _ordered_unique(rendered_sentence_ids)
+    return kept, rendered_sentence_ids, truncated_bundles, truncated_sentences
+
+
+def render_path_bundle_context(
+    sample,
+    retrieval_result,
+    max_corridors_in_context,
+    max_main_sentences_per_corridor,
+    max_support_per_corridor,
+    max_total_sentences,
+    order_strategy,
+):
+    sentence_map = _build_retrieval_text_lookup(sample, retrieval_result)
+    corridors = build_corridor_payload(retrieval_result, graph=None, sentence_map=sentence_map)
+    ranked_corridors = sorted(corridors, key=lambda c: float(c.get("corridor_score", 0.0)), reverse=True)
+    flags = _parse_path_bundle_flags(order_strategy)
+    compact_lite = bool(flags.get("compact_lite", False))
+    dedup_enabled = bool(flags.get("dedup", False))
+
+    max_corridors = max(1, int(max_corridors_in_context))
+    max_main = max(1, int(max_main_sentences_per_corridor))
+    max_support = max(0, int(max_support_per_corridor))
+    if compact_lite:
+        max_corridors = max(1, min(max_corridors, 2))
+        max_main = max(1, min(max_main, 2))
+        max_support = max(1, min(max_support, 2))
+    selected_corridors = ranked_corridors[:max_corridors]
+    truncated_corridors = max(0, len(ranked_corridors) - len(selected_corridors))
+
+    question_tokens = _token_set(sample.question)
+    bundles = []
+    assigned_bridge_answer_ids = set()
+    dedup_removed_count = 0
+    dedup_candidate_count = 0
+    for idx, corridor in enumerate(selected_corridors, start=1):
+        score_map = corridor.get("sentence_score_map", {}) or {}
+        main_candidates = order_corridor_sentences(corridor, sentence_map=sentence_map)
+        ranked_main = _rank_sentence_ids(
+            candidate_ids=main_candidates,
+            sentence_map=sentence_map,
+            sentence_score_map=score_map,
+            question_tokens=question_tokens,
+            selected_ids=[],
+        )
+        anchor_ids = ranked_main[:max_main]
+
+        connector_ids = _ordered_unique(_corridor_get(corridor, "connector_adjacent_unit_ids", "connector_adjacent_sentence_ids"))
+        connector_ids = [sid for sid in connector_ids if sid in sentence_map and sid not in set(anchor_ids)]
+        bridge_score_map = dict(score_map)
+        for sid in connector_ids:
+            bridge_score_map[sid] = float(bridge_score_map.get(sid, 0.0)) + 0.10
+        ranked_bridge = _rank_sentence_ids(
+            candidate_ids=connector_ids,
+            sentence_map=sentence_map,
+            sentence_score_map=bridge_score_map,
+            question_tokens=question_tokens,
+            selected_ids=anchor_ids,
+        )
+        bridge_budget = max(1, int(max_support / 2)) if max_support > 0 else 0
+        bridge_ids = ranked_bridge[:bridge_budget]
+
+        support_candidates = select_support_sentences(
+            corridor,
+            main_sentence_ids=anchor_ids,
+            max_support_per_corridor=None,
+            sentence_map=sentence_map,
+        )
+        answer_candidates = [sid for sid in support_candidates if sid not in set(anchor_ids) and sid not in set(bridge_ids)]
+        ranked_answer = _rank_sentence_ids(
+            candidate_ids=answer_candidates,
+            sentence_map=sentence_map,
+            sentence_score_map=score_map,
+            question_tokens=question_tokens,
+            selected_ids=anchor_ids + bridge_ids,
+        )
+        answer_budget = max(0, int(max_support) - len(bridge_ids))
+        answer_ids = ranked_answer[:answer_budget]
+        if not answer_ids and ranked_answer and max_support > 0:
+            answer_ids = ranked_answer[:1]
+
+        if dedup_enabled:
+            before = len(bridge_ids) + len(answer_ids)
+            dedup_candidate_count += before
+            bridge_ids = [sid for sid in bridge_ids if sid not in assigned_bridge_answer_ids]
+            answer_ids = [sid for sid in answer_ids if sid not in assigned_bridge_answer_ids]
+            after = len(bridge_ids) + len(answer_ids)
+            dedup_removed_count += max(0, before - after)
+            for sid in bridge_ids + answer_ids:
+                assigned_bridge_answer_ids.add(sid)
+
+        ordered_ids = _ordered_unique(anchor_ids + bridge_ids + answer_ids)
+        if not ordered_ids:
+            truncated_corridors += 1
+            continue
+        bundles.append(
+            {
+                "bundle_id": f"b{idx:02d}",
+                "corridor_id": str(corridor.get("corridor_id", f"c{idx:02d}") or f"c{idx:02d}"),
+                "corridor_score": float(corridor.get("corridor_score", 0.0)),
+                "anchors": list(corridor.get("anchors", ["-", "-"]) or ["-", "-"]),
+                "anchor_sentence_ids": list(anchor_ids),
+                "bridge_sentence_ids": list(bridge_ids),
+                "answer_sentence_ids": list(answer_ids),
+                "ordered_sentence_ids": list(ordered_ids),
+            }
+        )
+
+    max_total = max_total_sentences if max_total_sentences is not None else max(1, (max_corridors * (max_main + max_support)))
+    max_total = max(1, int(max_total))
+    kept_bundles, rendered_sentence_ids, truncated_bundle_count, truncated_sentences = _clip_path_bundles_to_budget(
+        bundles=bundles,
+        max_total_sentences=max_total,
+    )
+    truncated_corridors += int(truncated_bundle_count)
+
+    lines = [f"Question: {sample.question}", ""]
+    rendered_corridor_ids = []
+    complete_path_rank = 0
+    adjacency_hits = 0
+    adjacency_total = 0
+    bundles_with_answer = 0
+    total_bundle_chunks = 0
+    for idx, bundle in enumerate(kept_bundles, start=1):
+        anchors = list(bundle.get("anchors", ["-", "-"]) or ["-", "-"])
+        if len(anchors) >= 2:
+            anchor_text = f"{anchors[0]} ↔ {anchors[1]}"
+        elif anchors:
+            anchor_text = str(anchors[0])
+        else:
+            anchor_text = "-"
+        lines.append(
+            f"[PathBundle {idx} | score={float(bundle.get('corridor_score', 0.0)):.3f} | anchors={anchor_text}]"
+        )
+        role_blocks = (
+            ("Anchor", list(bundle.get("anchor_sentence_ids", []) or [])),
+            ("Bridge", list(bundle.get("bridge_sentence_ids", []) or [])),
+            ("Answer", list(bundle.get("answer_sentence_ids", []) or [])),
+        )
+        for role_name, sid_list in role_blocks:
+            if not sid_list:
+                continue
+            lines.append(f"{role_name}:")
+            for sid in sid_list:
+                lines.append(f"- {sentence_map.get(sid, '')}")
+        lines.append("")
+
+        rendered_corridor_ids.append(str(bundle.get("corridor_id", "")))
+        ordered_ids = list(bundle.get("ordered_sentence_ids", []) or [])
+        total_bundle_chunks += int(len(ordered_ids))
+        has_anchor = bool(bundle.get("anchor_sentence_ids", []))
+        has_bridge = bool(bundle.get("bridge_sentence_ids", []))
+        has_answer = bool(bundle.get("answer_sentence_ids", []))
+        if has_answer:
+            bundles_with_answer += 1
+        if complete_path_rank <= 0 and has_anchor and has_bridge and has_answer:
+            complete_path_rank = int(idx)
+        if has_bridge and has_answer:
+            adjacency_total += 1
+            bridge_set = set(bundle.get("bridge_sentence_ids", []) or [])
+            answer_set = set(bundle.get("answer_sentence_ids", []) or [])
+            last_bridge_pos = max((pos for pos, sid in enumerate(ordered_ids) if sid in bridge_set), default=-1)
+            first_answer_pos = min((pos for pos, sid in enumerate(ordered_ids) if sid in answer_set), default=10**9)
+            if first_answer_pos == last_bridge_pos + 1:
+                adjacency_hits += 1
+
+    while lines and not lines[-1].strip():
+        lines.pop()
+
+    rendered_sentences = [sentence_map.get(sid, "") for sid in rendered_sentence_ids if sentence_map.get(sid, "")]
+    bundle_count = int(len(kept_bundles))
+    avg_chunks_per_bundle = float(_safe_ratio(total_bundle_chunks, max(1, bundle_count)))
+    bridge_answer_adjacency_rate = float(_safe_ratio(adjacency_hits, max(1, adjacency_total)))
+    bundle_dedup_ratio = float(_safe_ratio(dedup_removed_count, max(1, dedup_candidate_count)))
+    answer_path_coverage = float(_safe_ratio(bundles_with_answer, max(1, bundle_count)))
+
+    return RenderedContext(
+        sample_id=sample.qid,
+        method=retrieval_result.method,
+        text="\n".join(lines),
+        sentences=rendered_sentences,
+        sentence_ids=rendered_sentence_ids,
+        truncated=(truncated_corridors > 0 or truncated_sentences > 0),
+        render_mode="path_bundle",
+        rendered_corridor_ids=_ordered_unique(rendered_corridor_ids),
+        truncated_corridor_count=int(truncated_corridors),
+        truncated_sentence_count=int(truncated_sentences),
+        retrieval_selected_sentence_ids=list(retrieval_result.selected_sentence_ids or []),
+        metadata={
+            "selected_unit_type": _selected_unit_type(retrieval_result),
+            "path_bundle_ordered_enabled": bool(flags.get("ordered", True)),
+            "path_bundle_dedup_enabled": bool(dedup_enabled),
+            "path_bundle_compact_lite_enabled": bool(compact_lite),
+            "path_bundle_count": float(bundle_count),
+            "avg_chunks_per_bundle": float(avg_chunks_per_bundle),
+            "bridge_answer_adjacency_rate": float(bridge_answer_adjacency_rate),
+            "first_complete_path_rank": float(complete_path_rank),
+            "bundle_dedup_ratio": float(bundle_dedup_ratio),
+            "answer_path_coverage": float(answer_path_coverage),
+            "conversion_after_path_bundle": 0.0,
+        },
+    )
 
 
 def _sentence_id_parts(sentence_id):
@@ -1661,6 +1947,23 @@ def render_context(
             top_corridors=int(top_corridors),
             max_sentences=int(max_sentences),
             reserve_top_corridor=bool(reserve_top_corridor),
+            order_strategy=order_strategy,
+        )
+    elif mode == "path_bundle":
+        max_corridors = max(1, int(max_corridors_in_context))
+        max_main = max(1, int(max_main_sentences_per_corridor))
+        max_support = max(0, int(max_support_per_corridor))
+        max_total = max_total_sentences if max_total_sentences is not None else max_context_sentences
+        if max_context_sentences is not None:
+            max_total = min(int(max_total), int(max_context_sentences))
+        max_total = max(1, int(max_total))
+        rendered = render_path_bundle_context(
+            sample,
+            retrieval_result,
+            max_corridors_in_context=max_corridors,
+            max_main_sentences_per_corridor=max_main,
+            max_support_per_corridor=max_support,
+            max_total_sentences=max_total,
             order_strategy=order_strategy,
         )
     elif mode == "corridor":

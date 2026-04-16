@@ -208,6 +208,14 @@ STAGEWISE_LOSS_KEYS = (
     "conversion_after_bridge",
     "conversion_after_preserve",
     "conversion_after_path_preserve",
+    "path_bundle_count",
+    "avg_chunks_per_bundle",
+    "bridge_answer_adjacency_rate",
+    "first_complete_path_rank",
+    "bundle_dedup_ratio",
+    "answer_path_coverage",
+    "conversion_after_path_bundle",
+    "answer_present_but_generation_fail",
     "hotpot_overpreserve_rate",
     "answer_conversion",
     "em_conversion",
@@ -289,6 +297,14 @@ def _extract_stagewise_from_row(row):
         "bridge_to_answer_path_hit",
         "conversion_after_preserve",
         "conversion_after_path_preserve",
+        "path_bundle_count",
+        "avg_chunks_per_bundle",
+        "bridge_answer_adjacency_rate",
+        "first_complete_path_rank",
+        "bundle_dedup_ratio",
+        "answer_path_coverage",
+        "conversion_after_path_bundle",
+        "answer_present_but_generation_fail",
         "hotpot_overpreserve_rate",
         "redundancy_rate",
         "connector_quality",
@@ -297,6 +313,7 @@ def _extract_stagewise_from_row(row):
             metrics[key] = _safe_float(diagnostics.get(key, 0.0), 0.0)
 
     m = ((row or {}).get("metrics", {}) or {})
+    rendered_meta = (((row or {}).get("rendered", {}) or {}).get("metadata", {}) or {})
     sf_recall = _safe_float(m.get("supporting_fact_recall", 0.0), 0.0)
     rendered_sf_recall = _safe_float(m.get("rendered_supporting_fact_recall", 0.0), 0.0)
     f1 = _safe_float(m.get("f1", m.get("F1", 0.0)), 0.0)
@@ -346,6 +363,39 @@ def _extract_stagewise_from_row(row):
     )
     path_preserve_activation_rate = _safe_float(
         diagnostics.get("path_preserve_activation_rate", metrics.get("path_preserve_activation_rate", 0.0)),
+        0.0,
+    )
+    path_bundle_count = _safe_float(
+        diagnostics.get("path_bundle_count", rendered_meta.get("path_bundle_count", metrics.get("path_bundle_count", 0.0))),
+        0.0,
+    )
+    avg_chunks_per_bundle = _safe_float(
+        diagnostics.get(
+            "avg_chunks_per_bundle",
+            rendered_meta.get("avg_chunks_per_bundle", metrics.get("avg_chunks_per_bundle", 0.0)),
+        ),
+        0.0,
+    )
+    bridge_answer_adjacency_rate = _safe_float(
+        diagnostics.get(
+            "bridge_answer_adjacency_rate",
+            rendered_meta.get("bridge_answer_adjacency_rate", metrics.get("bridge_answer_adjacency_rate", 0.0)),
+        ),
+        0.0,
+    )
+    first_complete_path_rank = _safe_float(
+        diagnostics.get(
+            "first_complete_path_rank",
+            rendered_meta.get("first_complete_path_rank", metrics.get("first_complete_path_rank", 0.0)),
+        ),
+        0.0,
+    )
+    bundle_dedup_ratio = _safe_float(
+        diagnostics.get("bundle_dedup_ratio", rendered_meta.get("bundle_dedup_ratio", metrics.get("bundle_dedup_ratio", 0.0))),
+        0.0,
+    )
+    answer_path_coverage = _safe_float(
+        diagnostics.get("answer_path_coverage", rendered_meta.get("answer_path_coverage", metrics.get("answer_path_coverage", 0.0))),
         0.0,
     )
     anchor_bridge_balance = _safe_float(
@@ -401,6 +451,12 @@ def _extract_stagewise_from_row(row):
     metrics["incomplete_path_rate"] = max(0.0, min(1.0, incomplete_path_rate))
     metrics["chain_compactness"] = max(0.0, min(1.0, chain_compactness))
     metrics["path_preserve_activation_rate"] = max(0.0, min(1.0, path_preserve_activation_rate))
+    metrics["path_bundle_count"] = max(0.0, float(path_bundle_count))
+    metrics["avg_chunks_per_bundle"] = max(0.0, float(avg_chunks_per_bundle))
+    metrics["bridge_answer_adjacency_rate"] = max(0.0, min(1.0, bridge_answer_adjacency_rate))
+    metrics["first_complete_path_rank"] = max(0.0, float(first_complete_path_rank))
+    metrics["bundle_dedup_ratio"] = max(0.0, min(1.0, bundle_dedup_ratio))
+    metrics["answer_path_coverage"] = max(0.0, min(1.0, answer_path_coverage))
     metrics["anchor_bridge_balance"] = max(0.0, min(1.0, anchor_bridge_balance))
     metrics["hotpot_overpreserve_rate"] = max(0.0, min(1.0, hotpot_overpreserve_rate))
     metrics["conversion_after_bridge"] = (
@@ -423,6 +479,15 @@ def _extract_stagewise_from_row(row):
             and bridge_present
             and answer_side_present
             and path_complete_rate >= 0.45
+            and (f1 > 0.0 or em > 0.0)
+        )
+        else 0.0
+    )
+    metrics["conversion_after_path_bundle"] = (
+        1.0
+        if (
+            path_bundle_count >= 1.0
+            and answer_path_coverage >= 0.20
             and (f1 > 0.0 or em > 0.0)
         )
         else 0.0
@@ -451,6 +516,7 @@ def _extract_stagewise_from_row(row):
         metrics["error_bucket_answer_present_generation_fail"] = 1.0
     elif bridge_noisy:
         metrics["error_bucket_bridge_present_noisy"] = 1.0
+    metrics["answer_present_but_generation_fail"] = float(metrics.get("error_bucket_answer_present_generation_fail", 0.0))
     return metrics
 
 

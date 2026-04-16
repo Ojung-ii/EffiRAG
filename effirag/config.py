@@ -290,6 +290,7 @@ class RagConfig(RetrievalConfig):
     llm_timeout_sec: float = 120.0
     llm_max_new_tokens: int = 64
     max_context_sentences: int = 14
+    # flat | corridor | corridor_aware_flat | path_bundle
     render_mode: str = ""
     max_corridors_in_context: int = 3
     max_main_sentences_per_corridor: int = 3
@@ -325,6 +326,7 @@ class RagConfig(RetrievalConfig):
     top_corridors: int = 3
     max_sentences: int = 14
     reserve_top_corridor: bool = False
+    # score | retrieval | corridor_rank | query_bridge_answer (+path_bundle_dedup/+path_bundle_compactlite for path_bundle mode)
     order_strategy: str = "score"
     measure_gpu_peak: bool = False
     measure_cpu_ram: bool = False
