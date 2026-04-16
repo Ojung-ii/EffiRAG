@@ -26,6 +26,8 @@ SKIP_COMPLETED="${SKIP_COMPLETED:-true}"
 STOP_ON_FAILURE="${STOP_ON_FAILURE:-true}"
 RUN_PREFLIGHT_CHECKS="${RUN_PREFLIGHT_CHECKS:-true}"
 RUN_SMOKE="${RUN_SMOKE:-false}"
+AUTO_RESUME_LATEST="${AUTO_RESUME_LATEST:-true}"
+FORCE_NEW_ROUND="${FORCE_NEW_ROUND:-false}"
 # Universal embedding regime is frozen for this round.
 UNIVERSAL_REGIME="${UNIVERSAL_REGIME:-mid}"
 UNIVERSAL_EMBED_MAX_LEN="${UNIVERSAL_EMBED_MAX_LEN:-256}"
@@ -56,11 +58,32 @@ ROUND_METRICS_REF="${ROUND_METRICS_REF:-$(find outputs -type f -name round_metri
 RUN_RECORDS_REF="${RUN_RECORDS_REF:-$(find outputs -type f -name run_records.tsv | sort | tail -n 1)}"
 CURRENT_PROPOSAL_ROUND_METRICS="${CURRENT_PROPOSAL_ROUND_METRICS:-$(find outputs/overnight_proposal_round -type f -name round_metrics.json 2>/dev/null | sort | tail -n 1)}"
 
+ROUND_ROOT_SOURCE="new_round"
 if [[ -n "${RESUME_ROUND_ROOT:-}" ]]; then
   ROUND_ROOT="${RESUME_ROUND_ROOT}"
+  ROUND_ROOT_SOURCE="resume_env"
+elif [[ "${FORCE_NEW_ROUND}" == "true" ]]; then
+  RUN_STAMP="$(date +%Y%m%d_%H%M%S)"
+  ROUND_ROOT="outputs/overnight_path_context_conversion/${RUN_STAMP}"
+  ROUND_ROOT_SOURCE="force_new"
+elif [[ "${AUTO_RESUME_LATEST}" == "true" ]]; then
+  LATEST_ROUND_ROOT="$(
+    find outputs/overnight_path_context_conversion -mindepth 1 -maxdepth 1 -type d 2>/dev/null \
+      | sort \
+      | tail -n 1
+  )"
+  if [[ -n "${LATEST_ROUND_ROOT}" ]]; then
+    ROUND_ROOT="${LATEST_ROUND_ROOT}"
+    ROUND_ROOT_SOURCE="auto_resume_latest"
+  else
+    RUN_STAMP="$(date +%Y%m%d_%H%M%S)"
+    ROUND_ROOT="outputs/overnight_path_context_conversion/${RUN_STAMP}"
+    ROUND_ROOT_SOURCE="new_round"
+  fi
 else
   RUN_STAMP="$(date +%Y%m%d_%H%M%S)"
   ROUND_ROOT="outputs/overnight_path_context_conversion/${RUN_STAMP}"
+  ROUND_ROOT_SOURCE="new_round"
 fi
 
 LOG_ROOT="logs/overnight_path_context_conversion/$(basename "${ROUND_ROOT}")"
@@ -966,6 +989,25 @@ run_prompt_sanity() {
   local max_model_len="$5"
   local sample_limit="$6"
 
+  if [[ "${SKIP_COMPLETED}" == "true" && -f "${out_json}" ]]; then
+    if "${PYTHON_BIN}" - "${out_json}" "${sample_limit}" <<'PY'
+import json,sys
+from pathlib import Path
+p=Path(sys.argv[1])
+limit=max(1,int(float(sys.argv[2])))
+obj=json.loads(p.read_text(encoding='utf-8'))
+ok=bool(obj.get('pass', False))
+sample_count=int(obj.get('sample_count', 0) or 0)
+if ok and sample_count >= limit:
+    raise SystemExit(0)
+raise SystemExit(1)
+PY
+    then
+      log_msg "[SKIP] prompt_sanity dataset=${dataset} (complete preflight found)"
+      return 0
+    fi
+  fi
+
   "${PYTHON_BIN}" - \
     "${dataset}" \
     "${profile_key}" \
@@ -1649,6 +1691,8 @@ run_variant_for_dataset() {
 # Execution starts here
 # -----------------------------
 maybe_snapshot_git_state
+
+log_msg "[INFO] round_root=${ROUND_ROOT} (source=${ROUND_ROOT_SOURCE})"
 
 if [[ "${RUN_PREFLIGHT_CHECKS}" == "true" ]]; then
   log_msg "[CHECK] python -m py_compile effirag/*.py"
