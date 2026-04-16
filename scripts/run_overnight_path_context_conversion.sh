@@ -48,6 +48,8 @@ D2_HOTPOT_REF_SUMMARY="${D2_HOTPOT_REF_SUMMARY:-outputs/exp_retrieval_gap_rechec
 D2_WIKI_REF_SUMMARY="${D2_WIKI_REF_SUMMARY:-outputs/exp_retrieval_gap/2wikimultihopqa/D2/rag/2wikimultihopqa/20260405_143345_219316/rag_summary.json}"
 HIPPORAG2_HOTPOT_SUMMARY="${HIPPORAG2_HOTPOT_SUMMARY:-/home/ojungii/HippoRAG2/outputs/hotpotqa/hotpotqa_eval_summary_results.json}"
 HIPPORAG2_WIKI_SUMMARY="${HIPPORAG2_WIKI_SUMMARY:-/home/ojungii/HippoRAG2/outputs/2wikimultihopqa/2wikimultihopqa_eval_summary_results.json}"
+# Use fixed HippoRAG2 reference table (2026-03-23/24) for consistent gap tracking.
+HIPPORAG2_USE_FIXED_TABLE="${HIPPORAG2_USE_FIXED_TABLE:-true}"
 
 # Optional artifact sources for traceability
 ROUND_METRICS_REF="${ROUND_METRICS_REF:-$(find outputs -type f -name round_metrics.json | sort | tail -n 1)}"
@@ -159,7 +161,8 @@ build_reference_bundle() {
     "${HIPPORAG2_WIKI_SUMMARY}" \
     "${ROUND_METRICS_REF}" \
     "${RUN_RECORDS_REF}" \
-    "${CURRENT_PROPOSAL_ROUND_METRICS}" <<'PY'
+    "${CURRENT_PROPOSAL_ROUND_METRICS}" \
+    "${HIPPORAG2_USE_FIXED_TABLE}" <<'PY'
 import json
 import sys
 from pathlib import Path
@@ -181,7 +184,8 @@ import yaml
     round_metrics_ref,
     run_records_ref,
     current_proposal_round_metrics,
-) = sys.argv[1:16]
+    hippo_use_fixed_table,
+) = sys.argv[1:17]
 
 
 def _load_json(path):
@@ -196,6 +200,10 @@ def _safe_float(v, default=0.0):
         return float(v)
     except Exception:
         return float(default)
+
+
+def _as_bool(v):
+    return str(v or "").strip().lower() in {"1", "true", "t", "yes", "y", "on"}
 
 
 def _metric(summary, *keys):
@@ -357,8 +365,57 @@ def _ref_item(label, path):
         "r1": _r_at(summary, 1),
         "r5": _r_at(summary, 5),
         "r20": _r_at(summary, 20),
+        "retrieval_ms": _safe_float(summary.get("retrieval_latency_ms", summary.get("retrieval_ms", 0.0)), 0.0),
+        "generation_ms": _safe_float(summary.get("generation_latency_ms", summary.get("generation_ms", 0.0)), 0.0),
+        "total_ms": _safe_float(summary.get("total_latency_ms", summary.get("total_ms", 0.0)), 0.0),
         "summary": summary,
         "sidecar": sidecar,
+    }
+
+
+def _fixed_hipporag2_item(dataset):
+    dataset = str(dataset or "").strip().lower()
+    table = {
+        "hotpotqa": {
+            "r1": 0.4380,
+            "r5": 0.9500,
+            "r20": 0.9890,
+            "em": 0.3350,
+            "f1": 0.5154,
+            "retrieval_s": 207.7214,
+            "generation_s": 0.3412,
+            "total_s": 208.0626,
+            "timestamp_kst": "2026-03-23T21:37:21+09:00",
+        },
+        "2wikimultihopqa": {
+            "r1": 0.4088,
+            "r5": 0.8955,
+            "r20": 0.9560,
+            "em": 0.2670,
+            "f1": 0.4499,
+            "retrieval_s": 873.6446,
+            "generation_s": 2003.5872,
+            "total_s": 2877.2318,
+            "timestamp_kst": "2026-03-24T00:39:02+09:00",
+        },
+    }
+    item = table.get(dataset)
+    if item is None:
+        raise RuntimeError(f"unsupported_fixed_hipporag2_dataset:{dataset}")
+    return {
+        "label": "HippoRAG2",
+        "path": f"fixed_table://hipporag2/{dataset}/2026-03-24",
+        "run_dir": "",
+        "sidecar_config_path": "",
+        "f1": _safe_float(item.get("f1", 0.0), 0.0),
+        "em": _safe_float(item.get("em", 0.0), 0.0),
+        "r1": _safe_float(item.get("r1", 0.0), 0.0),
+        "r5": _safe_float(item.get("r5", 0.0), 0.0),
+        "r20": _safe_float(item.get("r20", 0.0), 0.0),
+        "retrieval_ms": _safe_float(item.get("retrieval_s", 0.0), 0.0) * 1000.0,
+        "generation_ms": _safe_float(item.get("generation_s", 0.0), 0.0) * 1000.0,
+        "total_ms": _safe_float(item.get("total_s", 0.0), 0.0) * 1000.0,
+        "timestamp_kst": str(item.get("timestamp_kst", "")),
     }
 
 
@@ -384,8 +441,12 @@ wiki_best_label = "w3" if wiki_w3 is not None else "e1"
 
 d2_hotpot = _ref_item("D2", d2_hotpot_path)
 d2_wiki = _ref_item("D2", d2_wiki_path)
-hippo_hotpot = _ref_item("HippoRAG2", hippo_hotpot_path)
-hippo_wiki = _ref_item("HippoRAG2", hippo_wiki_path)
+if _as_bool(hippo_use_fixed_table):
+    hippo_hotpot = _fixed_hipporag2_item("hotpotqa")
+    hippo_wiki = _fixed_hipporag2_item("2wikimultihopqa")
+else:
+    hippo_hotpot = _ref_item("HippoRAG2", hippo_hotpot_path)
+    hippo_wiki = _ref_item("HippoRAG2", hippo_wiki_path)
 
 payload = {
     "hotpotqa": {
@@ -1422,8 +1483,9 @@ for ds in ('hotpotqa', '2wikimultihopqa'):
             'rendered_supporting_fact_recall': 0.0,
             'em': _f(ref.get('em', 0.0)),
             'f1': _f(ref.get('f1', 0.0)),
-            'retrieval_latency_ms': 0.0,
-            'total_latency_ms': 0.0,
+            'retrieval_latency_ms': _f(ref.get('retrieval_ms', 0.0)),
+            'generation_latency_ms': _f(ref.get('generation_ms', 0.0)),
+            'total_latency_ms': _f(ref.get('total_ms', 0.0)),
         }
         rows.append(_row('reference', f"{label}({ref.get('label','')})", ds, str(ref.get('path', '')), fake))
 
@@ -1647,25 +1709,21 @@ log_msg "[Stage P0] baseline_mid_reconfirm"
 run_variant_for_dataset "p0" "baseline_mid_reconfirm" "hotpotqa" "hotpot_f2" "${UNIVERSAL_REGIME}" "baseline" "inherit" 0 0 "${LIMIT_RAG}"
 run_variant_for_dataset "p0" "baseline_mid_reconfirm" "2wikimultihopqa" "${WIKI_CORE_PROFILE}" "${UNIVERSAL_REGIME}" "baseline" "inherit" 0 0 "${LIMIT_RAG}"
 
-log_msg "[Stage P1] r2_connector_core"
-run_variant_for_dataset "p1" "r2_connector_core" "hotpotqa" "hotpot_f2" "${UNIVERSAL_REGIME}" "r2_connector_core" "inherit" 0 0 "${LIMIT_RAG}"
-run_variant_for_dataset "p1" "r2_connector_core" "2wikimultihopqa" "${WIKI_CORE_PROFILE}" "${UNIVERSAL_REGIME}" "r2_connector_core" "inherit" 0 0 "${LIMIT_RAG}"
+log_msg "[Stage P1] r2_plus_path_preserve_reconfirm"
+run_variant_for_dataset "p1" "r2_plus_path_preserve_reconfirm" "hotpotqa" "hotpot_f2" "${UNIVERSAL_REGIME}" "r2_plus_path_preserve" "inherit" 0 0 "${LIMIT_RAG}"
+run_variant_for_dataset "p1" "r2_plus_path_preserve_reconfirm" "2wikimultihopqa" "${WIKI_CORE_PROFILE}" "${UNIVERSAL_REGIME}" "r2_plus_path_preserve" "inherit" 0 0 "${LIMIT_RAG}"
 
-log_msg "[Stage P2] r2_plus_path_preserve_reconfirm"
-run_variant_for_dataset "p2" "r2_plus_path_preserve_reconfirm" "hotpotqa" "hotpot_f2" "${UNIVERSAL_REGIME}" "r2_plus_path_preserve" "inherit" 0 0 "${LIMIT_RAG}"
-run_variant_for_dataset "p2" "r2_plus_path_preserve_reconfirm" "2wikimultihopqa" "${WIKI_CORE_PROFILE}" "${UNIVERSAL_REGIME}" "r2_plus_path_preserve" "inherit" 0 0 "${LIMIT_RAG}"
+log_msg "[Stage P2] r2_plus_path_preserve_path_ordered"
+run_variant_for_dataset "p2" "r2_plus_path_preserve_path_ordered" "hotpotqa" "hotpot_f2" "${UNIVERSAL_REGIME}" "r2_plus_path_preserve" "inherit" 0 0 "${LIMIT_RAG}"
+run_variant_for_dataset "p2" "r2_plus_path_preserve_path_ordered" "2wikimultihopqa" "${WIKI_CORE_PROFILE}" "${UNIVERSAL_REGIME}" "r2_plus_path_preserve" "inherit" 0 0 "${LIMIT_RAG}"
 
-log_msg "[Stage P3] r2_plus_path_preserve_path_ordered"
-run_variant_for_dataset "p3" "r2_plus_path_preserve_path_ordered" "hotpotqa" "hotpot_f2" "${UNIVERSAL_REGIME}" "r2_plus_path_preserve" "inherit" 0 0 "${LIMIT_RAG}"
-run_variant_for_dataset "p3" "r2_plus_path_preserve_path_ordered" "2wikimultihopqa" "${WIKI_CORE_PROFILE}" "${UNIVERSAL_REGIME}" "r2_plus_path_preserve" "inherit" 0 0 "${LIMIT_RAG}"
+log_msg "[Stage P3] r2_plus_path_preserve_path_ordered_dedup"
+run_variant_for_dataset "p3" "r2_plus_path_preserve_path_ordered_dedup" "hotpotqa" "hotpot_f2" "${UNIVERSAL_REGIME}" "r2_plus_path_preserve" "inherit" 0 0 "${LIMIT_RAG}"
+run_variant_for_dataset "p3" "r2_plus_path_preserve_path_ordered_dedup" "2wikimultihopqa" "${WIKI_CORE_PROFILE}" "${UNIVERSAL_REGIME}" "r2_plus_path_preserve" "inherit" 0 0 "${LIMIT_RAG}"
 
-log_msg "[Stage P4] r2_plus_path_preserve_path_ordered_dedup"
-run_variant_for_dataset "p4" "r2_plus_path_preserve_path_ordered_dedup" "hotpotqa" "hotpot_f2" "${UNIVERSAL_REGIME}" "r2_plus_path_preserve" "inherit" 0 0 "${LIMIT_RAG}"
-run_variant_for_dataset "p4" "r2_plus_path_preserve_path_ordered_dedup" "2wikimultihopqa" "${WIKI_CORE_PROFILE}" "${UNIVERSAL_REGIME}" "r2_plus_path_preserve" "inherit" 0 0 "${LIMIT_RAG}"
-
-log_msg "[Stage P5] r2_plus_path_preserve_path_ordered_compactlite"
-run_variant_for_dataset "p5" "r2_plus_path_preserve_path_ordered_compactlite" "hotpotqa" "hotpot_f2" "${UNIVERSAL_REGIME}" "r2_plus_path_preserve" "inherit" 0 0 "${LIMIT_RAG}"
-run_variant_for_dataset "p5" "r2_plus_path_preserve_path_ordered_compactlite" "2wikimultihopqa" "${WIKI_CORE_PROFILE}" "${UNIVERSAL_REGIME}" "r2_plus_path_preserve" "inherit" 0 0 "${LIMIT_RAG}"
+log_msg "[Stage P4] r2_plus_path_preserve_path_ordered_compactlite"
+run_variant_for_dataset "p4" "r2_plus_path_preserve_path_ordered_compactlite" "hotpotqa" "hotpot_f2" "${UNIVERSAL_REGIME}" "r2_plus_path_preserve" "inherit" 0 0 "${LIMIT_RAG}"
+run_variant_for_dataset "p4" "r2_plus_path_preserve_path_ordered_compactlite" "2wikimultihopqa" "${WIKI_CORE_PROFILE}" "${UNIVERSAL_REGIME}" "r2_plus_path_preserve" "inherit" 0 0 "${LIMIT_RAG}"
 
 log_msg "[CHECK] cache/meta race guard across generated configs"
 "${PYTHON_BIN}" - "${CFG_ROOT}" <<'PY'
