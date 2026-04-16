@@ -57,6 +57,9 @@ run_score_redundancy_weight: 0.10
 # - seed_run_connector_core_corridor_answer_preserve
 # - seed_run_connector_core_corridor_bridge_purity
 # - seed_run_connector_core_corridor_compact_answer_preserve
+# - p3_answer_preserve_base
+# - p3_answer_preserve_guarded_hotpot
+# - p3_answer_preserve_confidence_gated
 retrieval_objective_mode: baseline
 hybrid_anchor_recall_enabled: false
 hybrid_anchor_semantic_topn: 2
@@ -105,10 +108,20 @@ seed_objective_anchor_coverage_weight: 0.10
 corridor_compact_shaping_enabled: false
 corridor_answer_preserve_enabled: false
 corridor_bridge_purity_shaping_enabled: false
+corridor_answer_preserve_guarded_hotpot_enabled: false
+corridor_answer_preserve_confidence_gated_enabled: false
 corridor_compact_weight: 0.00
 corridor_answer_preserve_weight: 0.00
 corridor_bridge_purity_weight: 0.00
 corridor_answer_preserve_min_density: 0.30
+corridor_answer_preserve_light_boost_scale: 0.65
+corridor_answer_preserve_bridge_consistency_threshold: 0.55
+corridor_answer_preserve_confidence_threshold: 0.62
+corridor_answer_preserve_hotpot_anchor_bridge_sufficient: 0.70
+corridor_answer_preserve_hotpot_answer_density_cap: 0.72
+corridor_answer_preserve_hotpot_quota_cap: 0.40
+corridor_answer_preserve_hotpot_relax_factor: 0.35
+hotpot_overpreserve_answer_share_threshold: 0.10
 
 max_anchors: 3
 samples_per_anchor: 3

@@ -98,6 +98,9 @@ class RetrievalConfig:
     # seed_run_connector_core_corridor_answer_preserve
     # seed_run_connector_core_corridor_bridge_purity
     # seed_run_connector_core_corridor_compact_answer_preserve
+    # p3_answer_preserve_base
+    # p3_answer_preserve_guarded_hotpot
+    # p3_answer_preserve_confidence_gated
     retrieval_objective_mode: str = "baseline"
     hybrid_anchor_recall_enabled: bool = False
     hybrid_anchor_semantic_topn: int = 2
@@ -155,10 +158,20 @@ class RetrievalConfig:
     corridor_compact_shaping_enabled: bool = False
     corridor_answer_preserve_enabled: bool = False
     corridor_bridge_purity_shaping_enabled: bool = False
+    corridor_answer_preserve_guarded_hotpot_enabled: bool = False
+    corridor_answer_preserve_confidence_gated_enabled: bool = False
     corridor_compact_weight: float = 0.0
     corridor_answer_preserve_weight: float = 0.0
     corridor_bridge_purity_weight: float = 0.0
     corridor_answer_preserve_min_density: float = 0.30
+    corridor_answer_preserve_light_boost_scale: float = 0.65
+    corridor_answer_preserve_bridge_consistency_threshold: float = 0.55
+    corridor_answer_preserve_confidence_threshold: float = 0.62
+    corridor_answer_preserve_hotpot_anchor_bridge_sufficient: float = 0.70
+    corridor_answer_preserve_hotpot_answer_density_cap: float = 0.72
+    corridor_answer_preserve_hotpot_quota_cap: float = 0.40
+    corridor_answer_preserve_hotpot_relax_factor: float = 0.35
+    hotpot_overpreserve_answer_share_threshold: float = 0.10
     corridor_fallback_text_cap: int = 4
     top1_correction_enabled: bool = False
     top1_correction_topk: int = 3
@@ -365,6 +378,14 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["corridor_answer_preserve_enabled"] = parse_bool(merged["corridor_answer_preserve_enabled"])
     if "corridor_bridge_purity_shaping_enabled" in merged:
         merged["corridor_bridge_purity_shaping_enabled"] = parse_bool(merged["corridor_bridge_purity_shaping_enabled"])
+    if "corridor_answer_preserve_guarded_hotpot_enabled" in merged:
+        merged["corridor_answer_preserve_guarded_hotpot_enabled"] = parse_bool(
+            merged["corridor_answer_preserve_guarded_hotpot_enabled"]
+        )
+    if "corridor_answer_preserve_confidence_gated_enabled" in merged:
+        merged["corridor_answer_preserve_confidence_gated_enabled"] = parse_bool(
+            merged["corridor_answer_preserve_confidence_gated_enabled"]
+        )
     if "chunk_node_enabled_in_diffusion" in merged:
         merged["chunk_node_enabled_in_diffusion"] = parse_bool(merged["chunk_node_enabled_in_diffusion"])
     if "chunk_package_enabled" in merged:

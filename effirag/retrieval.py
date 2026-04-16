@@ -194,6 +194,13 @@ def _resolve_retrieval_objective_mode(cfg):
         "seed_run_connector_core_corridor_bridge_purity": "seed_run_connector_core_corridor_bridge_purity",
         "p5_compact_answer_preserve": "seed_run_connector_core_corridor_compact_answer_preserve",
         "seed_run_connector_core_corridor_compact_answer_preserve": "seed_run_connector_core_corridor_compact_answer_preserve",
+        # Guarded answer-preserve refinement round
+        "p3_base": "p3_answer_preserve_base",
+        "p3_answer_preserve_base": "p3_answer_preserve_base",
+        "p3_guarded_hotpot": "p3_answer_preserve_guarded_hotpot",
+        "p3_answer_preserve_guarded_hotpot": "p3_answer_preserve_guarded_hotpot",
+        "p3_confidence_gated": "p3_answer_preserve_confidence_gated",
+        "p3_answer_preserve_confidence_gated": "p3_answer_preserve_confidence_gated",
     }
     mode = aliases.get(mode, mode)
     valid = {
@@ -219,6 +226,10 @@ def _resolve_retrieval_objective_mode(cfg):
         "seed_run_connector_core_corridor_answer_preserve",
         "seed_run_connector_core_corridor_bridge_purity",
         "seed_run_connector_core_corridor_compact_answer_preserve",
+        # Guarded answer-preserve refinement round
+        "p3_answer_preserve_base",
+        "p3_answer_preserve_guarded_hotpot",
+        "p3_answer_preserve_confidence_gated",
     }
     if mode not in valid:
         mode = "baseline"
@@ -234,6 +245,12 @@ def _resolve_retrieval_objective_flags(cfg):
     corridor_compact = bool(getattr(cfg, "corridor_compact_shaping_enabled", False))
     corridor_answer_preserve = bool(getattr(cfg, "corridor_answer_preserve_enabled", False))
     corridor_bridge_purity = bool(getattr(cfg, "corridor_bridge_purity_shaping_enabled", False))
+    corridor_answer_preserve_guarded_hotpot = bool(
+        getattr(cfg, "corridor_answer_preserve_guarded_hotpot_enabled", False)
+    )
+    corridor_answer_preserve_confidence_gated = bool(
+        getattr(cfg, "corridor_answer_preserve_confidence_gated_enabled", False)
+    )
 
     if mode == "hybrid_anchor_recall":
         hybrid = True
@@ -295,6 +312,35 @@ def _resolve_retrieval_objective_flags(cfg):
         corridor_compact = True
         corridor_answer_preserve = True
         corridor_bridge_purity = False
+        corridor_answer_preserve_guarded_hotpot = False
+        corridor_answer_preserve_confidence_gated = False
+    elif mode == "p3_answer_preserve_base":
+        bridge_induction = True
+        role_chunk = False
+        coverage = False
+        corridor_compact = False
+        corridor_answer_preserve = True
+        corridor_bridge_purity = False
+        corridor_answer_preserve_guarded_hotpot = False
+        corridor_answer_preserve_confidence_gated = False
+    elif mode == "p3_answer_preserve_guarded_hotpot":
+        bridge_induction = True
+        role_chunk = False
+        coverage = False
+        corridor_compact = False
+        corridor_answer_preserve = True
+        corridor_bridge_purity = False
+        corridor_answer_preserve_guarded_hotpot = True
+        corridor_answer_preserve_confidence_gated = False
+    elif mode == "p3_answer_preserve_confidence_gated":
+        bridge_induction = True
+        role_chunk = False
+        coverage = False
+        corridor_compact = False
+        corridor_answer_preserve = True
+        corridor_bridge_purity = False
+        corridor_answer_preserve_guarded_hotpot = False
+        corridor_answer_preserve_confidence_gated = True
 
     return {
         "mode": str(mode),
@@ -305,6 +351,8 @@ def _resolve_retrieval_objective_flags(cfg):
         "corridor_compact_shaping": bool(corridor_compact),
         "corridor_answer_preserve_shaping": bool(corridor_answer_preserve),
         "corridor_bridge_purity_shaping": bool(corridor_bridge_purity),
+        "corridor_answer_preserve_guarded_hotpot": bool(corridor_answer_preserve_guarded_hotpot),
+        "corridor_answer_preserve_confidence_gated": bool(corridor_answer_preserve_confidence_gated),
     }
 
 
@@ -328,6 +376,8 @@ def _apply_connector_objective_profile(cfg, objective_flags):
     mode = str(flags.get("mode", "baseline") or "baseline").strip().lower()
     updates = {}
     profile_applied = "none"
+    flags["corridor_answer_preserve_guarded_hotpot"] = False
+    flags["corridor_answer_preserve_confidence_gated"] = False
 
     def _apply_run_bridge_aware():
         _set_cfg_attr_if_changed(cfg, "run_score_semantic_weight", 0.22, updates)
@@ -381,18 +431,38 @@ def _apply_connector_objective_profile(cfg, objective_flags):
         _set_cfg_attr_if_changed(cfg, "seed_objective_bridge_weight", 0.28, updates)
         _set_cfg_attr_if_changed(cfg, "seed_objective_anchor_coverage_weight", 0.16, updates)
 
-    def _configure_corridor_shaping(compact_enabled, answer_preserve_enabled, bridge_purity_enabled):
+    def _configure_corridor_shaping(
+        compact_enabled,
+        answer_preserve_enabled,
+        bridge_purity_enabled,
+        guarded_hotpot_enabled=False,
+        confidence_gated_enabled=False,
+    ):
         compact_flag = bool(compact_enabled)
         answer_flag = bool(answer_preserve_enabled)
         purity_flag = bool(bridge_purity_enabled)
+        guarded_hotpot_flag = bool(guarded_hotpot_enabled)
+        confidence_gated_flag = bool(confidence_gated_enabled)
         _set_cfg_attr_if_changed(cfg, "corridor_compact_shaping_enabled", compact_flag, updates)
         _set_cfg_attr_if_changed(cfg, "corridor_answer_preserve_enabled", answer_flag, updates)
         _set_cfg_attr_if_changed(cfg, "corridor_bridge_purity_shaping_enabled", purity_flag, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_answer_preserve_guarded_hotpot_enabled", guarded_hotpot_flag, updates)
+        _set_cfg_attr_if_changed(
+            cfg, "corridor_answer_preserve_confidence_gated_enabled", confidence_gated_flag, updates
+        )
         _set_cfg_attr_if_changed(cfg, "corridor_compact_weight", (0.18 if compact_flag else 0.0), updates)
         _set_cfg_attr_if_changed(cfg, "corridor_answer_preserve_weight", (0.22 if answer_flag else 0.0), updates)
         _set_cfg_attr_if_changed(cfg, "corridor_bridge_purity_weight", (0.22 if purity_flag else 0.0), updates)
         # Guard only used when answer-preserve shaping is on.
         _set_cfg_attr_if_changed(cfg, "corridor_answer_preserve_min_density", 0.30, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_answer_preserve_light_boost_scale", 0.65, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_answer_preserve_bridge_consistency_threshold", 0.55, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_answer_preserve_confidence_threshold", 0.62, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_answer_preserve_hotpot_anchor_bridge_sufficient", 0.70, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_answer_preserve_hotpot_answer_density_cap", 0.72, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_answer_preserve_hotpot_quota_cap", 0.40, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_answer_preserve_hotpot_relax_factor", 0.35, updates)
+        _set_cfg_attr_if_changed(cfg, "hotpot_overpreserve_answer_share_threshold", 0.10, updates)
 
     _configure_corridor_shaping(False, False, False)
 
@@ -525,6 +595,40 @@ def _apply_connector_objective_profile(cfg, objective_flags):
         flags["corridor_compact_shaping"] = True
         flags["corridor_answer_preserve_shaping"] = True
         flags["corridor_bridge_purity_shaping"] = False
+    elif mode == "p3_answer_preserve_base":
+        profile_applied = "p3_answer_preserve_base"
+        _apply_run_connector_core()
+        _configure_corridor_shaping(False, True, False)
+        flags["bridge_candidate_induction"] = True
+        flags["role_aware_chunk_scoring"] = False
+        flags["coverage_selection"] = False
+        flags["corridor_compact_shaping"] = False
+        flags["corridor_answer_preserve_shaping"] = True
+        flags["corridor_bridge_purity_shaping"] = False
+    elif mode == "p3_answer_preserve_guarded_hotpot":
+        profile_applied = "p3_answer_preserve_guarded_hotpot"
+        _apply_run_connector_core()
+        _configure_corridor_shaping(False, True, False, guarded_hotpot_enabled=True, confidence_gated_enabled=False)
+        flags["bridge_candidate_induction"] = True
+        flags["role_aware_chunk_scoring"] = False
+        flags["coverage_selection"] = False
+        flags["corridor_compact_shaping"] = False
+        flags["corridor_answer_preserve_shaping"] = True
+        flags["corridor_bridge_purity_shaping"] = False
+        flags["corridor_answer_preserve_guarded_hotpot"] = True
+    elif mode == "p3_answer_preserve_confidence_gated":
+        profile_applied = "p3_answer_preserve_confidence_gated"
+        _apply_run_connector_core()
+        _configure_corridor_shaping(False, True, False, guarded_hotpot_enabled=False, confidence_gated_enabled=True)
+        _set_cfg_attr_if_changed(cfg, "corridor_answer_preserve_weight", 0.18, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_answer_preserve_light_boost_scale", 0.55, updates)
+        flags["bridge_candidate_induction"] = True
+        flags["role_aware_chunk_scoring"] = False
+        flags["coverage_selection"] = False
+        flags["corridor_compact_shaping"] = False
+        flags["corridor_answer_preserve_shaping"] = True
+        flags["corridor_bridge_purity_shaping"] = False
+        flags["corridor_answer_preserve_confidence_gated"] = True
 
     diag = {
         "mode": mode,
@@ -2616,6 +2720,9 @@ def _compute_connector_retrieval_metrics(
     answer_side_density_items = []
     compactness_items = []
     noise_ratio_items = []
+    preserve_activation_items = []
+    preserve_usefulness_items = []
+    role_share_items = []
     ranked_corridors = sorted(
         list(filtered_corridors or []),
         key=lambda c: float(c.get("corridor_score", 0.0)),
@@ -2644,17 +2751,40 @@ def _compute_connector_retrieval_metrics(
         answer_side_density_val = float(comp.get("answer_side_density", answer_score) or 0.0)
         compactness_val = float(comp.get("support_set_compactness", (1.0 / float(1.0 + max(0, support_span - 1)))) or 0.0)
         noise_ratio_val = float(comp.get("bridge_noise_ratio", (1.0 - bridge_purity_val)) or 0.0)
+        preserve_activation_val = 1.0 if bool(comp.get("answer_preserve_applied", False)) else 0.0
+        preserve_usefulness_val = float(comp.get("answer_preserve_usefulness", 0.0) or 0.0)
+        role_total = max(1.0e-8, float(anchor_score) + float(bridge_score) + float(answer_score))
+        role_share_items.append(
+            (
+                float(anchor_score) / float(role_total),
+                float(bridge_score) / float(role_total),
+                float(answer_score) / float(role_total),
+                1.0 / float(ridx + 1),
+            )
+        )
         weight = 1.0 / float(ridx + 1)
         bridge_purity_items.append((max(0.0, min(1.0, bridge_purity_val)), weight))
         answer_side_density_items.append((max(0.0, min(1.0, answer_side_density_val)), weight))
         compactness_items.append((max(0.0, min(1.0, compactness_val)), weight))
         noise_ratio_items.append((max(0.0, min(1.0, noise_ratio_val)), weight))
+        preserve_activation_items.append((float(preserve_activation_val), weight))
+        preserve_usefulness_items.append((max(0.0, min(1.0, preserve_usefulness_val)), weight))
 
     corridor_role_coverage = float((max_anchor + max_bridge + max_answer) / 3.0)
     bridge_purity = max(0.0, min(1.0, _weighted_avg(bridge_purity_items, max_bridge)))
     answer_side_density = max(0.0, min(1.0, _weighted_avg(answer_side_density_items, max_answer)))
     support_set_compactness = max(0.0, min(1.0, _weighted_avg(compactness_items, 1.0)))
     bridge_noise_ratio = max(0.0, min(1.0, _weighted_avg(noise_ratio_items, 1.0 - bridge_purity)))
+    answer_preserve_activation_rate = max(0.0, min(1.0, _weighted_avg(preserve_activation_items, 0.0)))
+    preserved_answer_usefulness = max(0.0, min(1.0, _weighted_avg(preserve_usefulness_items, 0.0)))
+    role_weight_sum = float(sum(max(0.0, w) for _, _, _, w in role_share_items))
+    if role_weight_sum <= 0.0:
+        anchor_share = bridge_share = answer_share = 1.0 / 3.0
+    else:
+        anchor_share = float(sum(max(0.0, w) * a for a, _, _, w in role_share_items) / role_weight_sum)
+        bridge_share = float(sum(max(0.0, w) * b for _, b, _, w in role_share_items) / role_weight_sum)
+        answer_share = float(sum(max(0.0, w) * c for _, _, c, w in role_share_items) / role_weight_sum)
+    anchor_bridge_balance = max(0.0, min(1.0, 1.0 - (max(anchor_share, bridge_share, answer_share) - min(anchor_share, bridge_share, answer_share))))
     bridge_present = bool(run_bridge_coverage >= 0.35)
     answer_side_present = bool(max_answer >= 0.35 or answer_side_density >= 0.35)
     useful_bridge_rate = 1.0 if (bridge_present and answer_side_present and bridge_purity >= 0.40) else 0.0
@@ -2665,6 +2795,30 @@ def _compute_connector_retrieval_metrics(
     )
     conversion_after_bridge_proxy = (
         1.0 if (bridge_present and answer_side_present and answer_side_density >= 0.35 and bridge_purity >= 0.35) else 0.0
+    )
+    hotpot_overpreserve_threshold = max(
+        0.0, min(1.0, float(getattr(cfg, "hotpot_overpreserve_answer_share_threshold", 0.10)))
+    )
+    hotpot_overpreserve_rate = 0.0
+    dataset_name = str(getattr(cfg, "dataset", "") or "").strip().lower()
+    if dataset_name.startswith("hotpot"):
+        hotpot_overpreserve_rate = (
+            1.0
+            if (
+                answer_preserve_activation_rate >= 0.5
+                and answer_share > (max(anchor_share, bridge_share) + float(hotpot_overpreserve_threshold))
+            )
+            else 0.0
+        )
+    conversion_after_preserve_proxy = (
+        1.0
+        if (
+            answer_preserve_activation_rate >= 0.5
+            and bridge_present
+            and answer_side_present
+            and preserved_answer_usefulness >= 0.35
+        )
+        else 0.0
     )
 
     redundancy_rate = float(_mean_pairwise_jaccard(_corridor_sentence_sets(filtered_corridors)))
@@ -2677,6 +2831,12 @@ def _compute_connector_retrieval_metrics(
         "seed_redundancy": float(seed_redundancy),
         "run_bridge_coverage": float(run_bridge_coverage),
         "corridor_role_coverage": float(corridor_role_coverage),
+        "answer_preserve_activation_rate": float(answer_preserve_activation_rate),
+        "preserved_answer_usefulness": float(preserved_answer_usefulness),
+        "anchor_bridge_balance": float(anchor_bridge_balance),
+        "anchor_role_share": float(anchor_share),
+        "bridge_role_share": float(bridge_share),
+        "answer_role_share": float(answer_share),
         "bridge_purity": float(bridge_purity),
         "answer_side_density": float(answer_side_density),
         "support_set_compactness": float(support_set_compactness),
@@ -2684,6 +2844,8 @@ def _compute_connector_retrieval_metrics(
         "useful_bridge_rate": float(useful_bridge_rate),
         "bridge_to_answer_path_hit": float(bridge_to_answer_path_hit),
         "conversion_after_bridge_proxy": float(conversion_after_bridge_proxy),
+        "conversion_after_preserve_proxy": float(conversion_after_preserve_proxy),
+        "hotpot_overpreserve_rate": float(hotpot_overpreserve_rate),
         "redundancy_rate": float(redundancy_rate),
         "connector_quality": float(
             (
@@ -2692,8 +2854,9 @@ def _compute_connector_retrieval_metrics(
                 + corridor_role_coverage
                 + bridge_purity
                 + support_set_compactness
+                + anchor_bridge_balance
             )
-            / 5.0
+            / 6.0
         ),
     }
 
@@ -4066,10 +4229,34 @@ def _rerank_corridors_hybrid(
     compact_enabled = bool(getattr(cfg, "corridor_compact_shaping_enabled", False))
     answer_preserve_enabled = bool(getattr(cfg, "corridor_answer_preserve_enabled", False))
     bridge_purity_enabled = bool(getattr(cfg, "corridor_bridge_purity_shaping_enabled", False))
+    answer_preserve_guarded_hotpot_enabled = bool(
+        getattr(cfg, "corridor_answer_preserve_guarded_hotpot_enabled", False)
+    )
+    answer_preserve_confidence_gated_enabled = bool(
+        getattr(cfg, "corridor_answer_preserve_confidence_gated_enabled", False)
+    )
     compact_w = max(0.0, float(getattr(cfg, "corridor_compact_weight", 0.0)))
     answer_preserve_w = max(0.0, float(getattr(cfg, "corridor_answer_preserve_weight", 0.0)))
     bridge_purity_w = max(0.0, float(getattr(cfg, "corridor_bridge_purity_weight", 0.0)))
     answer_density_min = max(0.0, min(1.0, float(getattr(cfg, "corridor_answer_preserve_min_density", 0.30))))
+    answer_preserve_light_boost_scale = max(
+        0.0, min(1.0, float(getattr(cfg, "corridor_answer_preserve_light_boost_scale", 0.65)))
+    )
+    answer_preserve_bridge_consistency_threshold = max(
+        0.0, min(1.0, float(getattr(cfg, "corridor_answer_preserve_bridge_consistency_threshold", 0.55)))
+    )
+    answer_preserve_confidence_threshold = max(
+        0.0, min(1.0, float(getattr(cfg, "corridor_answer_preserve_confidence_threshold", 0.62)))
+    )
+    hotpot_anchor_bridge_sufficient = max(
+        0.0, min(1.0, float(getattr(cfg, "corridor_answer_preserve_hotpot_anchor_bridge_sufficient", 0.70)))
+    )
+    hotpot_answer_density_cap = max(
+        0.0, min(1.0, float(getattr(cfg, "corridor_answer_preserve_hotpot_answer_density_cap", 0.72)))
+    )
+    hotpot_quota_cap = max(0.0, min(1.0, float(getattr(cfg, "corridor_answer_preserve_hotpot_quota_cap", 0.40))))
+    hotpot_relax_factor = max(0.0, min(1.0, float(getattr(cfg, "corridor_answer_preserve_hotpot_relax_factor", 0.35))))
+    dataset_name = str(getattr(cfg, "dataset", "") or "").strip().lower()
 
     base_rows = []
     for corridor in corridors:
@@ -4137,10 +4324,54 @@ def _rerank_corridors_hybrid(
         shaping_bonus = 0.0
         if compact_enabled and compact_w > 0.0:
             shaping_bonus += float(compact_w) * float(support_set_compactness)
+        preserve_gate_reasons = []
+        preserve_scale = 1.0
+        preserve_applied = False
+        preserve_candidate_count = int(len(answer_side_ids))
+        preserve_confident_count = int(sum(1 for v in answer_side_vals if float(v) >= answer_preserve_confidence_threshold))
+        preserve_bridge_consistent_count = int(
+            sum(
+                1
+                for sid in bridge_focus_ids
+                if float(answer_like_by_sid.get(sid, 0.0)) >= float(answer_preserve_bridge_consistency_threshold)
+            )
+        )
+        preserve_bridge_consistent_ratio = float(
+            _safe_ratio(preserve_bridge_consistent_count, max(1, len(bridge_focus_ids)))
+        )
+        preserve_usefulness = float(_safe_ratio(preserve_confident_count, max(1, preserve_candidate_count)))
         if answer_preserve_enabled and answer_preserve_w > 0.0:
+            preserve_gate_ok = True
+            if answer_preserve_confidence_gated_enabled:
+                if preserve_bridge_consistent_ratio < float(answer_preserve_bridge_consistency_threshold):
+                    preserve_gate_ok = False
+                    preserve_gate_reasons.append("confidence_gate_bridge_not_met")
+                if answer_side_density < float(answer_preserve_confidence_threshold):
+                    preserve_gate_ok = False
+                    preserve_gate_reasons.append("confidence_gate_answer_not_met")
+                if preserve_gate_ok:
+                    preserve_scale *= float(answer_preserve_light_boost_scale)
+                    preserve_gate_reasons.append("confidence_gate_light_boost")
+            if answer_preserve_guarded_hotpot_enabled and dataset_name.startswith("hotpot"):
+                anchor_bridge_strength = 0.5 * (float(anchor_alignment) + float(bridge_utility))
+                if anchor_bridge_strength >= float(hotpot_anchor_bridge_sufficient):
+                    preserve_scale *= float(hotpot_relax_factor)
+                    preserve_gate_reasons.append("guarded_hotpot_anchor_bridge_sufficient")
+                if answer_side_density >= float(hotpot_answer_density_cap):
+                    preserve_gate_ok = False
+                    preserve_gate_reasons.append("guarded_hotpot_density_cap")
+                if support_density >= float(hotpot_quota_cap):
+                    preserve_scale *= float(hotpot_relax_factor)
+                    preserve_gate_reasons.append("guarded_hotpot_quota_cap")
             density_gap = max(0.0, float(answer_density_min) - float(answer_side_density))
-            shaping_bonus += float(answer_preserve_w) * float(answer_side_density)
-            shaping_bonus -= 0.5 * float(answer_preserve_w) * float(density_gap)
+            preserve_bonus = float(answer_preserve_w) * float(preserve_scale) * float(answer_side_density)
+            preserve_bonus -= 0.5 * float(answer_preserve_w) * float(density_gap)
+            if preserve_gate_ok and preserve_bonus > 0.0:
+                shaping_bonus += float(preserve_bonus)
+                preserve_applied = True
+                preserve_gate_reasons.append("preserve_applied")
+            else:
+                preserve_gate_reasons.append("preserve_suppressed")
         if bridge_purity_enabled and bridge_purity_w > 0.0:
             shaping_bonus += float(bridge_purity_w) * float(bridge_purity)
             shaping_bonus -= 0.5 * float(bridge_purity_w) * float(bridge_noise_ratio)
@@ -4171,10 +4402,25 @@ def _rerank_corridors_hybrid(
                     "corridor_compact_shaping_enabled": bool(compact_enabled),
                     "corridor_answer_preserve_enabled": bool(answer_preserve_enabled),
                     "corridor_bridge_purity_shaping_enabled": bool(bridge_purity_enabled),
+                    "corridor_answer_preserve_guarded_hotpot_enabled": bool(answer_preserve_guarded_hotpot_enabled),
+                    "corridor_answer_preserve_confidence_gated_enabled": bool(answer_preserve_confidence_gated_enabled),
                     "corridor_compact_weight": float(compact_w),
                     "corridor_answer_preserve_weight": float(answer_preserve_w),
                     "corridor_bridge_purity_weight": float(bridge_purity_w),
                     "corridor_answer_preserve_min_density": float(answer_density_min),
+                    "corridor_answer_preserve_light_boost_scale": float(answer_preserve_light_boost_scale),
+                    "corridor_answer_preserve_bridge_consistency_threshold": float(
+                        answer_preserve_bridge_consistency_threshold
+                    ),
+                    "corridor_answer_preserve_confidence_threshold": float(answer_preserve_confidence_threshold),
+                    "answer_preserve_candidate_count": int(preserve_candidate_count),
+                    "answer_preserve_confident_count": int(preserve_confident_count),
+                    "answer_preserve_bridge_consistent_count": int(preserve_bridge_consistent_count),
+                    "answer_preserve_bridge_consistent_ratio": float(preserve_bridge_consistent_ratio),
+                    "answer_preserve_usefulness": float(preserve_usefulness),
+                    "answer_preserve_scale": float(preserve_scale),
+                    "answer_preserve_applied": bool(preserve_applied),
+                    "answer_preserve_gate_reasons": list(preserve_gate_reasons),
                     "corridor_shaping_bonus": float(shaping_bonus),
                     "chunk_support_bonus_weight": float(chunk_support_w),
                     "answer_alignment_bonus_weight": float(answer_align_w),
@@ -5979,6 +6225,12 @@ def run_graphrag_core(
             "seed_redundancy": float((connector_metrics or {}).get("seed_redundancy", 0.0)),
             "run_bridge_coverage": float((connector_metrics or {}).get("run_bridge_coverage", 0.0)),
             "corridor_role_coverage": float((connector_metrics or {}).get("corridor_role_coverage", 0.0)),
+            "answer_preserve_activation_rate": float((connector_metrics or {}).get("answer_preserve_activation_rate", 0.0)),
+            "preserved_answer_usefulness": float((connector_metrics or {}).get("preserved_answer_usefulness", 0.0)),
+            "anchor_bridge_balance": float((connector_metrics or {}).get("anchor_bridge_balance", 0.0)),
+            "anchor_role_share": float((connector_metrics or {}).get("anchor_role_share", 0.0)),
+            "bridge_role_share": float((connector_metrics or {}).get("bridge_role_share", 0.0)),
+            "answer_role_share": float((connector_metrics or {}).get("answer_role_share", 0.0)),
             "bridge_purity": float((connector_metrics or {}).get("bridge_purity", 0.0)),
             "answer_side_density": float((connector_metrics or {}).get("answer_side_density", 0.0)),
             "support_set_compactness": float((connector_metrics or {}).get("support_set_compactness", 0.0)),
@@ -5987,6 +6239,9 @@ def run_graphrag_core(
             "bridge_to_answer_path_hit": float((connector_metrics or {}).get("bridge_to_answer_path_hit", 0.0)),
             "conversion_after_bridge": float((connector_metrics or {}).get("conversion_after_bridge_proxy", 0.0)),
             "conversion_after_bridge_proxy": float((connector_metrics or {}).get("conversion_after_bridge_proxy", 0.0)),
+            "conversion_after_preserve": float((connector_metrics or {}).get("conversion_after_preserve_proxy", 0.0)),
+            "conversion_after_preserve_proxy": float((connector_metrics or {}).get("conversion_after_preserve_proxy", 0.0)),
+            "hotpot_overpreserve_rate": float((connector_metrics or {}).get("hotpot_overpreserve_rate", 0.0)),
             "redundancy_rate": float((connector_metrics or {}).get("redundancy_rate", 0.0)),
             "connector_quality": float((connector_metrics or {}).get("connector_quality", 0.0)),
             "connector_metrics": dict(connector_metrics or {}),

@@ -168,6 +168,9 @@ STAGEWISE_LOSS_KEYS = (
     "seed_redundancy",
     "run_bridge_coverage",
     "corridor_role_coverage",
+    "answer_preserve_activation_rate",
+    "preserved_answer_usefulness",
+    "anchor_bridge_balance",
     "bridge_purity",
     "answer_side_density",
     "support_set_compactness",
@@ -175,6 +178,8 @@ STAGEWISE_LOSS_KEYS = (
     "useful_bridge_rate",
     "bridge_to_answer_path_hit",
     "conversion_after_bridge",
+    "conversion_after_preserve",
+    "hotpot_overpreserve_rate",
     "answer_conversion",
     "em_conversion",
     "f1_per_r5",
@@ -239,12 +244,17 @@ def _extract_stagewise_from_row(row):
         "seed_redundancy",
         "run_bridge_coverage",
         "corridor_role_coverage",
+        "answer_preserve_activation_rate",
+        "preserved_answer_usefulness",
+        "anchor_bridge_balance",
         "bridge_purity",
         "answer_side_density",
         "support_set_compactness",
         "bridge_noise_ratio",
         "useful_bridge_rate",
         "bridge_to_answer_path_hit",
+        "conversion_after_preserve",
+        "hotpot_overpreserve_rate",
         "redundancy_rate",
         "connector_quality",
     ):
@@ -275,6 +285,18 @@ def _extract_stagewise_from_row(row):
     seed_bridge_recall = _safe_float(diagnostics.get("seed_bridge_recall", 0.0), 0.0)
     seed_answer_recall = _safe_float(diagnostics.get("seed_answer_recall", 0.0), 0.0)
     corridor_role_coverage = _safe_float(diagnostics.get("corridor_role_coverage", 0.0), 0.0)
+    answer_preserve_activation_rate = _safe_float(
+        diagnostics.get("answer_preserve_activation_rate", metrics.get("answer_preserve_activation_rate", 0.0)),
+        0.0,
+    )
+    preserved_answer_usefulness = _safe_float(
+        diagnostics.get("preserved_answer_usefulness", metrics.get("preserved_answer_usefulness", 0.0)),
+        0.0,
+    )
+    anchor_bridge_balance = _safe_float(
+        diagnostics.get("anchor_bridge_balance", metrics.get("anchor_bridge_balance", 0.0)),
+        0.0,
+    )
     bridge_purity = _safe_float(diagnostics.get("bridge_purity", metrics.get("bridge_purity", 0.0)), 0.0)
     answer_side_density = _safe_float(
         diagnostics.get("answer_side_density", metrics.get("answer_side_density", 0.0)),
@@ -286,6 +308,10 @@ def _extract_stagewise_from_row(row):
     )
     bridge_noise_ratio = _safe_float(
         diagnostics.get("bridge_noise_ratio", metrics.get("bridge_noise_ratio", 1.0 - bridge_purity)),
+        0.0,
+    )
+    hotpot_overpreserve_rate = _safe_float(
+        diagnostics.get("hotpot_overpreserve_rate", metrics.get("hotpot_overpreserve_rate", 0.0)),
         0.0,
     )
     redundancy_rate = _safe_float(diagnostics.get("redundancy_rate", 0.0), 0.0)
@@ -313,8 +339,22 @@ def _extract_stagewise_from_row(row):
     metrics["answer_side_density"] = max(0.0, min(1.0, answer_side_density))
     metrics["support_set_compactness"] = max(0.0, min(1.0, support_set_compactness))
     metrics["bridge_noise_ratio"] = float(bridge_noise_ratio)
+    metrics["answer_preserve_activation_rate"] = max(0.0, min(1.0, answer_preserve_activation_rate))
+    metrics["preserved_answer_usefulness"] = max(0.0, min(1.0, preserved_answer_usefulness))
+    metrics["anchor_bridge_balance"] = max(0.0, min(1.0, anchor_bridge_balance))
+    metrics["hotpot_overpreserve_rate"] = max(0.0, min(1.0, hotpot_overpreserve_rate))
     metrics["conversion_after_bridge"] = (
         1.0 if (bridge_present and answer_side_present and (f1 > 0.0 or em > 0.0)) else 0.0
+    )
+    metrics["conversion_after_preserve"] = (
+        1.0
+        if (
+            answer_preserve_activation_rate >= 0.5
+            and bridge_present
+            and answer_side_present
+            and (f1 > 0.0 or em > 0.0)
+        )
+        else 0.0
     )
 
     metrics.setdefault(
