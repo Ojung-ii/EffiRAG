@@ -170,6 +170,11 @@ STAGEWISE_LOSS_KEYS = (
     "corridor_role_coverage",
     "answer_preserve_activation_rate",
     "preserved_answer_usefulness",
+    "path_complete_rate",
+    "bridge_answer_pair_retention",
+    "incomplete_path_rate",
+    "chain_compactness",
+    "path_preserve_activation_rate",
     "anchor_bridge_balance",
     "bridge_purity",
     "answer_side_density",
@@ -179,6 +184,7 @@ STAGEWISE_LOSS_KEYS = (
     "bridge_to_answer_path_hit",
     "conversion_after_bridge",
     "conversion_after_preserve",
+    "conversion_after_path_preserve",
     "hotpot_overpreserve_rate",
     "answer_conversion",
     "em_conversion",
@@ -246,6 +252,11 @@ def _extract_stagewise_from_row(row):
         "corridor_role_coverage",
         "answer_preserve_activation_rate",
         "preserved_answer_usefulness",
+        "path_complete_rate",
+        "bridge_answer_pair_retention",
+        "incomplete_path_rate",
+        "chain_compactness",
+        "path_preserve_activation_rate",
         "anchor_bridge_balance",
         "bridge_purity",
         "answer_side_density",
@@ -254,6 +265,7 @@ def _extract_stagewise_from_row(row):
         "useful_bridge_rate",
         "bridge_to_answer_path_hit",
         "conversion_after_preserve",
+        "conversion_after_path_preserve",
         "hotpot_overpreserve_rate",
         "redundancy_rate",
         "connector_quality",
@@ -291,6 +303,26 @@ def _extract_stagewise_from_row(row):
     )
     preserved_answer_usefulness = _safe_float(
         diagnostics.get("preserved_answer_usefulness", metrics.get("preserved_answer_usefulness", 0.0)),
+        0.0,
+    )
+    path_complete_rate = _safe_float(
+        diagnostics.get("path_complete_rate", metrics.get("path_complete_rate", 0.0)),
+        0.0,
+    )
+    bridge_answer_pair_retention = _safe_float(
+        diagnostics.get("bridge_answer_pair_retention", metrics.get("bridge_answer_pair_retention", 0.0)),
+        0.0,
+    )
+    incomplete_path_rate = _safe_float(
+        diagnostics.get("incomplete_path_rate", metrics.get("incomplete_path_rate", 0.0)),
+        0.0,
+    )
+    chain_compactness = _safe_float(
+        diagnostics.get("chain_compactness", metrics.get("chain_compactness", 0.0)),
+        0.0,
+    )
+    path_preserve_activation_rate = _safe_float(
+        diagnostics.get("path_preserve_activation_rate", metrics.get("path_preserve_activation_rate", 0.0)),
         0.0,
     )
     anchor_bridge_balance = _safe_float(
@@ -341,6 +373,11 @@ def _extract_stagewise_from_row(row):
     metrics["bridge_noise_ratio"] = float(bridge_noise_ratio)
     metrics["answer_preserve_activation_rate"] = max(0.0, min(1.0, answer_preserve_activation_rate))
     metrics["preserved_answer_usefulness"] = max(0.0, min(1.0, preserved_answer_usefulness))
+    metrics["path_complete_rate"] = max(0.0, min(1.0, path_complete_rate))
+    metrics["bridge_answer_pair_retention"] = max(0.0, min(1.0, bridge_answer_pair_retention))
+    metrics["incomplete_path_rate"] = max(0.0, min(1.0, incomplete_path_rate))
+    metrics["chain_compactness"] = max(0.0, min(1.0, chain_compactness))
+    metrics["path_preserve_activation_rate"] = max(0.0, min(1.0, path_preserve_activation_rate))
     metrics["anchor_bridge_balance"] = max(0.0, min(1.0, anchor_bridge_balance))
     metrics["hotpot_overpreserve_rate"] = max(0.0, min(1.0, hotpot_overpreserve_rate))
     metrics["conversion_after_bridge"] = (
@@ -352,6 +389,17 @@ def _extract_stagewise_from_row(row):
             answer_preserve_activation_rate >= 0.5
             and bridge_present
             and answer_side_present
+            and (f1 > 0.0 or em > 0.0)
+        )
+        else 0.0
+    )
+    metrics["conversion_after_path_preserve"] = (
+        1.0
+        if (
+            path_preserve_activation_rate >= 0.25
+            and bridge_present
+            and answer_side_present
+            and path_complete_rate >= 0.45
             and (f1 > 0.0 or em > 0.0)
         )
         else 0.0

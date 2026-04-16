@@ -101,6 +101,9 @@ class RetrievalConfig:
     # p3_answer_preserve_base
     # p3_answer_preserve_guarded_hotpot
     # p3_answer_preserve_confidence_gated
+    # r2_connector_core
+    # r2_plus_path_preserve
+    # r2_plus_path_preserve_compact
     retrieval_objective_mode: str = "baseline"
     hybrid_anchor_recall_enabled: bool = False
     hybrid_anchor_semantic_topn: int = 2
@@ -158,11 +161,20 @@ class RetrievalConfig:
     corridor_compact_shaping_enabled: bool = False
     corridor_answer_preserve_enabled: bool = False
     corridor_bridge_purity_shaping_enabled: bool = False
+    corridor_path_preserve_enabled: bool = False
+    corridor_path_preserve_compact_enabled: bool = False
     corridor_answer_preserve_guarded_hotpot_enabled: bool = False
     corridor_answer_preserve_confidence_gated_enabled: bool = False
     corridor_compact_weight: float = 0.0
     corridor_answer_preserve_weight: float = 0.0
     corridor_bridge_purity_weight: float = 0.0
+    corridor_path_preserve_weight: float = 0.0
+    corridor_path_preserve_incomplete_penalty_weight: float = 0.0
+    corridor_path_preserve_compact_weight: float = 0.0
+    corridor_path_preserve_anchor_threshold: float = 0.35
+    corridor_path_preserve_bridge_threshold: float = 0.35
+    corridor_path_preserve_answer_threshold: float = 0.55
+    corridor_path_preserve_pair_threshold: float = 0.45
     corridor_answer_preserve_min_density: float = 0.30
     corridor_answer_preserve_light_boost_scale: float = 0.65
     corridor_answer_preserve_bridge_consistency_threshold: float = 0.55
@@ -378,6 +390,10 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["corridor_answer_preserve_enabled"] = parse_bool(merged["corridor_answer_preserve_enabled"])
     if "corridor_bridge_purity_shaping_enabled" in merged:
         merged["corridor_bridge_purity_shaping_enabled"] = parse_bool(merged["corridor_bridge_purity_shaping_enabled"])
+    if "corridor_path_preserve_enabled" in merged:
+        merged["corridor_path_preserve_enabled"] = parse_bool(merged["corridor_path_preserve_enabled"])
+    if "corridor_path_preserve_compact_enabled" in merged:
+        merged["corridor_path_preserve_compact_enabled"] = parse_bool(merged["corridor_path_preserve_compact_enabled"])
     if "corridor_answer_preserve_guarded_hotpot_enabled" in merged:
         merged["corridor_answer_preserve_guarded_hotpot_enabled"] = parse_bool(
             merged["corridor_answer_preserve_guarded_hotpot_enabled"]
