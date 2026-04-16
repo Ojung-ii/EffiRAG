@@ -104,6 +104,8 @@ class RetrievalConfig:
     # r2_connector_core
     # r2_plus_path_preserve
     # r2_plus_path_preserve_compact
+    # r2_plus_path_preserve_guarded
+    # r2_plus_path_preserve_compact_lite
     retrieval_objective_mode: str = "baseline"
     hybrid_anchor_recall_enabled: bool = False
     hybrid_anchor_semantic_topn: int = 2
@@ -163,6 +165,8 @@ class RetrievalConfig:
     corridor_bridge_purity_shaping_enabled: bool = False
     corridor_path_preserve_enabled: bool = False
     corridor_path_preserve_compact_enabled: bool = False
+    corridor_path_preserve_guarded_enabled: bool = False
+    corridor_path_preserve_compact_lite_enabled: bool = False
     corridor_answer_preserve_guarded_hotpot_enabled: bool = False
     corridor_answer_preserve_confidence_gated_enabled: bool = False
     corridor_compact_weight: float = 0.0
@@ -175,6 +179,13 @@ class RetrievalConfig:
     corridor_path_preserve_bridge_threshold: float = 0.35
     corridor_path_preserve_answer_threshold: float = 0.55
     corridor_path_preserve_pair_threshold: float = 0.45
+    corridor_path_preserve_guard_scale: float = 0.70
+    corridor_path_preserve_guard_min_complete_score: float = 0.70
+    corridor_path_preserve_guard_min_pair_retention: float = 0.55
+    corridor_path_preserve_guard_min_answer_density: float = 0.62
+    corridor_path_preserve_compact_lite_scale: float = 0.65
+    corridor_path_preserve_compact_lite_overflow_coeff: float = 0.015
+    corridor_path_preserve_compact_lite_overflow_cap: float = 0.08
     corridor_answer_preserve_min_density: float = 0.30
     corridor_answer_preserve_light_boost_scale: float = 0.65
     corridor_answer_preserve_bridge_consistency_threshold: float = 0.55
@@ -394,6 +405,14 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["corridor_path_preserve_enabled"] = parse_bool(merged["corridor_path_preserve_enabled"])
     if "corridor_path_preserve_compact_enabled" in merged:
         merged["corridor_path_preserve_compact_enabled"] = parse_bool(merged["corridor_path_preserve_compact_enabled"])
+    if "corridor_path_preserve_guarded_enabled" in merged:
+        merged["corridor_path_preserve_guarded_enabled"] = parse_bool(
+            merged["corridor_path_preserve_guarded_enabled"]
+        )
+    if "corridor_path_preserve_compact_lite_enabled" in merged:
+        merged["corridor_path_preserve_compact_lite_enabled"] = parse_bool(
+            merged["corridor_path_preserve_compact_lite_enabled"]
+        )
     if "corridor_answer_preserve_guarded_hotpot_enabled" in merged:
         merged["corridor_answer_preserve_guarded_hotpot_enabled"] = parse_bool(
             merged["corridor_answer_preserve_guarded_hotpot_enabled"]

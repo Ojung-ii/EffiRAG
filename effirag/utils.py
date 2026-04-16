@@ -139,10 +139,33 @@ def compute_rag_derived_metrics(summary: Dict[str, Any]) -> Dict[str, float]:
         )
         or 0.0
     )
+    retrieval_ms = float(
+        summary.get(
+            "retrieval_latency_ms",
+            summary.get("retrieval_ms", 0.0),
+        )
+        or 0.0
+    )
+    total_ms = float(
+        summary.get(
+            "total_latency_ms",
+            summary.get("total_ms", 0.0),
+        )
+        or 0.0
+    )
+    f1_per_100ms = float(safe_div(f1 * 100.0, total_ms)) if total_ms > 0.0 else 0.0
+    r5_per_100ms = float(safe_div(recall_at_5 * 100.0, retrieval_ms)) if retrieval_ms > 0.0 else 0.0
+    oracle_gap = float(oracle_ceiling_f1 - f1) if oracle_ceiling_f1 > 0.0 else 0.0
+    oracle_gap_per_ms = float(safe_div(oracle_gap, total_ms)) if total_ms > 0.0 else 0.0
     return {
         "rendered_retention": float(safe_div(rendered_sf_recall, sf_recall)),
         "answer_conversion": float(safe_div(f1, rendered_sf_recall)),
-        "oracle_gap": float(oracle_ceiling_f1 - f1) if oracle_ceiling_f1 > 0.0 else 0.0,
+        "oracle_gap": float(oracle_gap),
+        "retrieval_ms": float(retrieval_ms),
+        "total_ms": float(total_ms),
+        "f1_per_100ms": float(f1_per_100ms),
+        "r5_per_100ms": float(r5_per_100ms),
+        "oracle_gap_per_ms": float(oracle_gap_per_ms),
         "gap_to_hippo_f1": (
             float(hipporag2_reference_f1 - f1) if hipporag2_reference_f1 > 0.0 else 0.0
         ),

@@ -180,6 +180,10 @@ def _resolve_retrieval_objective_mode(cfg):
         "r2_plus_path_preserve": "r2_plus_path_preserve",
         "r2_path_compact": "r2_plus_path_preserve_compact",
         "r2_plus_path_preserve_compact": "r2_plus_path_preserve_compact",
+        "r2_path_guarded": "r2_plus_path_preserve_guarded",
+        "r2_plus_path_preserve_guarded": "r2_plus_path_preserve_guarded",
+        "r2_path_compact_lite": "r2_plus_path_preserve_compact_lite",
+        "r2_plus_path_preserve_compact_lite": "r2_plus_path_preserve_compact_lite",
         "full": "bridge_coverage_full",
         "bridge_coverage": "bridge_coverage_full",
         # PAMAE-style bounded-budget connector rounds
@@ -222,6 +226,8 @@ def _resolve_retrieval_objective_mode(cfg):
         "r2_plus_r3_answer_light",
         "r2_plus_path_preserve",
         "r2_plus_path_preserve_compact",
+        "r2_plus_path_preserve_guarded",
+        "r2_plus_path_preserve_compact_lite",
         # PAMAE-style bounded-budget connector rounds
         "seed_quality_analysis",
         "run_objective_bridge_aware",
@@ -255,6 +261,8 @@ def _resolve_retrieval_objective_flags(cfg):
     corridor_bridge_purity = bool(getattr(cfg, "corridor_bridge_purity_shaping_enabled", False))
     corridor_path_preserve = bool(getattr(cfg, "corridor_path_preserve_enabled", False))
     corridor_path_preserve_compact = bool(getattr(cfg, "corridor_path_preserve_compact_enabled", False))
+    corridor_path_preserve_guarded = bool(getattr(cfg, "corridor_path_preserve_guarded_enabled", False))
+    corridor_path_preserve_compact_lite = bool(getattr(cfg, "corridor_path_preserve_compact_lite_enabled", False))
     corridor_answer_preserve_guarded_hotpot = bool(
         getattr(cfg, "corridor_answer_preserve_guarded_hotpot_enabled", False)
     )
@@ -281,12 +289,16 @@ def _resolve_retrieval_objective_flags(cfg):
         coverage = False
         corridor_path_preserve = False
         corridor_path_preserve_compact = False
+        corridor_path_preserve_guarded = False
+        corridor_path_preserve_compact_lite = False
     elif mode in {"r2_plus_r3_anchor_light", "r2_plus_r3_answer_light"}:
         bridge_induction = True
         role_chunk = True
         coverage = False
         corridor_path_preserve = False
         corridor_path_preserve_compact = False
+        corridor_path_preserve_guarded = False
+        corridor_path_preserve_compact_lite = False
     elif mode == "r2_plus_path_preserve":
         bridge_induction = True
         role_chunk = False
@@ -296,6 +308,8 @@ def _resolve_retrieval_objective_flags(cfg):
         corridor_bridge_purity = False
         corridor_path_preserve = True
         corridor_path_preserve_compact = False
+        corridor_path_preserve_guarded = False
+        corridor_path_preserve_compact_lite = False
         corridor_answer_preserve_guarded_hotpot = False
         corridor_answer_preserve_confidence_gated = False
     elif mode == "r2_plus_path_preserve_compact":
@@ -307,6 +321,34 @@ def _resolve_retrieval_objective_flags(cfg):
         corridor_bridge_purity = False
         corridor_path_preserve = True
         corridor_path_preserve_compact = True
+        corridor_path_preserve_guarded = False
+        corridor_path_preserve_compact_lite = False
+        corridor_answer_preserve_guarded_hotpot = False
+        corridor_answer_preserve_confidence_gated = False
+    elif mode == "r2_plus_path_preserve_guarded":
+        bridge_induction = True
+        role_chunk = False
+        coverage = False
+        corridor_compact = False
+        corridor_answer_preserve = False
+        corridor_bridge_purity = False
+        corridor_path_preserve = True
+        corridor_path_preserve_compact = False
+        corridor_path_preserve_guarded = True
+        corridor_path_preserve_compact_lite = False
+        corridor_answer_preserve_guarded_hotpot = False
+        corridor_answer_preserve_confidence_gated = False
+    elif mode == "r2_plus_path_preserve_compact_lite":
+        bridge_induction = True
+        role_chunk = False
+        coverage = False
+        corridor_compact = True
+        corridor_answer_preserve = False
+        corridor_bridge_purity = False
+        corridor_path_preserve = True
+        corridor_path_preserve_compact = True
+        corridor_path_preserve_guarded = False
+        corridor_path_preserve_compact_lite = True
         corridor_answer_preserve_guarded_hotpot = False
         corridor_answer_preserve_confidence_gated = False
     elif mode == "corridor_role_constrained":
@@ -322,6 +364,8 @@ def _resolve_retrieval_objective_flags(cfg):
         corridor_bridge_purity = False
         corridor_path_preserve = False
         corridor_path_preserve_compact = False
+        corridor_path_preserve_guarded = False
+        corridor_path_preserve_compact_lite = False
     elif mode == "seed_run_connector_core_corridor_compact":
         bridge_induction = True
         role_chunk = False
@@ -331,6 +375,8 @@ def _resolve_retrieval_objective_flags(cfg):
         corridor_bridge_purity = False
         corridor_path_preserve = False
         corridor_path_preserve_compact = False
+        corridor_path_preserve_guarded = False
+        corridor_path_preserve_compact_lite = False
     elif mode == "seed_run_connector_core_corridor_answer_preserve":
         bridge_induction = True
         role_chunk = False
@@ -340,6 +386,8 @@ def _resolve_retrieval_objective_flags(cfg):
         corridor_bridge_purity = False
         corridor_path_preserve = False
         corridor_path_preserve_compact = False
+        corridor_path_preserve_guarded = False
+        corridor_path_preserve_compact_lite = False
     elif mode == "seed_run_connector_core_corridor_bridge_purity":
         bridge_induction = True
         role_chunk = False
@@ -349,6 +397,8 @@ def _resolve_retrieval_objective_flags(cfg):
         corridor_bridge_purity = True
         corridor_path_preserve = False
         corridor_path_preserve_compact = False
+        corridor_path_preserve_guarded = False
+        corridor_path_preserve_compact_lite = False
     elif mode == "seed_run_connector_core_corridor_compact_answer_preserve":
         bridge_induction = True
         role_chunk = False
@@ -358,6 +408,8 @@ def _resolve_retrieval_objective_flags(cfg):
         corridor_bridge_purity = False
         corridor_path_preserve = False
         corridor_path_preserve_compact = False
+        corridor_path_preserve_guarded = False
+        corridor_path_preserve_compact_lite = False
         corridor_answer_preserve_guarded_hotpot = False
         corridor_answer_preserve_confidence_gated = False
     elif mode == "p3_answer_preserve_base":
@@ -369,6 +421,8 @@ def _resolve_retrieval_objective_flags(cfg):
         corridor_bridge_purity = False
         corridor_path_preserve = False
         corridor_path_preserve_compact = False
+        corridor_path_preserve_guarded = False
+        corridor_path_preserve_compact_lite = False
         corridor_answer_preserve_guarded_hotpot = False
         corridor_answer_preserve_confidence_gated = False
     elif mode == "p3_answer_preserve_guarded_hotpot":
@@ -380,6 +434,8 @@ def _resolve_retrieval_objective_flags(cfg):
         corridor_bridge_purity = False
         corridor_path_preserve = False
         corridor_path_preserve_compact = False
+        corridor_path_preserve_guarded = False
+        corridor_path_preserve_compact_lite = False
         corridor_answer_preserve_guarded_hotpot = True
         corridor_answer_preserve_confidence_gated = False
     elif mode == "p3_answer_preserve_confidence_gated":
@@ -391,6 +447,8 @@ def _resolve_retrieval_objective_flags(cfg):
         corridor_bridge_purity = False
         corridor_path_preserve = False
         corridor_path_preserve_compact = False
+        corridor_path_preserve_guarded = False
+        corridor_path_preserve_compact_lite = False
         corridor_answer_preserve_guarded_hotpot = False
         corridor_answer_preserve_confidence_gated = True
 
@@ -405,6 +463,8 @@ def _resolve_retrieval_objective_flags(cfg):
         "corridor_bridge_purity_shaping": bool(corridor_bridge_purity),
         "corridor_path_preserve_shaping": bool(corridor_path_preserve),
         "corridor_path_preserve_compact_shaping": bool(corridor_path_preserve_compact),
+        "corridor_path_preserve_guarded_shaping": bool(corridor_path_preserve_guarded),
+        "corridor_path_preserve_compact_lite_shaping": bool(corridor_path_preserve_compact_lite),
         "corridor_answer_preserve_guarded_hotpot": bool(corridor_answer_preserve_guarded_hotpot),
         "corridor_answer_preserve_confidence_gated": bool(corridor_answer_preserve_confidence_gated),
     }
@@ -434,6 +494,8 @@ def _apply_connector_objective_profile(cfg, objective_flags):
     flags["corridor_answer_preserve_confidence_gated"] = False
     flags["corridor_path_preserve_shaping"] = False
     flags["corridor_path_preserve_compact_shaping"] = False
+    flags["corridor_path_preserve_guarded_shaping"] = False
+    flags["corridor_path_preserve_compact_lite_shaping"] = False
 
     def _apply_run_bridge_aware():
         _set_cfg_attr_if_changed(cfg, "run_score_semantic_weight", 0.22, updates)
@@ -495,6 +557,8 @@ def _apply_connector_objective_profile(cfg, objective_flags):
         confidence_gated_enabled=False,
         path_preserve_enabled=False,
         path_preserve_compact_enabled=False,
+        path_preserve_guarded_enabled=False,
+        path_preserve_compact_lite_enabled=False,
     ):
         compact_flag = bool(compact_enabled)
         answer_flag = bool(answer_preserve_enabled)
@@ -503,11 +567,17 @@ def _apply_connector_objective_profile(cfg, objective_flags):
         confidence_gated_flag = bool(confidence_gated_enabled)
         path_preserve_flag = bool(path_preserve_enabled)
         path_preserve_compact_flag = bool(path_preserve_compact_enabled)
+        path_preserve_guarded_flag = bool(path_preserve_guarded_enabled)
+        path_preserve_compact_lite_flag = bool(path_preserve_compact_lite_enabled)
         _set_cfg_attr_if_changed(cfg, "corridor_compact_shaping_enabled", compact_flag, updates)
         _set_cfg_attr_if_changed(cfg, "corridor_answer_preserve_enabled", answer_flag, updates)
         _set_cfg_attr_if_changed(cfg, "corridor_bridge_purity_shaping_enabled", purity_flag, updates)
         _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_enabled", path_preserve_flag, updates)
         _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_compact_enabled", path_preserve_compact_flag, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_guarded_enabled", path_preserve_guarded_flag, updates)
+        _set_cfg_attr_if_changed(
+            cfg, "corridor_path_preserve_compact_lite_enabled", path_preserve_compact_lite_flag, updates
+        )
         _set_cfg_attr_if_changed(cfg, "corridor_answer_preserve_guarded_hotpot_enabled", guarded_hotpot_flag, updates)
         _set_cfg_attr_if_changed(
             cfg, "corridor_answer_preserve_confidence_gated_enabled", confidence_gated_flag, updates
@@ -529,6 +599,13 @@ def _apply_connector_objective_profile(cfg, objective_flags):
         _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_bridge_threshold", 0.35, updates)
         _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_answer_threshold", 0.55, updates)
         _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_pair_threshold", 0.45, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_guard_scale", 0.70, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_guard_min_complete_score", 0.70, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_guard_min_pair_retention", 0.55, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_guard_min_answer_density", 0.62, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_compact_lite_scale", 0.65, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_compact_lite_overflow_coeff", 0.015, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_compact_lite_overflow_cap", 0.08, updates)
         # Guard only used when answer-preserve shaping is on.
         _set_cfg_attr_if_changed(cfg, "corridor_answer_preserve_min_density", 0.30, updates)
         _set_cfg_attr_if_changed(cfg, "corridor_answer_preserve_light_boost_scale", 0.65, updates)
@@ -637,6 +714,8 @@ def _apply_connector_objective_profile(cfg, objective_flags):
             confidence_gated_enabled=False,
             path_preserve_enabled=True,
             path_preserve_compact_enabled=False,
+            path_preserve_guarded_enabled=False,
+            path_preserve_compact_lite_enabled=False,
         )
         flags["bridge_candidate_induction"] = True
         flags["role_aware_chunk_scoring"] = False
@@ -646,6 +725,8 @@ def _apply_connector_objective_profile(cfg, objective_flags):
         flags["corridor_bridge_purity_shaping"] = False
         flags["corridor_path_preserve_shaping"] = True
         flags["corridor_path_preserve_compact_shaping"] = False
+        flags["corridor_path_preserve_guarded_shaping"] = False
+        flags["corridor_path_preserve_compact_lite_shaping"] = False
     elif mode == "r2_plus_path_preserve_compact":
         profile_applied = "r2_plus_path_preserve_compact"
         _apply_run_bridge_lite()
@@ -657,6 +738,8 @@ def _apply_connector_objective_profile(cfg, objective_flags):
             confidence_gated_enabled=False,
             path_preserve_enabled=True,
             path_preserve_compact_enabled=True,
+            path_preserve_guarded_enabled=False,
+            path_preserve_compact_lite_enabled=False,
         )
         flags["bridge_candidate_induction"] = True
         flags["role_aware_chunk_scoring"] = False
@@ -666,6 +749,67 @@ def _apply_connector_objective_profile(cfg, objective_flags):
         flags["corridor_bridge_purity_shaping"] = False
         flags["corridor_path_preserve_shaping"] = True
         flags["corridor_path_preserve_compact_shaping"] = True
+        flags["corridor_path_preserve_guarded_shaping"] = False
+        flags["corridor_path_preserve_compact_lite_shaping"] = False
+    elif mode == "r2_plus_path_preserve_guarded":
+        profile_applied = "r2_plus_path_preserve_guarded"
+        _apply_run_bridge_lite()
+        _configure_corridor_shaping(
+            False,
+            False,
+            False,
+            guarded_hotpot_enabled=False,
+            confidence_gated_enabled=False,
+            path_preserve_enabled=True,
+            path_preserve_compact_enabled=False,
+            path_preserve_guarded_enabled=True,
+            path_preserve_compact_lite_enabled=False,
+        )
+        _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_weight", 0.20, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_incomplete_penalty_weight", 0.10, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_guard_scale", 0.60, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_guard_min_complete_score", 0.74, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_guard_min_pair_retention", 0.60, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_guard_min_answer_density", 0.66, updates)
+        flags["bridge_candidate_induction"] = True
+        flags["role_aware_chunk_scoring"] = False
+        flags["coverage_selection"] = False
+        flags["corridor_compact_shaping"] = False
+        flags["corridor_answer_preserve_shaping"] = False
+        flags["corridor_bridge_purity_shaping"] = False
+        flags["corridor_path_preserve_shaping"] = True
+        flags["corridor_path_preserve_compact_shaping"] = False
+        flags["corridor_path_preserve_guarded_shaping"] = True
+        flags["corridor_path_preserve_compact_lite_shaping"] = False
+    elif mode == "r2_plus_path_preserve_compact_lite":
+        profile_applied = "r2_plus_path_preserve_compact_lite"
+        _apply_run_bridge_lite()
+        _configure_corridor_shaping(
+            True,
+            False,
+            False,
+            guarded_hotpot_enabled=False,
+            confidence_gated_enabled=False,
+            path_preserve_enabled=True,
+            path_preserve_compact_enabled=True,
+            path_preserve_guarded_enabled=False,
+            path_preserve_compact_lite_enabled=True,
+        )
+        _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_weight", 0.23, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_compact_weight", 0.08, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_compact_lite_scale", 0.55, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_compact_lite_overflow_coeff", 0.012, updates)
+        _set_cfg_attr_if_changed(cfg, "corridor_path_preserve_compact_lite_overflow_cap", 0.06, updates)
+        flags["bridge_candidate_induction"] = True
+        flags["role_aware_chunk_scoring"] = False
+        flags["coverage_selection"] = False
+        flags["corridor_compact_shaping"] = True
+        flags["corridor_answer_preserve_shaping"] = False
+        flags["corridor_bridge_purity_shaping"] = False
+        flags["corridor_path_preserve_shaping"] = True
+        flags["corridor_path_preserve_compact_shaping"] = True
+        flags["corridor_path_preserve_guarded_shaping"] = False
+        flags["corridor_path_preserve_compact_lite_shaping"] = True
     elif mode == "seed_run_connector_core":
         profile_applied = "seed_run_connector_core"
         _apply_run_connector_core()
@@ -4388,6 +4532,8 @@ def _rerank_corridors_hybrid(
     bridge_purity_enabled = bool(getattr(cfg, "corridor_bridge_purity_shaping_enabled", False))
     path_preserve_enabled = bool(getattr(cfg, "corridor_path_preserve_enabled", False))
     path_preserve_compact_enabled = bool(getattr(cfg, "corridor_path_preserve_compact_enabled", False))
+    path_preserve_guarded_enabled = bool(getattr(cfg, "corridor_path_preserve_guarded_enabled", False))
+    path_preserve_compact_lite_enabled = bool(getattr(cfg, "corridor_path_preserve_compact_lite_enabled", False))
     answer_preserve_guarded_hotpot_enabled = bool(
         getattr(cfg, "corridor_answer_preserve_guarded_hotpot_enabled", False)
     )
@@ -4406,6 +4552,25 @@ def _rerank_corridors_hybrid(
     path_bridge_threshold = max(0.0, min(1.0, float(getattr(cfg, "corridor_path_preserve_bridge_threshold", 0.35))))
     path_answer_threshold = max(0.0, min(1.0, float(getattr(cfg, "corridor_path_preserve_answer_threshold", 0.55))))
     path_pair_threshold = max(0.0, min(1.0, float(getattr(cfg, "corridor_path_preserve_pair_threshold", 0.45))))
+    path_guard_scale = max(0.0, min(1.0, float(getattr(cfg, "corridor_path_preserve_guard_scale", 0.70))))
+    path_guard_min_complete = max(
+        0.0, min(1.0, float(getattr(cfg, "corridor_path_preserve_guard_min_complete_score", 0.70)))
+    )
+    path_guard_min_pair = max(
+        0.0, min(1.0, float(getattr(cfg, "corridor_path_preserve_guard_min_pair_retention", 0.55)))
+    )
+    path_guard_min_answer_density = max(
+        0.0, min(1.0, float(getattr(cfg, "corridor_path_preserve_guard_min_answer_density", 0.62)))
+    )
+    path_compact_lite_scale = max(
+        0.0, min(1.0, float(getattr(cfg, "corridor_path_preserve_compact_lite_scale", 0.65)))
+    )
+    path_compact_lite_overflow_coeff = max(
+        0.0, float(getattr(cfg, "corridor_path_preserve_compact_lite_overflow_coeff", 0.015))
+    )
+    path_compact_lite_overflow_cap = max(
+        0.0, float(getattr(cfg, "corridor_path_preserve_compact_lite_overflow_cap", 0.08))
+    )
     answer_density_min = max(0.0, min(1.0, float(getattr(cfg, "corridor_answer_preserve_min_density", 0.30))))
     answer_preserve_light_boost_scale = max(
         0.0, min(1.0, float(getattr(cfg, "corridor_answer_preserve_light_boost_scale", 0.65)))
@@ -4537,14 +4702,32 @@ def _rerank_corridors_hybrid(
             shaping_bonus += float(compact_w) * float(support_set_compactness)
         path_gate_reasons = []
         path_preserve_applied = False
+        path_guard_passed = True
         if path_preserve_enabled and path_preserve_w > 0.0:
+            if path_preserve_guarded_enabled:
+                path_guard_passed = True
+                if path_complete_score < float(path_guard_min_complete):
+                    path_guard_passed = False
+                    path_gate_reasons.append("guard_min_complete_not_met")
+                if bridge_answer_pair_retention < float(path_guard_min_pair):
+                    path_guard_passed = False
+                    path_gate_reasons.append("guard_min_pair_not_met")
+                if answer_side_density < float(path_guard_min_answer_density):
+                    path_guard_passed = False
+                    path_gate_reasons.append("guard_min_answer_density_not_met")
             if path_complete:
-                path_bonus = float(path_preserve_w) * float(path_complete_score) * (
-                    0.6 + 0.4 * float(bridge_answer_pair_retention)
-                )
-                shaping_bonus += float(path_bonus)
-                path_preserve_applied = True
-                path_gate_reasons.append("path_complete_preserve")
+                if path_guard_passed:
+                    path_bonus = float(path_preserve_w) * float(path_complete_score) * (
+                        0.6 + 0.4 * float(bridge_answer_pair_retention)
+                    )
+                    if path_preserve_guarded_enabled:
+                        path_bonus *= float(path_guard_scale)
+                        path_gate_reasons.append("path_guard_scale_applied")
+                    shaping_bonus += float(path_bonus)
+                    path_preserve_applied = True
+                    path_gate_reasons.append("path_complete_preserve")
+                else:
+                    path_gate_reasons.append("path_complete_preserve_suppressed")
             else:
                 path_penalty = (
                     float(path_preserve_incomplete_penalty_w)
@@ -4556,10 +4739,19 @@ def _rerank_corridors_hybrid(
                     path_gate_reasons.append("incomplete_path_penalty")
             if path_preserve_compact_enabled and path_preserve_compact_w > 0.0:
                 compact_adjust = float(path_preserve_compact_w) * (float(chain_compactness) - 0.5)
+                if path_preserve_compact_lite_enabled:
+                    compact_adjust *= float(path_compact_lite_scale)
+                    path_gate_reasons.append("path_compact_lite_scale")
                 shaping_bonus += float(compact_adjust)
                 branch_overflow = max(0, int(support_span) - 3)
                 if branch_overflow > 0:
-                    shaping_bonus -= min(0.20, 0.03 * float(branch_overflow))
+                    overflow_penalty = min(0.20, 0.03 * float(branch_overflow))
+                    if path_preserve_compact_lite_enabled:
+                        overflow_penalty = min(
+                            float(path_compact_lite_overflow_cap),
+                            float(path_compact_lite_overflow_coeff) * float(branch_overflow),
+                        )
+                    shaping_bonus -= float(overflow_penalty)
                 path_gate_reasons.append("path_compact_adjust")
         preserve_gate_reasons = []
         preserve_scale = 1.0
@@ -4642,12 +4834,15 @@ def _rerank_corridors_hybrid(
                     "incomplete_path_indicator": float(incomplete_path_indicator),
                     "chain_compactness": float(chain_compactness),
                     "path_preserve_applied": bool(path_preserve_applied),
+                    "path_preserve_guard_passed": bool(path_guard_passed),
                     "path_preserve_gate_reasons": list(path_gate_reasons),
                     "corridor_compact_shaping_enabled": bool(compact_enabled),
                     "corridor_answer_preserve_enabled": bool(answer_preserve_enabled),
                     "corridor_bridge_purity_shaping_enabled": bool(bridge_purity_enabled),
                     "corridor_path_preserve_enabled": bool(path_preserve_enabled),
                     "corridor_path_preserve_compact_enabled": bool(path_preserve_compact_enabled),
+                    "corridor_path_preserve_guarded_enabled": bool(path_preserve_guarded_enabled),
+                    "corridor_path_preserve_compact_lite_enabled": bool(path_preserve_compact_lite_enabled),
                     "corridor_answer_preserve_guarded_hotpot_enabled": bool(answer_preserve_guarded_hotpot_enabled),
                     "corridor_answer_preserve_confidence_gated_enabled": bool(answer_preserve_confidence_gated_enabled),
                     "corridor_compact_weight": float(compact_w),
@@ -4660,6 +4855,13 @@ def _rerank_corridors_hybrid(
                     "corridor_path_preserve_bridge_threshold": float(path_bridge_threshold),
                     "corridor_path_preserve_answer_threshold": float(path_answer_threshold),
                     "corridor_path_preserve_pair_threshold": float(path_pair_threshold),
+                    "corridor_path_preserve_guard_scale": float(path_guard_scale),
+                    "corridor_path_preserve_guard_min_complete_score": float(path_guard_min_complete),
+                    "corridor_path_preserve_guard_min_pair_retention": float(path_guard_min_pair),
+                    "corridor_path_preserve_guard_min_answer_density": float(path_guard_min_answer_density),
+                    "corridor_path_preserve_compact_lite_scale": float(path_compact_lite_scale),
+                    "corridor_path_preserve_compact_lite_overflow_coeff": float(path_compact_lite_overflow_coeff),
+                    "corridor_path_preserve_compact_lite_overflow_cap": float(path_compact_lite_overflow_cap),
                     "corridor_answer_preserve_min_density": float(answer_density_min),
                     "corridor_answer_preserve_light_boost_scale": float(answer_preserve_light_boost_scale),
                     "corridor_answer_preserve_bridge_consistency_threshold": float(

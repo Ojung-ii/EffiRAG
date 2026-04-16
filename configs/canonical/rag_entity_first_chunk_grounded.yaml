@@ -63,6 +63,8 @@ run_score_redundancy_weight: 0.10
 # - r2_connector_core
 # - r2_plus_path_preserve
 # - r2_plus_path_preserve_compact
+# - r2_plus_path_preserve_guarded
+# - r2_plus_path_preserve_compact_lite
 retrieval_objective_mode: baseline
 hybrid_anchor_recall_enabled: false
 hybrid_anchor_semantic_topn: 2
@@ -113,6 +115,8 @@ corridor_answer_preserve_enabled: false
 corridor_bridge_purity_shaping_enabled: false
 corridor_path_preserve_enabled: false
 corridor_path_preserve_compact_enabled: false
+corridor_path_preserve_guarded_enabled: false
+corridor_path_preserve_compact_lite_enabled: false
 corridor_answer_preserve_guarded_hotpot_enabled: false
 corridor_answer_preserve_confidence_gated_enabled: false
 corridor_compact_weight: 0.00
@@ -125,6 +129,13 @@ corridor_path_preserve_anchor_threshold: 0.35
 corridor_path_preserve_bridge_threshold: 0.35
 corridor_path_preserve_answer_threshold: 0.55
 corridor_path_preserve_pair_threshold: 0.45
+corridor_path_preserve_guard_scale: 0.70
+corridor_path_preserve_guard_min_complete_score: 0.70
+corridor_path_preserve_guard_min_pair_retention: 0.55
+corridor_path_preserve_guard_min_answer_density: 0.62
+corridor_path_preserve_compact_lite_scale: 0.65
+corridor_path_preserve_compact_lite_overflow_coeff: 0.015
+corridor_path_preserve_compact_lite_overflow_cap: 0.08
 corridor_answer_preserve_min_density: 0.30
 corridor_answer_preserve_light_boost_scale: 0.65
 corridor_answer_preserve_bridge_consistency_threshold: 0.55
