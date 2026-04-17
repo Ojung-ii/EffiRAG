@@ -183,7 +183,13 @@ eta_connector: 0.20
 lambda_redundancy: 0.25
 reserve_top_corridor: false
 # score | retrieval | corridor_rank | query_bridge_answer
-# path_bundle mode flags: path_bundle_ordered + path_bundle_dedup + path_bundle_compactlite
+# path_bundle mode flags:
+# - path_bundle_ordered
+# - path_bundle_chain_summary
+# - path_bundle_derivation_prompt
+# - path_bundle_top1_focus (or path_bundle_top2_focus)
+# - path_bundle_dedup
+# - path_bundle_compactlite
 order_strategy: score
 # Minimal downstream options (Set F): use config-level toggles.
 # - final_top_slice_reorder_enabled: true

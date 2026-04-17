@@ -122,6 +122,22 @@ def _safe_ratio(numer, denom):
     return float(n / d)
 
 
+def _approx_token_count(text):
+    return int(len(content_tokens(text or "")))
+
+
+def _short_line(text, max_words=16, max_chars=140):
+    raw = " ".join(str(text or "").strip().split())
+    if not raw:
+        return "-"
+    words = raw.split()
+    if len(words) > int(max_words):
+        raw = " ".join(words[: int(max_words)]).strip() + " ..."
+    if len(raw) > int(max_chars):
+        raw = raw[: int(max_chars) - 3].rstrip() + "..."
+    return raw
+
+
 def _int_default(value, default):
     try:
         return int(value)
@@ -373,6 +389,10 @@ def _attach_stagewise_render_diagnostics(sample, retrieval_result, rendered):
         "bundle_dedup_ratio",
         "answer_path_coverage",
         "conversion_after_path_bundle",
+        "summary_token_count",
+        "path_focus_count",
+        "derivation_prompt_activation",
+        "answer_chain_readability_score",
     ):
         if key in rendered_meta:
             try:
@@ -763,10 +783,26 @@ def _parse_path_bundle_flags(order_strategy):
     raw = str(order_strategy or "").strip().lower()
     tokens = [tok.strip() for tok in raw.split("+") if tok.strip()]
     flags = set(tokens)
+    focus_n = 0
+    if "path_bundle_top1_focus" in flags or "top1_path_focus" in flags:
+        focus_n = 1
+    elif "path_bundle_top2_focus" in flags or "top2_path_focus" in flags:
+        focus_n = 2
+    else:
+        for tok in flags:
+            if tok.startswith("path_bundle_top") and tok.endswith("_focus"):
+                core = tok[len("path_bundle_top") : -len("_focus")]
+                if core.isdigit():
+                    focus_n = max(focus_n, int(core))
     return {
-        "ordered": True,
+        "ordered": not bool(
+            "path_bundle_unordered" in flags or "bundle_unordered" in flags or "unordered" in flags
+        ),
         "dedup": bool("path_bundle_dedup" in flags or "bundle_dedup" in flags),
         "compact_lite": bool("path_bundle_compactlite" in flags or "compact_lite" in flags),
+        "chain_summary": bool("path_bundle_chain_summary" in flags or "chain_summary" in flags),
+        "derivation_prompt": bool("path_bundle_derivation_prompt" in flags or "derivation_prompt" in flags),
+        "focus_n": int(max(0, focus_n)),
     }
 
 
@@ -844,6 +880,9 @@ def render_path_bundle_context(
     flags = _parse_path_bundle_flags(order_strategy)
     compact_lite = bool(flags.get("compact_lite", False))
     dedup_enabled = bool(flags.get("dedup", False))
+    chain_summary_enabled = bool(flags.get("chain_summary", False))
+    derivation_prompt_enabled = bool(flags.get("derivation_prompt", False))
+    focus_n = int(flags.get("focus_n", 0))
 
     max_corridors = max(1, int(max_corridors_in_context))
     max_main = max(1, int(max_main_sentences_per_corridor))
@@ -852,6 +891,8 @@ def render_path_bundle_context(
         max_corridors = max(1, min(max_corridors, 2))
         max_main = max(1, min(max_main, 2))
         max_support = max(1, min(max_support, 2))
+    if focus_n > 0:
+        max_corridors = max(1, min(max_corridors, focus_n))
     selected_corridors = ranked_corridors[:max_corridors]
     truncated_corridors = max(0, len(ranked_corridors) - len(selected_corridors))
 
@@ -942,12 +983,24 @@ def render_path_bundle_context(
     truncated_corridors += int(truncated_bundle_count)
 
     lines = [f"Question: {sample.question}", ""]
+    if derivation_prompt_enabled:
+        lines.extend(
+            [
+                "[Evidence Derivation Guide]",
+                "1) Verify anchor evidence in each path bundle.",
+                "2) Verify bridge evidence that links anchor and answer-side facts.",
+                "3) Verify answer-facing evidence that supports the final span.",
+                "4) Derive the final answer only if 1-3 are consistent.",
+                "",
+            ]
+        )
     rendered_corridor_ids = []
     complete_path_rank = 0
     adjacency_hits = 0
     adjacency_total = 0
     bundles_with_answer = 0
     total_bundle_chunks = 0
+    summary_lines = []
     for idx, bundle in enumerate(kept_bundles, start=1):
         anchors = list(bundle.get("anchors", ["-", "-"]) or ["-", "-"])
         if len(anchors) >= 2:
@@ -959,6 +1012,18 @@ def render_path_bundle_context(
         lines.append(
             f"[PathBundle {idx} | score={float(bundle.get('corridor_score', 0.0)):.3f} | anchors={anchor_text}]"
         )
+        if chain_summary_enabled:
+            anchor_sid = next(iter(list(bundle.get("anchor_sentence_ids", []) or [])), "")
+            bridge_sid = next(iter(list(bundle.get("bridge_sentence_ids", []) or [])), "")
+            answer_sid = next(iter(list(bundle.get("answer_sentence_ids", []) or [])), "")
+            anchor_hint = _short_line(sentence_map.get(anchor_sid, ""), max_words=14, max_chars=100)
+            bridge_hint = _short_line(sentence_map.get(bridge_sid, ""), max_words=14, max_chars=100)
+            answer_hint = _short_line(sentence_map.get(answer_sid, ""), max_words=14, max_chars=100)
+            summary_line = (
+                f"Summary: anchor={anchor_hint} | bridge={bridge_hint} | answer={answer_hint}"
+            )
+            lines.append(summary_line)
+            summary_lines.append(summary_line)
         role_blocks = (
             ("Anchor", list(bundle.get("anchor_sentence_ids", []) or [])),
             ("Bridge", list(bundle.get("bridge_sentence_ids", []) or [])),
@@ -1000,6 +1065,21 @@ def render_path_bundle_context(
     bridge_answer_adjacency_rate = float(_safe_ratio(adjacency_hits, max(1, adjacency_total)))
     bundle_dedup_ratio = float(_safe_ratio(dedup_removed_count, max(1, dedup_candidate_count)))
     answer_path_coverage = float(_safe_ratio(bundles_with_answer, max(1, bundle_count)))
+    summary_token_count = float(sum(_approx_token_count(line) for line in summary_lines))
+    path_focus_count = float(min(bundle_count, focus_n)) if focus_n > 0 else 0.0
+    readability_role_signal = 1.0 if bundle_count > 0 else 0.0
+    readability_order_signal = 1.0 if complete_path_rank > 0 else 0.0
+    readability_adj_signal = max(0.0, min(1.0, bridge_answer_adjacency_rate))
+    readability_concise_signal = max(0.0, min(1.0, 1.0 - max(0.0, avg_chunks_per_bundle - 2.5) / 3.0))
+    answer_chain_readability_score = (
+        0.20 * readability_role_signal
+        + 0.20 * readability_order_signal
+        + 0.20 * readability_adj_signal
+        + 0.15 * readability_concise_signal
+        + 0.15 * float(1.0 if chain_summary_enabled else 0.0)
+        + 0.10 * float(1.0 if derivation_prompt_enabled else 0.0)
+    )
+    answer_chain_readability_score = float(max(0.0, min(1.0, answer_chain_readability_score)))
 
     return RenderedContext(
         sample_id=sample.qid,
@@ -1018,12 +1098,19 @@ def render_path_bundle_context(
             "path_bundle_ordered_enabled": bool(flags.get("ordered", True)),
             "path_bundle_dedup_enabled": bool(dedup_enabled),
             "path_bundle_compact_lite_enabled": bool(compact_lite),
+            "path_bundle_chain_summary_enabled": bool(chain_summary_enabled),
+            "path_bundle_derivation_prompt_enabled": bool(derivation_prompt_enabled),
+            "path_bundle_focus_n": int(max(0, focus_n)),
             "path_bundle_count": float(bundle_count),
             "avg_chunks_per_bundle": float(avg_chunks_per_bundle),
             "bridge_answer_adjacency_rate": float(bridge_answer_adjacency_rate),
             "first_complete_path_rank": float(complete_path_rank),
             "bundle_dedup_ratio": float(bundle_dedup_ratio),
             "answer_path_coverage": float(answer_path_coverage),
+            "summary_token_count": float(summary_token_count),
+            "path_focus_count": float(path_focus_count),
+            "derivation_prompt_activation": float(1.0 if derivation_prompt_enabled else 0.0),
+            "answer_chain_readability_score": float(answer_chain_readability_score),
             "conversion_after_path_bundle": 0.0,
         },
     )

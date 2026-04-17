@@ -214,6 +214,10 @@ STAGEWISE_LOSS_KEYS = (
     "first_complete_path_rank",
     "bundle_dedup_ratio",
     "answer_path_coverage",
+    "summary_token_count",
+    "path_focus_count",
+    "derivation_prompt_activation",
+    "answer_chain_readability_score",
     "conversion_after_path_bundle",
     "answer_present_but_generation_fail",
     "hotpot_overpreserve_rate",
@@ -303,6 +307,10 @@ def _extract_stagewise_from_row(row):
         "first_complete_path_rank",
         "bundle_dedup_ratio",
         "answer_path_coverage",
+        "summary_token_count",
+        "path_focus_count",
+        "derivation_prompt_activation",
+        "answer_chain_readability_score",
         "conversion_after_path_bundle",
         "answer_present_but_generation_fail",
         "hotpot_overpreserve_rate",
@@ -398,6 +406,28 @@ def _extract_stagewise_from_row(row):
         diagnostics.get("answer_path_coverage", rendered_meta.get("answer_path_coverage", metrics.get("answer_path_coverage", 0.0))),
         0.0,
     )
+    summary_token_count = _safe_float(
+        diagnostics.get("summary_token_count", rendered_meta.get("summary_token_count", metrics.get("summary_token_count", 0.0))),
+        0.0,
+    )
+    path_focus_count = _safe_float(
+        diagnostics.get("path_focus_count", rendered_meta.get("path_focus_count", metrics.get("path_focus_count", 0.0))),
+        0.0,
+    )
+    derivation_prompt_activation = _safe_float(
+        diagnostics.get(
+            "derivation_prompt_activation",
+            rendered_meta.get("derivation_prompt_activation", metrics.get("derivation_prompt_activation", 0.0)),
+        ),
+        0.0,
+    )
+    answer_chain_readability_score = _safe_float(
+        diagnostics.get(
+            "answer_chain_readability_score",
+            rendered_meta.get("answer_chain_readability_score", metrics.get("answer_chain_readability_score", 0.0)),
+        ),
+        0.0,
+    )
     anchor_bridge_balance = _safe_float(
         diagnostics.get("anchor_bridge_balance", metrics.get("anchor_bridge_balance", 0.0)),
         0.0,
@@ -457,6 +487,10 @@ def _extract_stagewise_from_row(row):
     metrics["first_complete_path_rank"] = max(0.0, float(first_complete_path_rank))
     metrics["bundle_dedup_ratio"] = max(0.0, min(1.0, bundle_dedup_ratio))
     metrics["answer_path_coverage"] = max(0.0, min(1.0, answer_path_coverage))
+    metrics["summary_token_count"] = max(0.0, float(summary_token_count))
+    metrics["path_focus_count"] = max(0.0, float(path_focus_count))
+    metrics["derivation_prompt_activation"] = max(0.0, min(1.0, derivation_prompt_activation))
+    metrics["answer_chain_readability_score"] = max(0.0, min(1.0, answer_chain_readability_score))
     metrics["anchor_bridge_balance"] = max(0.0, min(1.0, anchor_bridge_balance))
     metrics["hotpot_overpreserve_rate"] = max(0.0, min(1.0, hotpot_overpreserve_rate))
     metrics["conversion_after_bridge"] = (
