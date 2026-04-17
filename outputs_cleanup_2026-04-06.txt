@@ -1,0 +1,13 @@
+Cleanup date: 2026-04-06
+Removed directories:
+- outputs/index_cache (6.6G)
+- outputs/index_cache_entity_chunk_graph (2.1G)
+- outputs/index_cache_entityfirst_chunk32 (1.3G)
+- outputs/index_cache_entityfirst_chunk42 (686M)
+- outputs/query_embedding_cache (138M)
+- outputs/profiling (70M)
+- outputs/index_logs_entity_chunk_graph (9.1M)
+- outputs/run_logs_entityfirst_chunk32 (15M)
+- outputs/dryrun (704K)
+- outputs/dryrun_stagewise_rag (268K)
+- outputs/dryrun_stagewise_retrieval (200K)

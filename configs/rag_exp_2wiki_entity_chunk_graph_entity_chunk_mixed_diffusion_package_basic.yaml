@@ -1,0 +1,85 @@
+embedding_enabled: true
+sentence_rerank_enabled: false
+embedding_model_name: nvidia/NV-Embed-v2
+candidate_embedding_fallback_enabled: false
+embedding_max_length: 192
+embedding_text_max_chars: 600
+query_embedding_max_length: 192
+query_embedding_text_max_chars: 600
+query_embedding_cache_enabled: true
+query_embedding_cache_dir: outputs/query_embedding_cache
+
+max_anchors: 2
+samples_per_anchor: 1
+pair_shortlist_topb: 2
+phase1_run_preshortlist_topm: 1
+phase1_full_run_score_topk: 1
+run_score_sparse_topk: 64
+run_score_surrogate_topk: 128
+
+semantic_topn_entity: 20
+semantic_topn_chunk: 10
+graph_reserve_topn: 10
+entity_lookup_use_two_tier: true
+entity_lookup_tier1_topk: 192
+entity_lookup_alias_token_limit: 12
+entity_lookup_global_fallback_topn: 8
+semantic_chunk_lookup_strategy: full
+semantic_scan_batch_size: 32768
+
+phase1_parallel_ppr: true
+phase2_refine_mode: bounded_local
+phase2_bidirectional_full_ppr: false
+reuse_semantic_scores_in_final: true
+proposal_union_experiment_mode: aggressive
+proposal_adaptive_budget: true
+
+run_score_semantic_weight: 0.10
+run_score_anchor_weight: 0.12
+run_score_structure_weight: 0.45
+run_score_bridge_weight: 0.23
+run_score_redundancy_weight: 0.10
+run_score_entity_chunk_grounding_weight: 0.10
+seed_score_graph_weight: 0.68
+seed_score_semantic_weight: 0.24
+seed_score_anchor_weight: 0.08
+seed_score_chunk_grounding_weight: 0.12
+
+llm_max_new_tokens: 64
+max_context_sentences: 18
+max_corridors_in_context: 3
+max_main_sentences_per_corridor: 3
+max_support_per_corridor: 2
+max_total_sentences: 18
+max_sentences: 18
+
+top1_correction_enabled: true
+top1_correction_topk: 3
+
+graph_mode: entity_chunk_graph
+index_chunk_unit: passage
+chunk_scoring_mode: direct_chunk
+entity_chunk_transition_weight: 0.55
+chunk_node_enabled_in_diffusion: true
+chunk_score_topk: 24
+chunk_package_enabled: true
+delivery_mode: chunk_package_basic
+max_chunk_packages: 4
+max_excerpt_sentences_per_package: 3
+
+semantic_candidate_union: false
+chunk_grounding_enabled: true
+chunk_grounding_mode: package_score
+chunk_grounding_top_k_packages: 4
+chunk_excerpt_window_sentences_before: 1
+chunk_excerpt_window_sentences_after: 1
+chunk_excerpt_max_total_sentences: 8
+package_score_answer_weight: 0.52
+package_score_bridge_weight: 0.18
+package_score_support_weight: 0.20
+package_score_chunk_grounding_weight: 0.20
+package_score_redundancy_weight: 0.12
+corridor_score_chunk_support_weight: 0.08
+corridor_score_answer_alignment_weight: 0.05
+
+evaluator_mode: hipporag2_parity

@@ -214,12 +214,9 @@ def _load_records_from_path(path):
 
 
 def _discover_local_data_path(dataset_name: str):
-    home = Path.home()
     candidates = [
         Path.cwd() / "data" / "qa" / f"{dataset_name}.json",
         Path.cwd() / "data" / f"{dataset_name}.json",
-        home / "raptor" / "data" / "qa" / f"{dataset_name}.json",
-        home / "HippoRAG" / "data" / f"{dataset_name}.json",
     ]
     for path in candidates:
         if path.exists():

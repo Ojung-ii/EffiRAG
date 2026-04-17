@@ -94,15 +94,13 @@ You can run with:
 로컬 파일 없이 실행해도 아래 경로가 있으면 자동 탐색합니다:
 - `./data/qa/<dataset>.json`
 - `./data/<dataset>.json`
-- `~/raptor/data/qa/<dataset>.json`
-- `~/HippoRAG/data/<dataset>.json`
 
 데이터셋 구축(정규화 json 생성) 예시:
 
 ```bash
 scripts/build_datasets.sh \
   --datasets hotpotqa,musique,2wikimultihopqa,popqa \
-  --source-root /home/ojungii/raptor/data/qa \
+  --source-root /path/to/raw_datasets \
   --output-root data/qa \
   --overwrite true
 ```
@@ -164,6 +162,14 @@ retrieval/rag 실행 시 아래 옵션을 주면 query-local context 대신 전�
 - `--openie-text-max-chars`
 - `--openie-max-new-tokens`
 
+임베딩 재정렬 옵션(기본 off):
+- `--embedding-enabled true|false`
+- `--embedding-model-name` (예: `sentence-transformers/all-MiniLM-L6-v2`)
+- `--embedding-weight` (retrieval 점수와 임베딩 유사도 결합 가중치)
+- `--embedding-rerank-topn`
+- `--embedding-batch-size`
+- `--embedding-max-length`
+
 참고:
 - 기본 인덱싱은 LLM OpenIE 기반(`llm`)입니다.
 - LLM/모델 로딩 실패 시, 실행은 중단하지 않고 lexical 인덱싱으로 폴백하며 메타(`meta.json -> stats`)에 사유가 기록됩니다.
@@ -178,6 +184,119 @@ corridor 렌더 예산 파라미터:
 - `--max-main-sentences-per-corridor` (default: 2)
 - `--max-support-per-corridor` (default: 1)
 - `--max-total-sentences` (default: 12)
+
+## Final Operating Profiles (Frozen)
+
+현재 운영 결론은 아래 3개로 고정합니다.
+
+1. `speed_default`
+   - config: `configs/rag_speed_profile.yaml` / `configs/retrieval_speed_profile.yaml`
+   - 핵심: `proposal_union_experiment_mode: aggressive`, `sentence_rerank_enabled: false`
+   - 목적: 기본 실행(빠른 반복 실험/대량 평가)
+2. `quality_variant`
+   - config: `configs/rag_quality_profile.yaml` / `configs/retrieval_quality_profile.yaml`
+   - 핵심: speed default 기반 + `top1_correction_enabled: true` (`top1corr_t1`)
+   - 목적: top-rank 보정이 필요한 품질 비교 실행
+3. `ablation_off`
+   - config: `configs/rag_quality_off_ablation.yaml` / `configs/retrieval_quality_off_ablation.yaml`
+   - 핵심: `proposal_union_experiment_mode: off`
+   - 목적: baseline/ablation/reference 비교
+
+Final policy:
+- speed default = `aggressive`
+- quality variant = `top1corr_t1`
+- `off`는 운영 기본값이 아니라 ablation/reference로만 사용
+
+### Fixed Constraints
+
+아래 항목은 운영 고정(freeze)입니다.
+
+- retrieval core 구조:
+  - semantic proposal
+  - reduced subgraph
+  - Phase1 stochastic PPR
+  - Phase2 bounded local refinement
+- speed profile runtime knobs:
+  - `max_anchors: 2`
+  - `samples_per_anchor: 1`
+  - `sentence_rerank_enabled: false`
+  - `semantic_chunk_lookup_strategy: full`
+- offline index spec:
+  - `embedding_model_name`
+  - `embedding_max_length`
+  - `embedding_text_max_chars`
+  - semantic text construction
+  - normalization
+
+권장하지 않는 축(현재 단계 종료):
+- `max_anchors` 증가
+- `samples_per_anchor` 증가
+- entity proposal 추가 확대
+- chunk two-tier 기본값 전환
+- sentence rerank 재도입
+
+### Final Eval Commands
+
+`scripts/run_final_eval.sh`는 최종 3모드를 통일된 인터페이스로 실행합니다.
+
+```bash
+scripts/run_final_eval.sh speed_default
+scripts/run_final_eval.sh quality_variant
+scripts/run_final_eval.sh ablation_off
+```
+
+환경변수로 실행 조건 제어:
+- `LIMIT` (default: `200`)
+- `RETRIEVAL_ONLY` (`true|false`)
+- `CUDA_VISIBLE_DEVICES` (default: `0`)
+- `GENERATOR` (`openai_compat` or `heuristic`)
+
+예시 1) 1000-query retrieval-only:
+
+```bash
+LIMIT=1000 RETRIEVAL_ONLY=true CUDA_VISIBLE_DEVICES=0 \
+scripts/run_final_eval.sh speed_default
+```
+
+예시 2) 200-query QA:
+
+```bash
+LIMIT=200 RETRIEVAL_ONLY=false CUDA_VISIBLE_DEVICES=0 \
+scripts/run_final_eval.sh quality_variant
+```
+
+예시 3) 3모드 일괄 실행:
+
+```bash
+LIMIT=200 RETRIEVAL_ONLY=true CUDA_VISIBLE_DEVICES=0 \
+scripts/run_final_eval_all.sh
+```
+
+### Quality Track Helper (Legacy + Final Aliases)
+
+`scripts/run_quality_track.sh`도 최종 모드를 지원합니다:
+
+```bash
+scripts/run_quality_track.sh speed_default
+scripts/run_quality_track.sh quality_variant
+scripts/run_quality_track.sh ablation_off
+```
+
+기존 실험 alias(`top1corr_t2`, `reserve_boost_c1` 등)는 재현용으로만 남아 있습니다.
+
+### Result Table Utility
+
+여러 run의 `rag_summary.json`을 한 번에 표로 합칠 수 있습니다.
+
+```bash
+python scripts/summarize_run_table.py \
+  --title "Final Profile Compare" \
+  --run speed_default=/abs/path/to/speed/rag_summary.json \
+  --run quality_variant=/abs/path/to/quality/rag_summary.json \
+  --run ablation_off=/abs/path/to/off/rag_summary.json \
+  --output-json outputs/profiling/final_profile_compare.json \
+  --output-md outputs/profiling/final_profile_compare.md
+```
 
 ## RAG Run Example
 
@@ -392,3 +511,20 @@ Implemented CLI parameters:
 - `retrieval.py` does not depend on `generator.py`.
 - `generator.py` consumes rendered text and does not know retrieval internals.
 - `naive_graphrag` returns the same `RetrievalResult` schema as `effirag`.
+
+## Entity-first chunk-grounded recommendation
+
+For the current entity-chunk branch, the recommended strategy is:
+
+- keep **search/diffusion entity-centric** (`graph_mode=entity_chunk_graph`, `chunk_node_enabled_in_diffusion=false`)
+- use **mid-sized passage chunks** built by sliding sentence windows (`passage_chunk_size_sentences=3`, `passage_chunk_stride_sentences=2`)
+- use chunks for **proposal grounding and final context delivery**, not as the primary diffusion frontier
+- keep stable Phase1 selection enabled (`samples_per_anchor>=2`, `phase1_run_preshortlist_topm>=2`, `phase1_full_run_score_topk>=2`)
+
+Canonical configs are provided under `configs/canonical/`.
+
+You can audit config naming / strategy drift with:
+
+```bash
+python -m effirag.config_audit configs
+```

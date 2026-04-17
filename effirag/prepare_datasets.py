@@ -5,6 +5,12 @@ from . import datasets as _datasets  # noqa: F401
 from .registry import get_dataset_loader
 from .utils import parse_bool, write_json
 
+try:
+    from tqdm.auto import tqdm
+except Exception:  # pragma: no cover
+    def tqdm(iterable, **kwargs):
+        return iterable
+
 
 def _csv_to_list(raw: str):
     return [x.strip() for x in str(raw).split(",") if x.strip()]
@@ -89,7 +95,13 @@ def main() -> None:
         "datasets": [],
     }
 
-    for dataset in datasets:
+    for dataset in tqdm(
+        datasets,
+        total=len(datasets),
+        desc="Prepare datasets",
+        unit="dataset",
+        leave=False,
+    ):
         loader = get_dataset_loader(dataset)
         source_path = _find_source_path(args.source_root, dataset)
 
@@ -100,7 +112,16 @@ def main() -> None:
                 "Provide a valid --source-root or network access, or pass --allow-demo-fallback true."
             )
 
-        rows = [_sample_to_row(sample) for sample in samples]
+        rows = [
+            _sample_to_row(sample)
+            for sample in tqdm(
+                samples,
+                total=len(samples),
+                desc=f"Normalize[{dataset}]",
+                unit="sample",
+                leave=False,
+            )
+        ]
 
         out_path = output_root / f"{dataset}.json"
         if out_path.exists() and not overwrite:
