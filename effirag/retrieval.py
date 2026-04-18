@@ -2991,7 +2991,12 @@ def _compute_connector_retrieval_metrics(
     incomplete_path_items = []
     chain_compactness_items = []
     path_preserve_activation_items = []
+    strict_path_complete_items = []
+    answer_bearing_path_items = []
+    equivalent_evidence_coverage_items = []
     role_share_items = []
+    legacy_path_complete_weight = 0.0
+    false_path_weight = 0.0
     ranked_corridors = sorted(
         list(filtered_corridors or []),
         key=lambda c: float(c.get("corridor_score", 0.0)),
@@ -3027,6 +3032,42 @@ def _compute_connector_retrieval_metrics(
         incomplete_path_val = float(comp.get("incomplete_path_indicator", 0.0) or 0.0)
         chain_compactness_val = float(comp.get("chain_compactness", compactness_val) or compactness_val)
         path_preserve_activation_val = 1.0 if bool(comp.get("path_preserve_applied", False)) else 0.0
+        strict_path_complete_val = 0.0
+        if float(path_complete_val) > 0.0:
+            strict_path_complete_val = float(
+                max(
+                    0.0,
+                    min(
+                        float(path_complete_val),
+                        float(bridge_answer_pair_val),
+                        float(bridge_purity_val),
+                        float(answer_side_density_val),
+                        float(chain_compactness_val),
+                    ),
+                )
+            )
+        answer_bearing_path_val = (
+            1.0
+            if (
+                float(strict_path_complete_val) >= 0.45
+                and float(answer_score) >= 0.40
+                and float(answer_side_density_val) >= 0.40
+            )
+            else 0.0
+        )
+        false_path_val = 1.0 if (float(path_complete_val) >= 0.50 and float(answer_bearing_path_val) <= 0.0) else 0.0
+        equivalent_evidence_coverage_val = float(
+            max(
+                0.0,
+                min(
+                    1.0,
+                    max(float(answer_score), float(answer_side_density_val))
+                    * (0.70 + 0.30 * max(0.0, min(1.0, float(bridge_purity_val)))),
+                ),
+            )
+        )
+        if float(path_complete_val) < 0.20:
+            equivalent_evidence_coverage_val = float(max(0.0, min(1.0, 0.85 * equivalent_evidence_coverage_val)))
         role_total = max(1.0e-8, float(anchor_score) + float(bridge_score) + float(answer_score))
         role_share_items.append(
             (
@@ -3048,6 +3089,12 @@ def _compute_connector_retrieval_metrics(
         incomplete_path_items.append((max(0.0, min(1.0, incomplete_path_val)), weight))
         chain_compactness_items.append((max(0.0, min(1.0, chain_compactness_val)), weight))
         path_preserve_activation_items.append((float(path_preserve_activation_val), weight))
+        strict_path_complete_items.append((max(0.0, min(1.0, strict_path_complete_val)), weight))
+        answer_bearing_path_items.append((max(0.0, min(1.0, answer_bearing_path_val)), weight))
+        equivalent_evidence_coverage_items.append((max(0.0, min(1.0, equivalent_evidence_coverage_val)), weight))
+        if float(path_complete_val) >= 0.50:
+            legacy_path_complete_weight += float(max(0.0, weight))
+            false_path_weight += float(max(0.0, weight) * max(0.0, min(1.0, false_path_val)))
 
     corridor_role_coverage = float((max_anchor + max_bridge + max_answer) / 3.0)
     bridge_purity = max(0.0, min(1.0, _weighted_avg(bridge_purity_items, max_bridge)))
@@ -3061,6 +3108,14 @@ def _compute_connector_retrieval_metrics(
     incomplete_path_rate = max(0.0, min(1.0, _weighted_avg(incomplete_path_items, 0.0)))
     chain_compactness = max(0.0, min(1.0, _weighted_avg(chain_compactness_items, support_set_compactness)))
     path_preserve_activation_rate = max(0.0, min(1.0, _weighted_avg(path_preserve_activation_items, 0.0)))
+    strict_path_complete_rate = max(0.0, min(1.0, _weighted_avg(strict_path_complete_items, 0.0)))
+    answer_bearing_path_hit = max(0.0, min(1.0, _weighted_avg(answer_bearing_path_items, 0.0)))
+    equivalent_evidence_coverage = max(
+        0.0,
+        min(1.0, _weighted_avg(equivalent_evidence_coverage_items, max(answer_side_density, path_complete_rate))),
+    )
+    false_path_rate = float(_safe_ratio(false_path_weight, legacy_path_complete_weight))
+    false_path_rate = max(0.0, min(1.0, false_path_rate))
     role_weight_sum = float(sum(max(0.0, w) for _, _, _, w in role_share_items))
     if role_weight_sum <= 0.0:
         anchor_share = bridge_share = answer_share = 1.0 / 3.0
@@ -3129,6 +3184,10 @@ def _compute_connector_retrieval_metrics(
         "answer_preserve_activation_rate": float(answer_preserve_activation_rate),
         "preserved_answer_usefulness": float(preserved_answer_usefulness),
         "path_complete_rate": float(path_complete_rate),
+        "strict_path_complete_rate": float(strict_path_complete_rate),
+        "answer_bearing_path_hit": float(answer_bearing_path_hit),
+        "false_path_rate": float(false_path_rate),
+        "equivalent_evidence_coverage": float(equivalent_evidence_coverage),
         "bridge_answer_pair_retention": float(bridge_answer_pair_retention),
         "incomplete_path_rate": float(incomplete_path_rate),
         "chain_compactness": float(chain_compactness),
@@ -6683,6 +6742,10 @@ def run_graphrag_core(
             "answer_preserve_activation_rate": float((connector_metrics or {}).get("answer_preserve_activation_rate", 0.0)),
             "preserved_answer_usefulness": float((connector_metrics or {}).get("preserved_answer_usefulness", 0.0)),
             "path_complete_rate": float((connector_metrics or {}).get("path_complete_rate", 0.0)),
+            "strict_path_complete_rate": float((connector_metrics or {}).get("strict_path_complete_rate", 0.0)),
+            "answer_bearing_path_hit": float((connector_metrics or {}).get("answer_bearing_path_hit", 0.0)),
+            "false_path_rate": float((connector_metrics or {}).get("false_path_rate", 0.0)),
+            "equivalent_evidence_coverage": float((connector_metrics or {}).get("equivalent_evidence_coverage", 0.0)),
             "bridge_answer_pair_retention": float((connector_metrics or {}).get("bridge_answer_pair_retention", 0.0)),
             "incomplete_path_rate": float((connector_metrics or {}).get("incomplete_path_rate", 0.0)),
             "chain_compactness": float((connector_metrics or {}).get("chain_compactness", 0.0)),
