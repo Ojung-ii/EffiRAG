@@ -193,7 +193,222 @@ def _parse_order_strategy_flags(order_strategy, retrieval_result):
 
     top_slice_topk = max(1, _int_default(diagnostics.get("final_top_slice_reorder_topk", 4), 4))
     support_pin_min = max(0, _int_default(diagnostics.get("answer_support_pinning_min", 1), 1))
-    return base, flags, top_slice_topk, support_pin_min
+    raw_focus_top_bundle_only_n = 0
+    if "raw_focus_top1_bundle_only" in flags or "top1_answer_bearing_bundle_only" in flags:
+        raw_focus_top_bundle_only_n = 1
+    elif "raw_focus_top2_bundle_only" in flags or "top2_answer_bearing_bundle_only" in flags:
+        raw_focus_top_bundle_only_n = 2
+    else:
+        for tok in flags:
+            if tok.startswith("raw_focus_top") and tok.endswith("_bundle_only"):
+                core = tok[len("raw_focus_top") : -len("_bundle_only")]
+                if core.isdigit():
+                    raw_focus_top_bundle_only_n = max(raw_focus_top_bundle_only_n, int(core))
+    return base, flags, top_slice_topk, support_pin_min, int(max(0, raw_focus_top_bundle_only_n))
+
+
+def _corridor_sentence_ids(corridor):
+    return _ordered_unique(
+        list(_corridor_get(corridor, "main_path_unit_ids", "main_path_sentence_ids"))
+        + list(_corridor_get(corridor, "support_unit_ids", "support_sentence_ids"))
+        + list(_corridor_get(corridor, "connector_adjacent_unit_ids", "connector_adjacent_sentence_ids"))
+    )
+
+
+def _corridor_answer_bearing_stats(corridor):
+    comp = dict((corridor or {}).get("final_score_components", {}) or {})
+    path_complete_score = float(comp.get("path_complete_score", comp.get("path_complete", 0.0)) or 0.0)
+    bridge_answer_pair_retention = float(comp.get("bridge_answer_pair_retention", 0.0) or 0.0)
+    answer_side_density = float(comp.get("answer_side_density", 0.0) or 0.0)
+    bridge_purity = float(comp.get("bridge_purity", 0.0) or 0.0)
+    path_preserve_applied = bool(comp.get("path_preserve_applied", False))
+
+    score = (
+        0.42 * max(0.0, min(1.0, path_complete_score))
+        + 0.33 * max(0.0, min(1.0, bridge_answer_pair_retention))
+        + 0.20 * max(0.0, min(1.0, answer_side_density))
+        + 0.05 * float(1.0 if path_preserve_applied else 0.0)
+    )
+    is_answer_bearing = bool(
+        score >= 0.58
+        and bridge_answer_pair_retention >= 0.40
+        and answer_side_density >= 0.45
+        and (path_complete_score >= 0.45 or bridge_purity >= 0.35)
+    )
+    return {
+        "score": float(max(0.0, min(1.0, score))),
+        "path_complete_score": float(path_complete_score),
+        "bridge_answer_pair_retention": float(bridge_answer_pair_retention),
+        "answer_side_density": float(answer_side_density),
+        "bridge_purity": float(bridge_purity),
+        "is_answer_bearing": bool(is_answer_bearing),
+    }
+
+
+def _build_answer_bearing_maps(retrieval_result):
+    ranked_corridors = sorted(
+        list(getattr(retrieval_result, "corridors", []) or []),
+        key=lambda c: float((c or {}).get("corridor_score", 0.0)),
+        reverse=True,
+    )
+    answer_bearing_corridor_scores = {}
+    answer_bearing_corridor_rank = {}
+    answer_bearing_sentence_scores = {}
+    answer_bearing_sentence_bundle_rank = {}
+    answer_bearing_corridor_order = []
+
+    for rank, corridor in enumerate(ranked_corridors, start=1):
+        cid = str((corridor or {}).get("corridor_id", f"c{rank:02d}") or f"c{rank:02d}")
+        stats = _corridor_answer_bearing_stats(corridor)
+        if not bool(stats.get("is_answer_bearing", False)):
+            continue
+        score = float(stats.get("score", 0.0))
+        answer_bearing_corridor_scores[cid] = float(score)
+        answer_bearing_corridor_rank[cid] = int(rank)
+        answer_bearing_corridor_order.append((cid, score))
+        for sid in _corridor_sentence_ids(corridor):
+            sid = str(sid or "")
+            if not sid:
+                continue
+            prev = float(answer_bearing_sentence_scores.get(sid, -1.0))
+            if score > prev:
+                answer_bearing_sentence_scores[sid] = float(score)
+            prev_rank = int(answer_bearing_sentence_bundle_rank.get(sid, 10**9))
+            if int(rank) < prev_rank:
+                answer_bearing_sentence_bundle_rank[sid] = int(rank)
+
+    answer_bearing_corridor_order = sorted(
+        answer_bearing_corridor_order,
+        key=lambda x: (float(x[1]), -float(answer_bearing_corridor_rank.get(x[0], 10**9))),
+        reverse=True,
+    )
+    return {
+        "corridor_scores": dict(answer_bearing_corridor_scores),
+        "corridor_rank": dict(answer_bearing_corridor_rank),
+        "corridor_order": [cid for cid, _ in answer_bearing_corridor_order],
+        "sentence_scores": dict(answer_bearing_sentence_scores),
+        "sentence_bundle_rank": dict(answer_bearing_sentence_bundle_rank),
+    }
+
+
+def _apply_raw_focus_front_order(
+    selected_ids,
+    features,
+    score_at_pick,
+    base_scores,
+    retrieval_rank,
+    answer_bearing_sentence_scores,
+):
+    ids = list(selected_ids or [])
+    if not ids:
+        return ids, {"applied": False, "promoted": 0}
+    if not answer_bearing_sentence_scores:
+        return ids, {"applied": False, "promoted": 0}
+
+    pos_before = {sid: idx for idx, sid in enumerate(ids)}
+    ranked = sorted(
+        ids,
+        key=lambda sid: (
+            max(
+                1,
+                int((features.get(sid, {}) or {}).get("best_corridor_rank", 10**9) or 10**9)
+                - (1 if sid in answer_bearing_sentence_scores else 0),
+            ),
+            0 if sid in answer_bearing_sentence_scores else 1,
+            -float(answer_bearing_sentence_scores.get(sid, 0.0)),
+            -float(score_at_pick.get(sid, base_scores.get(sid, 0.0))),
+            retrieval_rank.get(sid, 10**9),
+        ),
+    )
+    pos_after = {sid: idx for idx, sid in enumerate(ranked)}
+    promoted = int(
+        sum(
+            1
+            for sid in ranked
+            if sid in answer_bearing_sentence_scores and pos_before.get(sid, 10**9) > pos_after.get(sid, 10**9)
+        )
+    )
+    changed = bool(ranked != ids)
+    return ranked, {"applied": bool(changed), "promoted": int(promoted if changed else 0)}
+
+
+def _apply_answer_bearing_dedup(
+    selected_ids,
+    candidate_ids,
+    candidate_text_map,
+    answer_bearing_sentence_scores,
+    max_n,
+):
+    ids = list(selected_ids or [])
+    answer_set = set(answer_bearing_sentence_scores.keys())
+    if not ids or not answer_set:
+        return ids, {"applied": False, "removed": 0, "candidate_count": 0, "refilled": 0}
+
+    token_cache = {}
+
+    def _tokens_for(sid):
+        if sid not in token_cache:
+            token_cache[sid] = _token_set(candidate_text_map.get(sid, ""))
+        return token_cache[sid]
+
+    kept = []
+    kept_set = set()
+    kept_answer_ids = []
+    removed = 0
+    candidate_count = 0
+    for sid in ids:
+        sid = str(sid or "")
+        if not sid:
+            continue
+        if sid not in answer_set:
+            kept.append(sid)
+            kept_set.add(sid)
+            continue
+        candidate_count += 1
+        toks = _tokens_for(sid)
+        redundancy = 0.0
+        same_title = False
+        for prev_sid in kept_answer_ids:
+            redundancy = max(redundancy, _jaccard(toks, _tokens_for(prev_sid)))
+            if _unit_title(prev_sid) == _unit_title(sid):
+                same_title = True
+        if redundancy >= 0.82 or (same_title and redundancy >= 0.65):
+            removed += 1
+            continue
+        kept.append(sid)
+        kept_set.add(sid)
+        kept_answer_ids.append(sid)
+
+    refilled = 0
+    for sid in list(candidate_ids or []):
+        if len(kept) >= int(max_n):
+            break
+        sid = str(sid or "")
+        if not sid or sid in kept_set:
+            continue
+        if sid in answer_set:
+            toks = _tokens_for(sid)
+            redundancy = 0.0
+            same_title = False
+            for prev_sid in kept_answer_ids:
+                redundancy = max(redundancy, _jaccard(toks, _tokens_for(prev_sid)))
+                if _unit_title(prev_sid) == _unit_title(sid):
+                    same_title = True
+            if redundancy >= 0.82 or (same_title and redundancy >= 0.65):
+                continue
+            kept_answer_ids.append(sid)
+        kept.append(sid)
+        kept_set.add(sid)
+        refilled += 1
+
+    if len(kept) > int(max_n):
+        kept = kept[: int(max_n)]
+    return kept, {
+        "applied": bool(removed > 0),
+        "removed": int(max(0, removed)),
+        "candidate_count": int(max(0, candidate_count)),
+        "refilled": int(max(0, refilled)),
+    }
 
 
 def _apply_top_slice_reorder(selected_ids, features, score_at_pick, base_scores, retrieval_rank, topk):
@@ -393,6 +608,19 @@ def _attach_stagewise_render_diagnostics(sample, retrieval_result, rendered):
         "path_focus_count",
         "derivation_prompt_activation",
         "answer_chain_readability_score",
+        "raw_focus_front_applied",
+        "raw_focus_front_promoted",
+        "raw_focus_dedup_applied",
+        "raw_focus_dedup_removed",
+        "raw_focus_dedup_candidate_count",
+        "raw_focus_dedup_refilled",
+        "raw_focus_top_bundle_only_n",
+        "raw_focus_top_bundle_only_applied",
+        "raw_focus_scaffold_light_enabled",
+        "raw_focus_answer_bearing_chunk_count",
+        "raw_focus_answer_bearing_bundle_count",
+        "raw_focus_first_answer_bearing_chunk_rank",
+        "raw_focus_first_answer_bearing_bundle_rank",
     ):
         if key in rendered_meta:
             try:
@@ -1868,10 +2096,20 @@ def render_corridor_aware_flat_context(
             break
         _accept(best_sid, best_score, best_role, best_title)
 
-    strategy, strategy_flags, top_slice_topk, support_pin_min = _parse_order_strategy_flags(
+    strategy, strategy_flags, top_slice_topk, support_pin_min, raw_focus_top_bundle_only_n = _parse_order_strategy_flags(
         order_strategy=order_strategy,
         retrieval_result=retrieval_result,
     )
+    raw_focus_front_enabled = bool("raw_focus_front" in strategy_flags)
+    raw_focus_dedup_enabled = bool("raw_focus_dedup" in strategy_flags)
+    raw_focus_scaffold_light_enabled = bool("raw_focus_scaffold_light" in strategy_flags)
+    raw_focus_scaffold_text = ""
+    if raw_focus_scaffold_light_enabled:
+        raw_focus_scaffold_text = "Use the earliest evidence chain that links entity, bridge, and answer."
+    answer_bearing_maps = _build_answer_bearing_maps(retrieval_result)
+    answer_bearing_sentence_scores = dict(answer_bearing_maps.get("sentence_scores", {}) or {})
+    answer_bearing_corridor_scores = dict(answer_bearing_maps.get("corridor_scores", {}) or {})
+
     if strategy == "retrieval":
         selected_ids = sorted(selected_ids, key=lambda sid: retrieval_rank.get(sid, 10**9))
     elif strategy == "corridor_rank":
@@ -1937,6 +2175,44 @@ def render_corridor_aware_flat_context(
             max_n=max_n,
         )
 
+    top_bundle_only_diag = {"enabled": False, "applied": False, "n": 0, "kept_corridors": 0}
+    if int(raw_focus_top_bundle_only_n) > 0:
+        top_bundle_only_diag["enabled"] = True
+        top_bundle_only_diag["n"] = int(raw_focus_top_bundle_only_n)
+        answer_bearing_order = list(answer_bearing_maps.get("corridor_order", []) or [])
+        keep_corridors = set(answer_bearing_order[: int(raw_focus_top_bundle_only_n)])
+        if keep_corridors:
+            filtered = []
+            for sid in selected_ids:
+                cids = list((features.get(sid, {}) or {}).get("corridor_ids", []) or [])
+                if any(cid in keep_corridors for cid in cids):
+                    filtered.append(sid)
+            if filtered:
+                selected_ids = list(filtered[:max_n])
+                top_bundle_only_diag["applied"] = True
+                top_bundle_only_diag["kept_corridors"] = int(len(keep_corridors))
+
+    raw_focus_diag = {"applied": False, "promoted": 0}
+    if raw_focus_front_enabled:
+        selected_ids, raw_focus_diag = _apply_raw_focus_front_order(
+            selected_ids=selected_ids,
+            features=features,
+            score_at_pick=score_at_pick,
+            base_scores=base_scores,
+            retrieval_rank=retrieval_rank,
+            answer_bearing_sentence_scores=answer_bearing_sentence_scores,
+        )
+
+    raw_focus_dedup_diag = {"applied": False, "removed": 0, "candidate_count": 0, "refilled": 0}
+    if raw_focus_dedup_enabled:
+        selected_ids, raw_focus_dedup_diag = _apply_answer_bearing_dedup(
+            selected_ids=selected_ids,
+            candidate_ids=candidate_ids,
+            candidate_text_map=candidate_text_map,
+            answer_bearing_sentence_scores=answer_bearing_sentence_scores,
+            max_n=max_n,
+        )
+
     lines = []
     selected_sentences = []
     for idx, sid in enumerate(selected_ids, start=1):
@@ -1949,6 +2225,18 @@ def render_corridor_aware_flat_context(
     rendered_corridor_ids = _ordered_unique(
         [cid for sid in selected_ids for cid in (features.get(sid, {}).get("corridor_ids", []) or [])]
     )
+    selected_answer_bearing_chunk_count = int(sum(1 for sid in selected_ids if sid in answer_bearing_sentence_scores))
+    selected_answer_bearing_bundle_count = int(sum(1 for cid in rendered_corridor_ids if cid in answer_bearing_corridor_scores))
+    first_answer_bearing_chunk_rank = 0
+    for idx, sid in enumerate(selected_ids, start=1):
+        if sid in answer_bearing_sentence_scores:
+            first_answer_bearing_chunk_rank = int(idx)
+            break
+    first_answer_bearing_bundle_rank = 0
+    for idx, cid in enumerate(rendered_corridor_ids, start=1):
+        if cid in answer_bearing_corridor_scores:
+            first_answer_bearing_bundle_rank = int(idx)
+            break
     truncated_corridors = max(0, len(all_corridor_ids) - len(rendered_corridor_ids))
     truncated_sentences = max(0, len(candidate_ids) - len(selected_ids))
 
@@ -1976,6 +2264,22 @@ def render_corridor_aware_flat_context(
             "answer_support_pinning_added": int(support_pin_diag.get("added", 0)),
             "oracle_support_injection_applied": bool(oracle_injection_diag.get("applied", False)),
             "oracle_support_injected": int(oracle_injection_diag.get("injected", 0)),
+            "raw_focus_front_enabled": bool(raw_focus_front_enabled),
+            "raw_focus_front_applied": bool(raw_focus_diag.get("applied", False)),
+            "raw_focus_front_promoted": int(raw_focus_diag.get("promoted", 0)),
+            "raw_focus_dedup_enabled": bool(raw_focus_dedup_enabled),
+            "raw_focus_dedup_applied": bool(raw_focus_dedup_diag.get("applied", False)),
+            "raw_focus_dedup_removed": int(raw_focus_dedup_diag.get("removed", 0)),
+            "raw_focus_dedup_candidate_count": int(raw_focus_dedup_diag.get("candidate_count", 0)),
+            "raw_focus_dedup_refilled": int(raw_focus_dedup_diag.get("refilled", 0)),
+            "raw_focus_top_bundle_only_n": int(raw_focus_top_bundle_only_n),
+            "raw_focus_top_bundle_only_applied": bool(top_bundle_only_diag.get("applied", False)),
+            "raw_focus_scaffold_light_enabled": bool(raw_focus_scaffold_light_enabled),
+            "raw_focus_scaffold_light_text": str(raw_focus_scaffold_text),
+            "raw_focus_answer_bearing_chunk_count": int(selected_answer_bearing_chunk_count),
+            "raw_focus_answer_bearing_bundle_count": int(selected_answer_bearing_bundle_count),
+            "raw_focus_first_answer_bearing_chunk_rank": int(first_answer_bearing_chunk_rank),
+            "raw_focus_first_answer_bearing_bundle_rank": int(first_answer_bearing_bundle_rank),
         },
     )
 

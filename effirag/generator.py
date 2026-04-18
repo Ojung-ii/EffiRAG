@@ -152,6 +152,34 @@ def _prefers_text_generation(model_name: str) -> bool:
     return any(tag in lower for tag in causal_markers)
 
 
+def _lightweight_interface_instruction(rendered: RenderedContext) -> str:
+    meta = dict((getattr(rendered, "metadata", {}) or {}))
+    enabled = bool(meta.get("raw_focus_scaffold_light_enabled", False))
+    if not enabled:
+        return ""
+    text = str(meta.get("raw_focus_scaffold_light_text", "") or "").strip()
+    if not text:
+        text = "Use the earliest evidence chain that links entity, bridge, and answer."
+    return " ".join(text.split())
+
+
+def _build_qa_prompt(sample: Sample, rendered: RenderedContext) -> str:
+    parts = [
+        "You are a QA assistant.",
+        "Use only the provided context.",
+        "Return only the final answer span.",
+        "Do not output reasoning, explanations, or <think> tags.",
+        "If the question is yes/no, output exactly yes or no.",
+    ]
+    light_instruction = _lightweight_interface_instruction(rendered)
+    if light_instruction:
+        parts.append(light_instruction)
+    parts.append(f"Question: {sample.question}")
+    parts.append(f"Context:\n{rendered.text}")
+    parts.append("Final answer:")
+    return "\n".join(parts)
+
+
 def _get_hf_pipeline(task: str, model_name: str):
     global _HF_VERBOSITY_SET
     key = (task, model_name)
@@ -313,16 +341,7 @@ def generate_hf(sample: Sample, rendered: RenderedContext, model_name: str = "",
 
     try:
         resolved_model = model_name or "google/flan-t5-small"
-        prompt = (
-            "You are a QA assistant.\n"
-            "Use only the provided context.\n"
-            "Return only the final answer span.\n"
-            "Do not output reasoning, explanations, or <think> tags.\n"
-            "If the question is yes/no, output exactly yes or no.\n"
-            f"Question: {sample.question}\n"
-            f"Context:\n{rendered.text}\n"
-            "Final answer:"
-        )
+        prompt = _build_qa_prompt(sample=sample, rendered=rendered)
         max_new_tokens = int(getattr(cfg, "llm_max_new_tokens", 64) if cfg is not None else 64)
         prefer_text_gen = _prefers_text_generation(resolved_model)
         if prefer_text_gen:
@@ -368,16 +387,7 @@ def generate_openai_compat(sample: Sample, rendered: RenderedContext, model_name
         timeout_sec = float(getattr(cfg, "llm_timeout_sec", 120.0) if cfg is not None else 120.0)
         max_new_tokens = int(getattr(cfg, "llm_max_new_tokens", 64) if cfg is not None else 64)
 
-        prompt = (
-            "You are a QA assistant.\n"
-            "Use only the provided context.\n"
-            "Return only the final answer span.\n"
-            "Do not output reasoning, explanations, or <think> tags.\n"
-            "If the question is yes/no, output exactly yes or no.\n"
-            f"Question: {sample.question}\n"
-            f"Context:\n{rendered.text}\n"
-            "Final answer:"
-        )
+        prompt = _build_qa_prompt(sample=sample, rendered=rendered)
         messages = [{"role": "user", "content": prompt}]
         generation_meta = {}
 
