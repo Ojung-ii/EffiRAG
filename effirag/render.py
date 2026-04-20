@@ -2102,9 +2102,23 @@ def render_corridor_aware_flat_context(
     )
     raw_focus_front_enabled = bool("raw_focus_front" in strategy_flags)
     raw_focus_dedup_enabled = bool("raw_focus_dedup" in strategy_flags)
-    raw_focus_scaffold_light_enabled = bool("raw_focus_scaffold_light" in strategy_flags)
+    raw_focus_scaffold_ab1_enabled = bool("raw_focus_scaffold_ab1" in strategy_flags)
+    raw_focus_scaffold_ab2_enabled = bool("raw_focus_scaffold_ab2" in strategy_flags)
+    raw_focus_scaffold_ab3_enabled = bool("raw_focus_scaffold_ab3" in strategy_flags)
+    raw_focus_scaffold_light_enabled = bool(
+        ("raw_focus_scaffold_light" in strategy_flags)
+        or raw_focus_scaffold_ab1_enabled
+        or raw_focus_scaffold_ab2_enabled
+        or raw_focus_scaffold_ab3_enabled
+    )
     raw_focus_scaffold_text = ""
-    if raw_focus_scaffold_light_enabled:
+    if raw_focus_scaffold_ab1_enabled:
+        raw_focus_scaffold_text = "Use the earliest linked evidence chain to answer."
+    elif raw_focus_scaffold_ab2_enabled:
+        raw_focus_scaffold_text = "Answer only after connecting entity evidence and answer-bearing evidence."
+    elif raw_focus_scaffold_ab3_enabled:
+        raw_focus_scaffold_text = "Prefer the evidence chain that directly supports the answer entity."
+    elif raw_focus_scaffold_light_enabled:
         raw_focus_scaffold_text = "Use the earliest evidence chain that links entity, bridge, and answer."
     answer_bearing_maps = _build_answer_bearing_maps(retrieval_result)
     answer_bearing_sentence_scores = dict(answer_bearing_maps.get("sentence_scores", {}) or {})
