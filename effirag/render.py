@@ -621,6 +621,13 @@ def _attach_stagewise_render_diagnostics(sample, retrieval_result, rendered):
         "raw_focus_answer_bearing_bundle_count",
         "raw_focus_first_answer_bearing_chunk_rank",
         "raw_focus_first_answer_bearing_bundle_rank",
+        "generation_intervention_enabled",
+        "generation_intervention_focus_count",
+        "generation_intervention_quote_then_answer",
+        "generation_intervention_grounded_answer",
+        "generation_intervention_evidence_focus",
+        "generation_intervention_ab_chain",
+        "generation_intervention_ab_wording",
     ):
         if key in rendered_meta:
             try:
@@ -2105,6 +2112,11 @@ def render_corridor_aware_flat_context(
     raw_focus_scaffold_ab1_enabled = bool("raw_focus_scaffold_ab1" in strategy_flags)
     raw_focus_scaffold_ab2_enabled = bool("raw_focus_scaffold_ab2" in strategy_flags)
     raw_focus_scaffold_ab3_enabled = bool("raw_focus_scaffold_ab3" in strategy_flags)
+    gen_quote_then_answer_light_enabled = bool("gen_quote_then_answer_light" in strategy_flags)
+    gen_grounded_answer_light_enabled = bool("gen_grounded_answer_light" in strategy_flags)
+    gen_evidence_focus_light_enabled = bool("gen_evidence_focus_light" in strategy_flags)
+    gen_light_ab_chain_enabled = bool("gen_light_ab_chain" in strategy_flags)
+    gen_light_ab_wording_enabled = bool("gen_light_ab_wording" in strategy_flags)
     raw_focus_scaffold_light_enabled = bool(
         ("raw_focus_scaffold_light" in strategy_flags)
         or raw_focus_scaffold_ab1_enabled
@@ -2251,6 +2263,51 @@ def render_corridor_aware_flat_context(
         if cid in answer_bearing_corridor_scores:
             first_answer_bearing_bundle_rank = int(idx)
             break
+
+    generation_focus_line_ranks = []
+    if gen_evidence_focus_light_enabled:
+        for idx, sid in enumerate(selected_ids, start=1):
+            if sid in answer_bearing_sentence_scores:
+                generation_focus_line_ranks.append(int(idx))
+            if len(generation_focus_line_ranks) >= 2:
+                break
+        if not generation_focus_line_ranks and selected_ids:
+            generation_focus_line_ranks = [1]
+
+    generation_intervention_variant = ""
+    generation_intervention_text = ""
+    if gen_quote_then_answer_light_enabled:
+        generation_intervention_variant = "quote_then_answer_light"
+        generation_intervention_text = (
+            "First identify one short supporting phrase from the context, then output only the final answer span."
+        )
+    elif gen_grounded_answer_light_enabled:
+        generation_intervention_variant = "grounded_answer_light"
+        generation_intervention_text = (
+            "Answer using the wording most directly supported by the earliest answer-bearing evidence. "
+            "If multiple candidates exist, choose the one directly supported by context."
+        )
+    elif gen_evidence_focus_light_enabled:
+        generation_intervention_variant = "evidence_focus_light"
+        if generation_focus_line_ranks:
+            line_refs = ", ".join([f"[{int(x)}]" for x in generation_focus_line_ranks[:2]])
+            generation_intervention_text = (
+                f"Prioritize evidence lines {line_refs} when deciding the answer; output only the final answer span."
+            )
+        else:
+            generation_intervention_text = (
+                "Prioritize the earliest answer-bearing evidence when deciding the answer; output only the final answer span."
+            )
+
+    if generation_intervention_text and gen_light_ab_chain_enabled:
+        generation_intervention_text = (
+            generation_intervention_text.rstrip() + " Prefer a consistent entity-to-answer chain from those lines."
+        )
+    if generation_intervention_text and gen_light_ab_wording_enabled:
+        generation_intervention_text = (
+            generation_intervention_text.rstrip() + " Prefer the exact surface form stated in those lines when possible."
+        )
+
     truncated_corridors = max(0, len(all_corridor_ids) - len(rendered_corridor_ids))
     truncated_sentences = max(0, len(candidate_ids) - len(selected_ids))
 
@@ -2294,6 +2351,16 @@ def render_corridor_aware_flat_context(
             "raw_focus_answer_bearing_bundle_count": int(selected_answer_bearing_bundle_count),
             "raw_focus_first_answer_bearing_chunk_rank": int(first_answer_bearing_chunk_rank),
             "raw_focus_first_answer_bearing_bundle_rank": int(first_answer_bearing_bundle_rank),
+            "generation_intervention_enabled": bool(generation_intervention_text),
+            "generation_intervention_variant": str(generation_intervention_variant),
+            "generation_intervention_text": str(generation_intervention_text),
+            "generation_intervention_quote_then_answer": bool(gen_quote_then_answer_light_enabled),
+            "generation_intervention_grounded_answer": bool(gen_grounded_answer_light_enabled),
+            "generation_intervention_evidence_focus": bool(gen_evidence_focus_light_enabled),
+            "generation_intervention_focus_count": int(len(generation_focus_line_ranks)),
+            "generation_intervention_focus_line_ranks": list(generation_focus_line_ranks),
+            "generation_intervention_ab_chain": bool(gen_light_ab_chain_enabled),
+            "generation_intervention_ab_wording": bool(gen_light_ab_wording_enabled),
         },
     )
 

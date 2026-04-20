@@ -163,6 +163,15 @@ def _lightweight_interface_instruction(rendered: RenderedContext) -> str:
     return " ".join(text.split())
 
 
+def _generation_intervention_instruction(rendered: RenderedContext) -> str:
+    meta = dict((getattr(rendered, "metadata", {}) or {}))
+    enabled = bool(meta.get("generation_intervention_enabled", False))
+    if not enabled:
+        return ""
+    text = str(meta.get("generation_intervention_text", "") or "").strip()
+    return " ".join(text.split())
+
+
 def _build_qa_prompt(sample: Sample, rendered: RenderedContext) -> str:
     parts = [
         "You are a QA assistant.",
@@ -171,9 +180,13 @@ def _build_qa_prompt(sample: Sample, rendered: RenderedContext) -> str:
         "Do not output reasoning, explanations, or <think> tags.",
         "If the question is yes/no, output exactly yes or no.",
     ]
-    light_instruction = _lightweight_interface_instruction(rendered)
-    if light_instruction:
-        parts.append(light_instruction)
+    intervention_instruction = _generation_intervention_instruction(rendered)
+    if intervention_instruction:
+        parts.append(intervention_instruction)
+    else:
+        light_instruction = _lightweight_interface_instruction(rendered)
+        if light_instruction:
+            parts.append(light_instruction)
     parts.append(f"Question: {sample.question}")
     parts.append(f"Context:\n{rendered.text}")
     parts.append("Final answer:")

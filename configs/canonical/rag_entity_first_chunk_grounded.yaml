@@ -190,6 +190,11 @@ reserve_top_corridor: false
 # - path_bundle_top1_focus (or path_bundle_top2_focus)
 # - path_bundle_dedup
 # - path_bundle_compactlite
+# corridor_aware_flat generation-side minimal intervention flags:
+# - gen_quote_then_answer_light
+# - gen_grounded_answer_light
+# - gen_evidence_focus_light
+# - gen_light_ab_chain / gen_light_ab_wording
 order_strategy: score
 # Minimal downstream options (Set F): use config-level toggles.
 # - final_top_slice_reorder_enabled: true
