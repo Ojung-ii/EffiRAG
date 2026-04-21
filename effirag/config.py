@@ -330,6 +330,7 @@ class RagConfig(RetrievalConfig):
     # corridor_aware_flat flags:
     # +raw_focus_front +raw_focus_dedup +raw_focus_scaffold_light +raw_focus_top1_bundle_only(+top2)
     # +gen_quote_then_answer_light +gen_grounded_answer_light +gen_evidence_focus_light
+    # +qa_answer_normalization_light +qa_answer_verification_light +qa_answer_type_aware_extraction
     # +gen_light_ab_chain +gen_light_ab_wording
     # path_bundle flags: +path_bundle_chain_summary +path_bundle_derivation_prompt +path_bundle_top1_focus(+top2) +path_bundle_dedup +path_bundle_compactlite
     order_strategy: str = "score"

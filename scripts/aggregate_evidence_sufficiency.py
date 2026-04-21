@@ -231,6 +231,9 @@ def _extract_main_metrics(summary: Dict[str, Any]) -> Dict[str, float]:
         "generation_ms": _safe_float(summary.get("generation_latency_ms", summary.get("generation_ms", 0.0)), 0.0),
         "total_ms": _safe_float(summary.get("total_latency_ms", summary.get("total_ms", 0.0)), 0.0),
         "fallback_rate": float(fallback_rate),
+        "exact_match_surface_correction_rate": _safe_float(summary.get("exact_match_surface_correction_rate", 0.0), 0.0),
+        "evidence_supported_answer_rate": _safe_float(summary.get("evidence_supported_answer_rate", 0.0), 0.0),
+        "answer_type_match_rate": _safe_float(summary.get("answer_type_match_rate", 0.0), 0.0),
     }
 
 

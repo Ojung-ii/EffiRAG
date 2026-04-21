@@ -7,6 +7,7 @@ import time
 import urllib.error
 import urllib.request
 
+from .postprocess import apply_answer_realization_variant
 from .registry import register_generator
 from .types import GenerationResult, RenderedContext, Sample
 from .utils import content_tokens
@@ -170,6 +171,50 @@ def _generation_intervention_instruction(rendered: RenderedContext) -> str:
         return ""
     text = str(meta.get("generation_intervention_text", "") or "").strip()
     return " ".join(text.split())
+
+
+def _resolve_qa_utilization_variant(rendered: RenderedContext) -> str:
+    meta = dict((getattr(rendered, "metadata", {}) or {}))
+    explicit = str(meta.get("qa_utilization_variant", "") or "").strip().lower()
+    if explicit in {
+        "answer_normalization_light",
+        "answer_verification_light",
+        "answer_type_aware_extraction",
+    }:
+        return explicit
+    flags = {str(x).strip().lower() for x in list(meta.get("strategy_flags", []) or []) if str(x).strip()}
+    if "qa_answer_normalization_light" in flags:
+        return "answer_normalization_light"
+    if "qa_answer_verification_light" in flags:
+        return "answer_verification_light"
+    if "qa_answer_type_aware_extraction" in flags:
+        return "answer_type_aware_extraction"
+    return ""
+
+
+def _apply_qa_utilization_postprocess(sample: Sample, rendered: RenderedContext, prediction: str):
+    variant = _resolve_qa_utilization_variant(rendered)
+    base = str(prediction or "").strip()
+    if not variant:
+        return base, {
+            "initial_prediction": base,
+            "final_prediction": base,
+            "qa_utilization_variant": "",
+            "qa_utilization_applied": False,
+            "qa_utilization_changed": False,
+            "qa_utilization_candidate_count": 0,
+            "evidence_supported_answer": False,
+            "answer_type": "",
+            "answer_type_match": False,
+        }
+    payload = apply_answer_realization_variant(
+        prediction=base,
+        question=str(getattr(sample, "question", "") or ""),
+        sentences=list(getattr(rendered, "sentences", []) or []),
+        variant=variant,
+    )
+    final = str(payload.get("final_prediction", base) or base).strip()
+    return final, payload
 
 
 def _build_qa_prompt(sample: Sample, rendered: RenderedContext) -> str:
@@ -352,6 +397,7 @@ def generate_oracle(sample: Sample, rendered: RenderedContext, model_name: str =
 def generate_hf(sample: Sample, rendered: RenderedContext, model_name: str = "", cfg=None) -> GenerationResult:
     start = time.perf_counter()
 
+    generation_meta = {}
     try:
         resolved_model = model_name or "google/flan-t5-small"
         prompt = _build_qa_prompt(sample=sample, rendered=rendered)
@@ -372,11 +418,28 @@ def generate_hf(sample: Sample, rendered: RenderedContext, model_name: str = "",
                 raw_text = out[0]["generated_text"].strip() if out else ""
 
         prediction = _postprocess_prediction(raw_text, sample.question)
+        prediction, post_meta = _apply_qa_utilization_postprocess(sample=sample, rendered=rendered, prediction=prediction)
+        generation_meta.update(dict(post_meta or {}))
         text = raw_text
     except Exception as exc:
         fallback = generate_heuristic(sample, rendered, model_name=model_name)
         prediction = fallback.prediction
         text = f"HF generation failed: {exc}\nFallback(heuristic): {prediction}"
+        generation_meta = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "finish_reason": "fallback_heuristic",
+            "fallback_used": True,
+            "initial_prediction": str(prediction or ""),
+            "final_prediction": str(prediction or ""),
+            "qa_utilization_variant": "",
+            "qa_utilization_applied": False,
+            "qa_utilization_changed": False,
+            "qa_utilization_candidate_count": 0,
+            "evidence_supported_answer": False,
+            "answer_type": "",
+            "answer_type_match": False,
+        }
 
     latency_ms = (time.perf_counter() - start) * 1000.0
     return GenerationResult(
@@ -386,6 +449,7 @@ def generate_hf(sample: Sample, rendered: RenderedContext, model_name: str = "",
         prediction=prediction,
         raw_text=text,
         latency_ms=latency_ms,
+        metadata=generation_meta,
     )
 
 
@@ -440,6 +504,8 @@ def generate_openai_compat(sample: Sample, rendered: RenderedContext, model_name
                     timeout_sec=timeout_sec,
                 )
         prediction = _postprocess_prediction(raw_text, sample.question)
+        prediction, post_meta = _apply_qa_utilization_postprocess(sample=sample, rendered=rendered, prediction=prediction)
+        generation_meta.update(dict(post_meta or {}))
         text = raw_text
     except Exception as exc:
         fallback = generate_heuristic(sample, rendered, model_name=model_name, cfg=cfg)
@@ -450,6 +516,15 @@ def generate_openai_compat(sample: Sample, rendered: RenderedContext, model_name
             "completion_tokens": 0,
             "finish_reason": "fallback_heuristic",
             "fallback_used": True,
+            "initial_prediction": str(prediction or ""),
+            "final_prediction": str(prediction or ""),
+            "qa_utilization_variant": "",
+            "qa_utilization_applied": False,
+            "qa_utilization_changed": False,
+            "qa_utilization_candidate_count": 0,
+            "evidence_supported_answer": False,
+            "answer_type": "",
+            "answer_type_match": False,
         }
 
     latency_ms = (time.perf_counter() - start) * 1000.0

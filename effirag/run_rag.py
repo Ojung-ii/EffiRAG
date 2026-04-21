@@ -1011,6 +1011,14 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             em = 0.0
             f1 = 0.0
             generation_call_ms = 0.0
+            initial_em = 0.0
+            initial_f1 = 0.0
+            qa_utilization_variant = ""
+            qa_utilization_applied = False
+            qa_utilization_changed = False
+            qa_surface_exact_correction = 0
+            evidence_supported_answer = False
+            answer_type_match = False
             gold_answers = extract_gold_answers(sample) or [str(sample.answer or "")]
             if run_qa_enabled:
                 generation_start = time.perf_counter()
@@ -1032,6 +1040,26 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             prompt_tokens = _safe_int(generation_meta.get("prompt_tokens", 0) or 0, default=0)
             completion_tokens = _safe_int(generation_meta.get("completion_tokens", 0) or 0, default=0)
             finish_reason = str(generation_meta.get("finish_reason", "") or "")
+            qa_utilization_variant = str(generation_meta.get("qa_utilization_variant", "") or "")
+            qa_utilization_applied = bool(generation_meta.get("qa_utilization_applied", False))
+            qa_utilization_changed = bool(generation_meta.get("qa_utilization_changed", False))
+            evidence_supported_answer = bool(generation_meta.get("evidence_supported_answer", False))
+            answer_type_match = bool(generation_meta.get("answer_type_match", False))
+            initial_prediction = str(generation_meta.get("initial_prediction", "") or "")
+            if run_qa_enabled and initial_prediction:
+                init_eval = qa_evaluator.evaluate(initial_prediction, sample)
+                initial_em = float(init_eval.em)
+                initial_f1 = float(init_eval.f1)
+            qa_surface_exact_correction = (
+                1
+                if (
+                    run_qa_enabled
+                    and bool(qa_utilization_changed)
+                    and float(initial_em) < 1.0
+                    and float(em) >= 1.0
+                )
+                else 0
+            )
             rendered_sentence_count = int(len(rendered.sentence_ids))
             truncated_sentence_count = int(rendered.truncated_sentence_count)
             truncated_corridor_count = int(rendered.truncated_corridor_count)
@@ -1128,6 +1156,14 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,
                     "finish_reason": finish_reason,
+                    "initial_em": float(initial_em),
+                    "initial_f1": float(initial_f1),
+                    "qa_utilization_variant": str(qa_utilization_variant),
+                    "qa_utilization_applied": bool(qa_utilization_applied),
+                    "qa_utilization_changed": bool(qa_utilization_changed),
+                    "exact_match_surface_correction": int(qa_surface_exact_correction),
+                    "evidence_supported_answer": bool(evidence_supported_answer),
+                    "answer_type_match": bool(answer_type_match),
                     "rendered_sentence_count": rendered_sentence_count,
                     "truncated_sentence_count": truncated_sentence_count,
                     "truncated_corridor_count": truncated_corridor_count,
@@ -1437,6 +1473,22 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
     if run_qa_enabled:
         summary["generation_latency_ms"] = mean_or_zero([r["efficiency"]["generation_latency_ms"] for r in rows])
         summary["generation_ms"] = mean_or_zero([r["efficiency"].get("generation_ms", 0.0) for r in rows])
+        summary["exact_match_surface_correction_rate"] = mean_or_zero(
+            [float((r.get("generation_diagnostics", {}) or {}).get("exact_match_surface_correction", 0.0)) for r in rows]
+        )
+        summary["evidence_supported_answer_rate"] = mean_or_zero(
+            [1.0 if bool((r.get("generation_diagnostics", {}) or {}).get("evidence_supported_answer", False)) else 0.0 for r in rows]
+        )
+        summary["answer_type_match_rate"] = mean_or_zero(
+            [1.0 if bool((r.get("generation_diagnostics", {}) or {}).get("answer_type_match", False)) else 0.0 for r in rows]
+        )
+        variant_counts = {}
+        for row in rows:
+            vname = str((row.get("generation_diagnostics", {}) or {}).get("qa_utilization_variant", "") or "")
+            if not vname:
+                continue
+            variant_counts[vname] = int(variant_counts.get(vname, 0) + 1)
+        summary["qa_utilization_variant_counts"] = variant_counts
         finish_reason_counts = {}
         for row in rows:
             reason = str((row.get("generation_diagnostics", {}) or {}).get("finish_reason", "") or "")
