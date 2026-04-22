@@ -9,6 +9,7 @@ from pathlib import Path
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
 from .config import RagConfig, apply_cli_overrides, dataclass_from_dict
+from .eval_metrics import aggregate_run_eval_metrics, compute_query_eval_metrics
 from .eval.evaluator import QAEvaluator, extract_gold_answers
 from .efficiency import Timer, gpu_peak_mb, process_rss_mb, reset_gpu_peak
 from .metrics import (
@@ -1111,6 +1112,27 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                 "em": em,
                 "f1": f1,
             }
+            metrics.update(
+                compute_query_eval_metrics(
+                    sample=sample,
+                    retrieval=retrieval,
+                    rendered=rendered,
+                    prediction=(generation.prediction if generation else ""),
+                    em=em,
+                    f1=f1,
+                    qa_executed=bool(generation is not None),
+                    generation_diagnostics={
+                        "evidence_supported_answer": bool(evidence_supported_answer),
+                        "answer_type_match": bool(answer_type_match),
+                        "qa_utilization_changed": bool(qa_utilization_changed),
+                    },
+                    rendered_match=rendered_match,
+                    supporting_fact_recall=recall,
+                    supporting_fact_precision=precision,
+                    rendered_supporting_fact_recall=rendered_recall,
+                    rendered_supporting_fact_precision=rendered_precision,
+                )
+            )
             latency_breakdown = dict(
                 ((retrieval.diagnostics or {}).get("latency_breakdown_ms", {}) or {})
             )
@@ -1469,6 +1491,11 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         recall_at_k_summary[key] = agg
         summary[f"supporting_fact_recall_at_{key}"] = agg
     summary["supporting_fact_recall_at_k"] = recall_at_k_summary
+    summary.update(aggregate_run_eval_metrics(rows))
+    summary["retrieval_ms"] = float(summary.get("retrieval_latency_ms", summary.get("retrieval_ms", 0.0)))
+    summary["total_ms"] = float(summary.get("total_latency_ms", summary.get("total_ms", 0.0)))
+    if "generation_ms" not in summary:
+        summary["generation_ms"] = float(summary.get("generation_latency_ms", 0.0))
 
     if run_qa_enabled:
         summary["generation_latency_ms"] = mean_or_zero([r["efficiency"]["generation_latency_ms"] for r in rows])
