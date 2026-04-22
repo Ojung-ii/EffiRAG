@@ -521,36 +521,64 @@ create_cfg_from_sidecar() {
   local dataset="$2"
   local variant="$3"
   local sidecar_config_json="$4"
-  local corpus_path="$5"
 
   [[ -f "${sidecar_config_json}" ]] || die "Missing champion sidecar config: ${sidecar_config_json}"
   mkdir -p "$(dirname "${out_cfg}")"
-  "${PYTHON_BIN}" - "${out_cfg}" "${dataset}" "${variant}" "${sidecar_config_json}" "${corpus_path}" <<'PY'
+  "${PYTHON_BIN}" - "${out_cfg}" "${dataset}" "${variant}" "${sidecar_config_json}" <<'PY'
 import json
 import sys
 from pathlib import Path
 import yaml
 
-out_cfg, dataset, variant, sidecar, corpus_path = sys.argv[1:6]
+out_cfg, dataset, variant, sidecar = sys.argv[1:5]
 blob = json.loads(Path(sidecar).read_text(encoding="utf-8"))
 cfg = dict(blob.get("config", {}) or {})
 if not cfg:
     raise SystemExit(f"invalid_sidecar_config:{sidecar}")
-cfg["dataset"] = str(dataset)
-cfg["canonical_variant_name"] = str(variant)
-cfg["global_corpus_path"] = str(corpus_path)
-cfg["run_qa"] = True
-cfg["retrieval_only"] = False
-cfg["generator"] = "vllm"
-cfg["model_name"] = str(cfg.get("model_name", "") or "Qwen/Qwen2.5-7B-Instruct")
-cfg["openie_mode"] = "llm"
-cfg["openie_model_name"] = str(cfg.get("openie_model_name", cfg["model_name"]) or cfg["model_name"])
-cfg["openie_local_files_only"] = True
-cfg["evaluator_mode"] = "hipporag2_parity"
-cfg["num_workers"] = 1
-cfg["force_rebuild_graph_index"] = False
-cfg["stagewise_loss_funnel_enabled"] = True
+
+# Strict replay for champion runs:
+# preserve historical sidecar config as-is to avoid condition drift.
+if "dataset" not in cfg:
+    cfg["dataset"] = str(dataset)
+if "canonical_variant_name" not in cfg:
+    cfg["canonical_variant_name"] = str(variant)
+
 Path(out_cfg).write_text(yaml.safe_dump(cfg, sort_keys=False, allow_unicode=False), encoding="utf-8")
+PY
+}
+
+validate_champion_cfg_replay() {
+  local generated_cfg="$1"
+  local sidecar_config_json="$2"
+  "${PYTHON_BIN}" - "${generated_cfg}" "${sidecar_config_json}" <<'PY'
+import json
+import sys
+from pathlib import Path
+import yaml
+
+generated_cfg, sidecar_json = sys.argv[1:3]
+g = yaml.safe_load(Path(generated_cfg).read_text(encoding="utf-8")) or {}
+s_blob = json.loads(Path(sidecar_json).read_text(encoding="utf-8"))
+s = dict(s_blob.get("config", {}) or {})
+if not s:
+    raise SystemExit(f"invalid_sidecar_config:{sidecar_json}")
+
+# Allow only backfill when missing from historical sidecar.
+if "dataset" not in s and "dataset" in g:
+    s["dataset"] = g["dataset"]
+if "canonical_variant_name" not in s and "canonical_variant_name" in g:
+    s["canonical_variant_name"] = g["canonical_variant_name"]
+
+if g != s:
+    bad = []
+    keys = sorted(set(g.keys()) | set(s.keys()))
+    for k in keys:
+        if g.get(k) != s.get(k):
+            bad.append({"key": k, "generated": g.get(k), "sidecar": s.get(k)})
+    print("champion_config_drift_detected")
+    print(json.dumps(bad[:40], ensure_ascii=False, indent=2))
+    raise SystemExit(2)
+print("champion_config_replay_ok")
 PY
 }
 
@@ -637,7 +665,8 @@ run_combo() {
   mkdir -p "${cfg_dir}" "${out_dir}" "$(dirname "${log_path}")"
 
   if [[ "${variant}" == "champion_config" ]]; then
-    create_cfg_from_sidecar "${cfg_path}" "${dataset}" "${variant}" "${champion_sidecar}" "${corpus_path}"
+    create_cfg_from_sidecar "${cfg_path}" "${dataset}" "${variant}" "${champion_sidecar}"
+    validate_champion_cfg_replay "${cfg_path}" "${champion_sidecar}" >/dev/null
   else
     local spec mode knobs order
     spec="$(variant_spec_fields "${dataset}" "${variant}")"
@@ -667,31 +696,44 @@ run_combo() {
   start_ts="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 
   local -a cmd
-  cmd=(
-    "${PYTHON_BIN}" -m effirag.run_rag
-    --config "${cfg_path}"
-    --dataset "${dataset}"
-    --data-path "${qa_path}"
-    --graph-cache-dir "${GRAPH_CACHE_DIR}"
-    --force-rebuild-graph-index false
-    --num-workers 1
-    --openie-mode llm
-    --openie-model-name "${MODEL_NAME}"
-    --openie-local-files-only true
-    --openie-api-base-url "${LLM_BASE_URL}"
-    --openie-api-key "${LLM_API_KEY}"
-    --generator vllm
-    --model-name "${MODEL_NAME}"
-    --llm-base-url "${LLM_BASE_URL}"
-    --llm-api-key "${LLM_API_KEY}"
-    --llm-max-new-tokens 64
-    --run-qa true
-    --retrieval-only false
-    --evaluator-mode hipporag2_parity
-    --limit "${N_SAMPLES}"
-    --output-dir "${out_dir}"
-    --timestamp-output true
-  )
+  if [[ "${variant}" == "champion_config" ]]; then
+    # Strict champion replay: do not force CLI overrides that can alter historical behavior.
+    cmd=(
+      "${PYTHON_BIN}" -m effirag.run_rag
+      --config "${cfg_path}"
+      --dataset "${dataset}"
+      --data-path "${qa_path}"
+      --limit "${N_SAMPLES}"
+      --output-dir "${out_dir}"
+      --timestamp-output true
+    )
+  else
+    cmd=(
+      "${PYTHON_BIN}" -m effirag.run_rag
+      --config "${cfg_path}"
+      --dataset "${dataset}"
+      --data-path "${qa_path}"
+      --graph-cache-dir "${GRAPH_CACHE_DIR}"
+      --force-rebuild-graph-index false
+      --num-workers 1
+      --openie-mode llm
+      --openie-model-name "${MODEL_NAME}"
+      --openie-local-files-only true
+      --openie-api-base-url "${LLM_BASE_URL}"
+      --openie-api-key "${LLM_API_KEY}"
+      --generator vllm
+      --model-name "${MODEL_NAME}"
+      --llm-base-url "${LLM_BASE_URL}"
+      --llm-api-key "${LLM_API_KEY}"
+      --llm-max-new-tokens 64
+      --run-qa true
+      --retrieval-only false
+      --evaluator-mode hipporag2_parity
+      --limit "${N_SAMPLES}"
+      --output-dir "${out_dir}"
+      --timestamp-output true
+    )
+  fi
 
   log_msg "[RUN] stage=${stage} variant=${variant} dataset=${dataset}"
   {
