@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import json
 import math
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .eval.metrics_hipporag2_parity import normalize_answer_parity
 from .metrics import supporting_fact_match_details
@@ -421,3 +422,703 @@ def write_tsv(path: str, headers: Sequence[str], records: Sequence[Mapping[str, 
     for record in list(records or []):
         lines.append("\t".join(str(record.get(h, "")) for h in headers))
     p.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+@dataclass(frozen=True)
+class MetricSpec:
+    name: str
+    display_name: str
+    group: str
+    description: str = ""
+    higher_is_better: bool = True
+    fmt: str = ".4f"
+    enabled: bool = True
+    requires: Tuple[str, ...] = field(default_factory=tuple)
+    is_diagnostic: bool = False
+    is_proxy: bool = False
+    source_level: str = "context"
+
+
+class MetricRegistry:
+    def __init__(self, specs: Optional[Iterable[MetricSpec]] = None) -> None:
+        self._specs: Dict[str, MetricSpec] = {}
+        self._order: List[str] = []
+        for spec in list(specs or []):
+            self.register(spec)
+
+    def register(self, spec: MetricSpec) -> None:
+        if spec.name in self._specs:
+            self._order = [n for n in self._order if n != spec.name]
+        self._specs[spec.name] = spec
+        self._order.append(spec.name)
+
+    def get(self, name: str) -> Optional[MetricSpec]:
+        return self._specs.get(str(name))
+
+    def all_specs(self) -> List[MetricSpec]:
+        return [self._specs[n] for n in self._order if n in self._specs]
+
+    def enabled_specs(self) -> List[MetricSpec]:
+        return [spec for spec in self.all_specs() if bool(spec.enabled)]
+
+    def enabled_names(self) -> List[str]:
+        return [spec.name for spec in self.enabled_specs()]
+
+    def groups(self) -> List[str]:
+        seen = set()
+        out: List[str] = []
+        for spec in self.enabled_specs():
+            if spec.group in seen:
+                continue
+            seen.add(spec.group)
+            out.append(spec.group)
+        return out
+
+    def enabled_by_group(self, group: str) -> List[MetricSpec]:
+        g = str(group or "")
+        return [spec for spec in self.enabled_specs() if str(spec.group) == g]
+
+
+def _coerce_float_or_none(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        x = float(value)
+    except Exception:
+        return None
+    if math.isnan(x) or math.isinf(x):
+        return None
+    return float(x)
+
+
+def _lookup_metric(payload: Mapping[str, Any], aliases: Sequence[str], default: float = 0.0) -> float:
+    src = dict(payload or {})
+    for key in list(aliases or []):
+        if key in src:
+            vv = _coerce_float_or_none(src.get(key))
+            if vv is not None:
+                return float(vv)
+    return float(default)
+
+
+def _percentile(values: Sequence[float], q: float) -> float:
+    seq = sorted([_safe_float(v, 0.0) for v in list(values or [])])
+    if not seq:
+        return 0.0
+    if len(seq) == 1:
+        return float(seq[0])
+    qq = min(max(_safe_float(q, 0.0), 0.0), 1.0)
+    pos = qq * float(len(seq) - 1)
+    lo = int(math.floor(pos))
+    hi = int(math.ceil(pos))
+    if lo == hi:
+        return float(seq[lo])
+    frac = pos - float(lo)
+    return float(seq[lo] * (1.0 - frac) + seq[hi] * frac)
+
+
+def build_context_efficiency_metric_registry() -> MetricRegistry:
+    specs = [
+        MetricSpec(
+            name="recall_at_1",
+            display_name="R@1",
+            group="Retrieval Ranking Metrics",
+            description="Strict supporting-fact Recall@1.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="retrieval",
+        ),
+        MetricSpec(
+            name="recall_at_5",
+            display_name="R@5",
+            group="Retrieval Ranking Metrics",
+            description="Strict supporting-fact Recall@5.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="retrieval",
+        ),
+        MetricSpec(
+            name="recall_at_10",
+            display_name="R@10",
+            group="Retrieval Ranking Metrics",
+            description="Strict supporting-fact Recall@10.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="retrieval",
+        ),
+        MetricSpec(
+            name="recall_at_20",
+            display_name="R@20",
+            group="Retrieval Ranking Metrics",
+            description="Strict supporting-fact Recall@20.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="retrieval",
+        ),
+        MetricSpec(
+            name="hit_at_5",
+            display_name="Hit@5",
+            group="Retrieval Ranking Metrics",
+            description="At least one supporting-fact hit in top-5.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="retrieval",
+        ),
+        MetricSpec(
+            name="hit_at_10",
+            display_name="Hit@10",
+            group="Retrieval Ranking Metrics",
+            description="At least one supporting-fact hit in top-10.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="retrieval",
+        ),
+        MetricSpec(
+            name="mrr_at_10",
+            display_name="MRR@10",
+            group="Retrieval Ranking Metrics",
+            description="Mean reciprocal rank at top-10.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="retrieval",
+        ),
+        MetricSpec(
+            name="ndcg_at_10",
+            display_name="nDCG@10",
+            group="Retrieval Ranking Metrics",
+            description="Binary nDCG at top-10.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="retrieval",
+        ),
+        MetricSpec(
+            name="supporting_fact_precision",
+            display_name="sf_P",
+            group="Multi-hop Evidence Metrics",
+            description="Supporting-fact precision.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="retrieval",
+        ),
+        MetricSpec(
+            name="supporting_fact_recall",
+            display_name="sf_R",
+            group="Multi-hop Evidence Metrics",
+            description="Supporting-fact recall.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="retrieval",
+        ),
+        MetricSpec(
+            name="supporting_fact_f1",
+            display_name="sf_F1",
+            group="Multi-hop Evidence Metrics",
+            description="Supporting-fact F1.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="retrieval",
+        ),
+        MetricSpec(
+            name="rendered_supporting_fact_precision",
+            display_name="Rendered_sf_P",
+            group="Multi-hop Evidence Metrics",
+            description="Supporting-fact precision after rendering.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="context",
+        ),
+        MetricSpec(
+            name="rendered_supporting_fact_recall",
+            display_name="Rendered_sf_R",
+            group="Multi-hop Evidence Metrics",
+            description="Supporting-fact recall after rendering.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="context",
+        ),
+        MetricSpec(
+            name="rendered_supporting_fact_f1",
+            display_name="Rendered_sf_F1",
+            group="Multi-hop Evidence Metrics",
+            description="Supporting-fact F1 after rendering.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="context",
+        ),
+        MetricSpec(
+            name="context_precision",
+            display_name="ContextPrecision",
+            group="Multi-hop Evidence Metrics",
+            description="Ragas-style context precision over ranked contexts.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="retrieval",
+        ),
+        MetricSpec(
+            name="avg_context_tokens",
+            display_name="AvgContextTok",
+            group="Context Efficiency Metrics",
+            description="Average tokens in final context passed to generator.",
+            higher_is_better=False,
+            fmt=".1f",
+            source_level="context",
+        ),
+        MetricSpec(
+            name="median_context_tokens",
+            display_name="MedianContextTok",
+            group="Context Efficiency Metrics",
+            description="Median final context tokens.",
+            higher_is_better=False,
+            fmt=".1f",
+            source_level="context",
+        ),
+        MetricSpec(
+            name="p90_context_tokens",
+            display_name="P90ContextTok",
+            group="Context Efficiency Metrics",
+            description="P90 final context tokens.",
+            higher_is_better=False,
+            fmt=".1f",
+            source_level="context",
+        ),
+        MetricSpec(
+            name="max_context_tokens",
+            display_name="MaxContextTok",
+            group="Context Efficiency Metrics",
+            description="Max final context tokens.",
+            higher_is_better=False,
+            fmt=".1f",
+            source_level="context",
+        ),
+        MetricSpec(
+            name="raw_candidate_tokens",
+            display_name="RawCandidateTok",
+            group="Context Efficiency Metrics",
+            description="Average raw candidate tokens before rendering.",
+            higher_is_better=False,
+            fmt=".1f",
+            source_level="context",
+        ),
+        MetricSpec(
+            name="rendered_context_tokens",
+            display_name="RenderedContextTok",
+            group="Context Efficiency Metrics",
+            description="Average rendered context tokens.",
+            higher_is_better=False,
+            fmt=".1f",
+            source_level="context",
+        ),
+        MetricSpec(
+            name="compression_ratio",
+            display_name="CompressionRatio",
+            group="Context Efficiency Metrics",
+            description="rendered_context_tokens / raw_candidate_tokens.",
+            higher_is_better=False,
+            fmt=".4f",
+            source_level="context",
+        ),
+        MetricSpec(
+            name="context_reduction_rate",
+            display_name="ContextReductionRate",
+            group="Context Efficiency Metrics",
+            description="1 - compression_ratio.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="context",
+        ),
+        MetricSpec(
+            name="supporting_fact_token_density",
+            display_name="SFDensity",
+            group="Context Efficiency Metrics",
+            description="Matched supporting-fact tokens / rendered tokens.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="context",
+        ),
+        MetricSpec(
+            name="answer_bearing_token_density",
+            display_name="AnswerDensity",
+            group="Context Efficiency Metrics",
+            description="Answer-bearing tokens / rendered tokens.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="context",
+        ),
+        MetricSpec(
+            name="non_support_token_ratio",
+            display_name="NonSupportRatio",
+            group="Context Efficiency Metrics",
+            description="1 - supporting_fact_token_density.",
+            higher_is_better=False,
+            fmt=".4f",
+            source_level="context",
+        ),
+        MetricSpec(
+            name="non_answer_bearing_token_ratio",
+            display_name="NonAnswerRatio",
+            group="Context Efficiency Metrics",
+            description="1 - answer_bearing_token_density.",
+            higher_is_better=False,
+            fmt=".4f",
+            source_level="context",
+        ),
+        MetricSpec(
+            name="tokens_per_support_hit",
+            display_name="TokPerSupportHit",
+            group="Token-normalized Utility Metrics",
+            description="Rendered tokens per supporting-fact hit.",
+            higher_is_better=False,
+            fmt=".2f",
+            source_level="efficiency",
+        ),
+        MetricSpec(
+            name="tokens_per_answer_bearing_hit",
+            display_name="TokPerAnswerHit",
+            group="Token-normalized Utility Metrics",
+            description="Rendered tokens per answer-bearing hit.",
+            higher_is_better=False,
+            fmt=".2f",
+            source_level="efficiency",
+        ),
+        MetricSpec(
+            name="sf_F1_per_1k_context_tokens",
+            display_name="sf_F1/1KTok",
+            group="Token-normalized Utility Metrics",
+            description="Supporting-fact F1 normalized by average context tokens.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="efficiency",
+            is_proxy=True,
+        ),
+        MetricSpec(
+            name="ContextPrecision_per_1k_context_tokens",
+            display_name="ContextPrecision/1KTok",
+            group="Token-normalized Utility Metrics",
+            description="Context precision normalized by average context tokens.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="efficiency",
+            is_proxy=True,
+        ),
+        MetricSpec(
+            name="EM_per_1k_context_tokens",
+            display_name="EM/1KTok",
+            group="Token-normalized Utility Metrics",
+            description="EM normalized by average context tokens.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="efficiency",
+            is_proxy=True,
+        ),
+        MetricSpec(
+            name="F1_per_1k_context_tokens",
+            display_name="F1/1KTok",
+            group="Token-normalized Utility Metrics",
+            description="F1 normalized by average context tokens.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="efficiency",
+            is_proxy=True,
+        ),
+        MetricSpec(
+            name="em",
+            display_name="EM",
+            group="QA Metrics",
+            description="Exact match.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="generation",
+        ),
+        MetricSpec(
+            name="f1",
+            display_name="F1",
+            group="QA Metrics",
+            description="Token-level F1.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="generation",
+        ),
+        MetricSpec(
+            name="retrieval_ms",
+            display_name="Retrieval(ms)",
+            group="Latency Metrics",
+            description="Average retrieval latency in milliseconds.",
+            higher_is_better=False,
+            fmt=".2f",
+            source_level="efficiency",
+        ),
+        MetricSpec(
+            name="generation_ms",
+            display_name="Generation(ms)",
+            group="Latency Metrics",
+            description="Average generation latency in milliseconds.",
+            higher_is_better=False,
+            fmt=".2f",
+            source_level="efficiency",
+        ),
+        MetricSpec(
+            name="total_ms",
+            display_name="Total(ms)",
+            group="Latency Metrics",
+            description="Average total latency in milliseconds.",
+            higher_is_better=False,
+            fmt=".2f",
+            source_level="efficiency",
+        ),
+        MetricSpec(
+            name="context_tokens_per_ms",
+            display_name="ContextTok/ms",
+            group="Latency Metrics",
+            description="Average context tokens divided by total latency.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="diagnostic",
+            is_proxy=True,
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="F1_per_1k_tokens_per_100ms",
+            display_name="F1/1KTok/100ms",
+            group="Diagnostic Metrics",
+            description="Diagnostic compound efficiency metric.",
+            higher_is_better=True,
+            fmt=".6f",
+            source_level="diagnostic",
+            is_proxy=True,
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="support_text_match_rate",
+            display_name="SupportTextMatchRate",
+            group="Diagnostic Metrics",
+            description="Share of gold support texts matched in rendered context.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="diagnostic",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="answer_bearing_match_rate",
+            display_name="AnswerBearingMatchRate",
+            group="Diagnostic Metrics",
+            description="Share of queries with at least one answer-bearing context hit.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="diagnostic",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="missing_rendered_context_rate",
+            display_name="MissingRenderedRate",
+            group="Diagnostic Metrics",
+            description="Share of queries missing rendered context text.",
+            higher_is_better=False,
+            fmt=".4f",
+            source_level="diagnostic",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="raw_candidate_token_coverage",
+            display_name="RawTokenCoverage",
+            group="Diagnostic Metrics",
+            description="Share of queries with raw candidate token counts available.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="diagnostic",
+            is_diagnostic=True,
+        ),
+    ]
+    return MetricRegistry(specs)
+
+
+def aggregate_context_efficiency_metrics(
+    query_metrics: Sequence[Mapping[str, Any]],
+    base_metrics: Optional[Mapping[str, Any]] = None,
+) -> Dict[str, Any]:
+    rows = list(query_metrics or [])
+    base = dict(base_metrics or {})
+    n = len(rows)
+    if n <= 0:
+        return {}
+
+    rendered_tokens = [_safe_float(r.get("rendered_context_tokens", 0.0), 0.0) for r in rows]
+    raw_tokens_opt = [_coerce_float_or_none(r.get("raw_candidate_tokens")) for r in rows]
+    raw_tokens = [float(v) for v in raw_tokens_opt if v is not None and v > 0.0]
+
+    total_rendered_tokens = float(sum(rendered_tokens))
+    total_raw_tokens = float(sum(raw_tokens))
+
+    support_token_total = float(sum(_safe_float(r.get("matched_support_tokens", 0.0), 0.0) for r in rows))
+    answer_token_total = float(sum(_safe_float(r.get("answer_bearing_tokens", 0.0), 0.0) for r in rows))
+    support_hit_total = float(sum(_safe_float(r.get("support_hits", 0.0), 0.0) for r in rows))
+    answer_hit_total = float(sum(_safe_float(r.get("answer_bearing_hits", 0.0), 0.0) for r in rows))
+    support_match_total = float(sum(_safe_float(r.get("support_match_count", 0.0), 0.0) for r in rows))
+    support_gold_total = float(sum(_safe_float(r.get("support_total_count", 0.0), 0.0) for r in rows))
+    answer_match_queries = float(
+        sum(1 for r in rows if _safe_float(r.get("answer_bearing_hits", 0.0), 0.0) > 0.0)
+    )
+    missing_rendered = float(sum(1 for r in rows if bool(r.get("missing_rendered_context", False))))
+    raw_coverage_count = float(sum(1 for v in raw_tokens_opt if v is not None and v > 0.0))
+
+    retrieval_ms = _lookup_metric(base, ("retrieval_ms", "retrieval_latency_ms"), default=0.0)
+    generation_ms = _lookup_metric(base, ("generation_ms", "generation_latency_ms"), default=0.0)
+    total_ms = _lookup_metric(base, ("total_ms", "total_latency_ms"), default=0.0)
+
+    out: Dict[str, Any] = {
+        "n_samples": float(n),
+        "avg_context_tokens": float(mean_or_zero(rendered_tokens)),
+        "median_context_tokens": float(_percentile(rendered_tokens, 0.5)),
+        "p90_context_tokens": float(_percentile(rendered_tokens, 0.9)),
+        "max_context_tokens": float(max(rendered_tokens) if rendered_tokens else 0.0),
+        "raw_candidate_tokens": float(mean_or_zero(raw_tokens)) if raw_tokens else None,
+        "rendered_context_tokens": float(mean_or_zero(rendered_tokens)),
+        "compression_ratio": float(safe_div(total_rendered_tokens, total_raw_tokens)) if total_raw_tokens > 0.0 else None,
+        "context_reduction_rate": None,
+        "supporting_fact_token_density": float(safe_div(support_token_total, total_rendered_tokens)),
+        "answer_bearing_token_density": float(safe_div(answer_token_total, total_rendered_tokens)),
+        "tokens_per_support_hit": float(safe_div(total_rendered_tokens, support_hit_total)) if support_hit_total > 0.0 else 0.0,
+        "tokens_per_answer_bearing_hit": float(safe_div(total_rendered_tokens, answer_hit_total))
+        if answer_hit_total > 0.0
+        else 0.0,
+        "support_text_match_rate": float(safe_div(support_match_total, support_gold_total)),
+        "answer_bearing_match_rate": float(safe_div(answer_match_queries, float(n))),
+        "missing_rendered_context_rate": float(safe_div(missing_rendered, float(n))),
+        "raw_candidate_token_coverage": float(safe_div(raw_coverage_count, float(n))),
+        "retrieval_ms": float(retrieval_ms),
+        "generation_ms": float(generation_ms),
+        "total_ms": float(total_ms if total_ms > 0.0 else (retrieval_ms + generation_ms)),
+    }
+    if out["compression_ratio"] is not None:
+        out["context_reduction_rate"] = float(1.0 - float(out["compression_ratio"]))
+    out["non_support_token_ratio"] = float(max(0.0, 1.0 - out["supporting_fact_token_density"]))
+    out["non_answer_bearing_token_ratio"] = float(max(0.0, 1.0 - out["answer_bearing_token_density"]))
+
+    out["recall_at_1"] = _lookup_metric(base, ("recall_at_1", "R@1", "supporting_fact_recall_at_1"), default=0.0)
+    out["recall_at_5"] = _lookup_metric(
+        base,
+        ("recall_at_5", "R@5", "supporting_fact_recall_at_5"),
+        default=_lookup_metric(base, ("Recall@5",), default=0.0),
+    )
+    out["recall_at_10"] = _lookup_metric(base, ("recall_at_10", "R@10", "supporting_fact_recall_at_10"), default=0.0)
+    out["recall_at_20"] = _lookup_metric(base, ("recall_at_20", "R@20", "supporting_fact_recall_at_20"), default=0.0)
+    out["hit_at_5"] = _lookup_metric(base, ("hit_at_5", "Hit@5"), default=0.0)
+    out["hit_at_10"] = _lookup_metric(base, ("hit_at_10", "Hit@10"), default=0.0)
+    out["mrr_at_10"] = _lookup_metric(base, ("mrr_at_10", "MRR@10"), default=0.0)
+    out["ndcg_at_10"] = _lookup_metric(base, ("ndcg_at_10", "nDCG@10"), default=0.0)
+    out["supporting_fact_precision"] = _lookup_metric(
+        base,
+        ("supporting_fact_precision", "sf_P", "sf_precision"),
+        default=0.0,
+    )
+    out["supporting_fact_recall"] = _lookup_metric(
+        base,
+        ("supporting_fact_recall", "sf_R", "sf_recall"),
+        default=0.0,
+    )
+    out["supporting_fact_f1"] = _lookup_metric(
+        base,
+        ("supporting_fact_f1", "sf_F1", "sf_f1"),
+        default=0.0,
+    )
+    out["rendered_supporting_fact_precision"] = _lookup_metric(
+        base,
+        ("rendered_supporting_fact_precision", "rendered_sf_P"),
+        default=0.0,
+    )
+    out["rendered_supporting_fact_recall"] = _lookup_metric(
+        base,
+        ("rendered_supporting_fact_recall", "rendered_sf_R"),
+        default=0.0,
+    )
+    out["rendered_supporting_fact_f1"] = _lookup_metric(
+        base,
+        ("rendered_supporting_fact_f1", "rendered_sf_F1"),
+        default=0.0,
+    )
+    out["context_precision"] = _lookup_metric(base, ("context_precision", "ContextPrecision"), default=0.0)
+    out["em"] = _lookup_metric(base, ("em", "EM"), default=0.0)
+    out["f1"] = _lookup_metric(base, ("f1", "F1"), default=0.0)
+
+    avg_ctx_k = float(safe_div(out["avg_context_tokens"], 1000.0))
+    out["sf_F1_per_1k_context_tokens"] = float(safe_div(out["supporting_fact_f1"], avg_ctx_k)) if avg_ctx_k > 0.0 else 0.0
+    out["ContextPrecision_per_1k_context_tokens"] = (
+        float(safe_div(out["context_precision"], avg_ctx_k)) if avg_ctx_k > 0.0 else 0.0
+    )
+    out["EM_per_1k_context_tokens"] = float(safe_div(out["em"], avg_ctx_k)) if avg_ctx_k > 0.0 else 0.0
+    out["F1_per_1k_context_tokens"] = float(safe_div(out["f1"], avg_ctx_k)) if avg_ctx_k > 0.0 else 0.0
+    out["context_tokens_per_ms"] = float(safe_div(out["avg_context_tokens"], out["total_ms"])) if out["total_ms"] > 0.0 else 0.0
+
+    if avg_ctx_k > 0.0 and out["total_ms"] > 0.0:
+        out["F1_per_1k_tokens_per_100ms"] = float(
+            safe_div(out["f1"], avg_ctx_k) / (float(out["total_ms"]) / 100.0)
+        )
+    else:
+        out["F1_per_1k_tokens_per_100ms"] = 0.0
+    return out
+
+
+def validate_context_efficiency_metrics(metrics: Mapping[str, Any]) -> List[str]:
+    m = dict(metrics or {})
+    issues: List[str] = []
+
+    avg_t = _safe_float(m.get("avg_context_tokens", 0.0), 0.0)
+    med_t = _safe_float(m.get("median_context_tokens", 0.0), 0.0)
+    p90_t = _safe_float(m.get("p90_context_tokens", 0.0), 0.0)
+    max_t = _safe_float(m.get("max_context_tokens", 0.0), 0.0)
+    sf_d = _safe_float(m.get("supporting_fact_token_density", 0.0), 0.0)
+    ans_d = _safe_float(m.get("answer_bearing_token_density", 0.0), 0.0)
+    comp = _safe_float(m.get("compression_ratio", 0.0), 0.0)
+    raw_cov = _safe_float(m.get("raw_candidate_token_coverage", 0.0), 0.0)
+
+    if avg_t <= 0.0:
+        issues.append("avg_context_tokens must be > 0")
+    if med_t <= 0.0:
+        issues.append("median_context_tokens must be > 0")
+    if p90_t < med_t:
+        issues.append("p90_context_tokens must be >= median_context_tokens")
+    if max_t < p90_t:
+        issues.append("max_context_tokens must be >= p90_context_tokens")
+    if not (0.0 <= sf_d <= 1.0):
+        issues.append("supporting_fact_token_density must be in [0,1]")
+    if not (0.0 <= ans_d <= 1.0):
+        issues.append("answer_bearing_token_density must be in [0,1]")
+    if raw_cov <= 0.0 and comp > 0.0:
+        issues.append("compression_ratio must be computed only when raw_candidate_tokens are available")
+    return issues
+
+
+def metric_definition_notes(
+    registry: MetricRegistry,
+    tokenizer_mode: str,
+    tokenizer_name: str,
+    optional_notes: Optional[Sequence[str]] = None,
+) -> str:
+    lines = [
+        "# Metric Definition Notes",
+        "",
+        "## Tokenization",
+        f"- tokenizer_mode: `{tokenizer_mode}`",
+        f"- tokenizer_name: `{tokenizer_name}`",
+        "- EffiRAG and HippoRAG2 are scored under the same tokenization mode for comparability.",
+        "",
+        "## Registered Metrics",
+    ]
+    for group in registry.groups():
+        lines.append("")
+        lines.append(f"### {group}")
+        for spec in registry.enabled_by_group(group):
+            traits: List[str] = []
+            if spec.is_diagnostic:
+                traits.append("diagnostic")
+            if spec.is_proxy:
+                traits.append("proxy")
+            traits_text = f" ({', '.join(traits)})" if traits else ""
+            lines.append(f"- `{spec.name}`{traits_text}: {spec.description}")
+
+    extras = [str(x).strip() for x in list(optional_notes or []) if str(x).strip()]
+    if extras:
+        lines.append("")
+        lines.append("## Additional Notes")
+        for item in extras:
+            lines.append(f"- {item}")
+    return "\n".join(lines).strip() + "\n"
