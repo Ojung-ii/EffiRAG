@@ -128,6 +128,26 @@ def _find_corpus_path(corpus_root: Path, dataset: str) -> Path:
     raise FileNotFoundError(f"Corpus path not found for dataset={dataset}")
 
 
+def _resolve_global_corpus_from_champion(champion_cfg: Mapping[str, Any]) -> str:
+    raw = _strip(champion_cfg.get("global_corpus_path"))
+    if not raw:
+        return ""
+    p = Path(raw)
+    if p.is_absolute():
+        return str(p)
+    return str((REPO_ROOT / p).resolve())
+
+
+def _normalize_global_corpus_path(v: Any) -> str:
+    raw = _strip(v)
+    if not raw:
+        return ""
+    p = Path(raw)
+    if p.is_absolute():
+        return str(p)
+    return str((REPO_ROOT / p).resolve())
+
+
 def _append_flags(order_strategy: str, flags: Sequence[str]) -> str:
     parts = [_strip(x) for x in str(order_strategy or "score").split("+") if _strip(x)]
     seen = set(parts)
@@ -159,6 +179,7 @@ def _retrieval_lock_keys() -> List[str]:
         "semantic_topn_chunk",
         "graph_reserve_topn",
         "corridor_top_bc",
+        "global_corpus_path",
     ]
 
 
@@ -166,7 +187,12 @@ def _assert_retrieval_locked(champion_cfg: Mapping[str, Any], variant_cfg: Mappi
     for key in _retrieval_lock_keys():
         if key not in champion_cfg:
             continue
-        if champion_cfg.get(key) != variant_cfg.get(key):
+        lhs = champion_cfg.get(key)
+        rhs = variant_cfg.get(key)
+        if key == "global_corpus_path":
+            lhs = _normalize_global_corpus_path(lhs)
+            rhs = _normalize_global_corpus_path(rhs)
+        if lhs != rhs:
             raise RuntimeError(
                 f"retrieval lock violated for dataset={dataset} variant={variant} key={key}: "
                 f"champion={champion_cfg.get(key)} variant={variant_cfg.get(key)}"
@@ -346,10 +372,10 @@ def main() -> None:
         champion_cfg_path = Path(_strip(champion_row.get("config_path"))).resolve()
         champion_summary_path = Path(_strip(champion_row.get("summary_path"))).resolve()
 
+        champion_cfg = _load_yaml(champion_cfg_path)
         qa_path = _find_dataset_path(qa_root, ds)
         corpus_path = _find_corpus_path(corpus_root, ds)
-
-        champion_cfg = _load_yaml(champion_cfg_path)
+        champion_global_corpus_path = _resolve_global_corpus_from_champion(champion_cfg)
 
         for vv in variants:
             stage = "s0" if vv == "champion_reconfirm" else "s1"
@@ -365,7 +391,7 @@ def main() -> None:
             cfg = dict(champion_cfg or {})
             cfg["dataset"] = ds
             cfg["data_path"] = str(qa_path)
-            cfg["global_corpus_path"] = str(corpus_path)
+            cfg["global_corpus_path"] = str(champion_global_corpus_path)
             cfg["graph_cache_dir"] = str(Path(args.graph_cache_dir).resolve())
             cfg["output_dir"] = str(out_dir)
             cfg["timestamp_output"] = True
@@ -428,8 +454,6 @@ def main() -> None:
                 ds,
                 "--data-path",
                 str(qa_path),
-                "--global-corpus-path",
-                str(corpus_path),
                 "--graph-cache-dir",
                 str(Path(args.graph_cache_dir).resolve()),
                 "--force-rebuild-graph-index",
@@ -469,6 +493,8 @@ def main() -> None:
                 "--timestamp-output",
                 "true",
             ]
+            if _strip(cfg.get("global_corpus_path")):
+                cmd.extend(["--global-corpus-path", str(cfg["global_corpus_path"])])
 
             start_ts = _utc_now()
             t0 = time.time()
