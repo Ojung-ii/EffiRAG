@@ -791,7 +791,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--llm-timeout-sec", type=float, default=None)
     parser.add_argument("--llm-max-new-tokens", type=int, default=None)
     parser.add_argument("--max-context-sentences", type=int, default=None)
-    parser.add_argument("--render-mode", type=str, default=None, choices=["flat", "corridor", "corridor_aware_flat"])
+    parser.add_argument("--render-mode", type=str, default=None, choices=["flat", "corridor", "corridor_aware_flat", "path_bundle"])
     parser.add_argument("--max-corridors-in-context", type=int, default=None)
     parser.add_argument("--max-main-sentences-per-corridor", type=int, default=None)
     parser.add_argument("--max-support-per-corridor", type=int, default=None)
@@ -824,7 +824,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-corridors", type=int, default=None)
     parser.add_argument("--max-sentences", type=int, default=None)
     parser.add_argument("--reserve-top-corridor", type=str, default=None)
-    parser.add_argument("--order-strategy", type=str, default=None, choices=["score", "retrieval", "corridor_rank"])
+    parser.add_argument("--order-strategy", type=str, default=None)
+    parser.add_argument("--prompt-variant", type=str, default=None, choices=["default", "evidence_first"])
     parser.add_argument("--measure-gpu-peak", type=str, default=None)
     parser.add_argument("--measure-cpu-ram", type=str, default=None)
     parser.add_argument("--profile-stages", type=str, default=None)
@@ -1001,6 +1002,9 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     reserve_top_corridor=cfg.reserve_top_corridor,
                     order_strategy=cfg.order_strategy,
                 )
+                meta = dict((rendered.metadata or {}))
+                meta["prompt_variant"] = str(getattr(cfg, "prompt_variant", "default") or "default")
+                rendered.metadata = meta
             finally:
                 render_ms = float((time.perf_counter() - render_start) * 1000.0)
             retrieval_bar.update(1)
@@ -1041,6 +1045,7 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             prompt_tokens = _safe_int(generation_meta.get("prompt_tokens", 0) or 0, default=0)
             completion_tokens = _safe_int(generation_meta.get("completion_tokens", 0) or 0, default=0)
             finish_reason = str(generation_meta.get("finish_reason", "") or "")
+            prompt_variant = str(generation_meta.get("prompt_variant", getattr(cfg, "prompt_variant", "default")) or "default")
             qa_utilization_variant = str(generation_meta.get("qa_utilization_variant", "") or "")
             qa_utilization_applied = bool(generation_meta.get("qa_utilization_applied", False))
             qa_utilization_changed = bool(generation_meta.get("qa_utilization_changed", False))
@@ -1164,6 +1169,8 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                 "rendering": {
                     "render_mode": rendered.render_mode,
                     "render_mode_requested": render_mode_requested or "(auto)",
+                    "render_variant": str((rendered_meta.get("render_variant", rendered.render_mode) or rendered.render_mode)),
+                    "prompt_variant": str(prompt_variant),
                     "truncated_corridors": rendered.truncated_corridor_count,
                     "truncated_sentences": rendered.truncated_sentence_count,
                     "chunk_grounding_enabled": bool(rendered_meta.get("chunk_grounding_enabled", False)),
@@ -1180,6 +1187,7 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,
                     "finish_reason": finish_reason,
+                    "prompt_variant": str(prompt_variant),
                     "initial_em": float(initial_em),
                     "initial_f1": float(initial_f1),
                     "qa_utilization_variant": str(qa_utilization_variant),

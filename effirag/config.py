@@ -289,6 +289,8 @@ class RagConfig(RetrievalConfig):
     llm_api_key: str = ""
     llm_timeout_sec: float = 120.0
     llm_max_new_tokens: int = 64
+    # default | evidence_first
+    prompt_variant: str = "default"
     max_context_sentences: int = 14
     # flat | corridor | corridor_aware_flat | path_bundle
     render_mode: str = ""
@@ -451,6 +453,8 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["retrieval_objective_mode"] = str(merged["retrieval_objective_mode"]).strip().lower()
     if "shared_budget_profile" in merged:
         merged["shared_budget_profile"] = str(merged["shared_budget_profile"]).strip().lower()
+    if "prompt_variant" in merged:
+        merged["prompt_variant"] = str(merged["prompt_variant"]).strip().lower()
     if "index_chunk_unit" in merged:
         merged["index_chunk_unit"] = str(merged["index_chunk_unit"]).strip().lower()
     if "phase1_parallel_ppr" in merged:
