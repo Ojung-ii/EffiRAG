@@ -221,6 +221,87 @@ def _parse_order_strategy_flags(order_strategy, retrieval_result):
     return base, flags, top_slice_topk, support_pin_min, int(max(0, raw_focus_top_bundle_only_n))
 
 
+def _short_role_code_for_cueing(sid, feat):
+    src = dict(feat or {})
+    overlap = float(src.get("query_overlap_score", 0.0) or 0.0)
+    if overlap >= 1.0:
+        return "Q", False
+    if bool(src.get("is_connector_adjacent", False)):
+        return "B", False
+    if bool(src.get("is_support_candidate", False)):
+        return "S", False
+    return "E", True
+
+
+def _apply_query_aware_soft_ordering(
+    selected_ids,
+    features,
+    score_at_pick,
+    base_scores,
+    retrieval_rank,
+    question_text,
+    tie_threshold=0.05,
+):
+    ids = list(selected_ids or [])
+    n = len(ids)
+    if n <= 1:
+        return ids, {"applied": False, "avg_rank_shift": 0.0, "max_rank_shift": 0.0, "shift_count": 0}
+
+    question_tokens = _token_set(question_text)
+    threshold = max(0.0, float(tie_threshold))
+    original_pos = {sid: idx for idx, sid in enumerate(ids)}
+    out = []
+    i = 0
+    changed = 0
+
+    def _sid_score(sid):
+        return float(score_at_pick.get(sid, base_scores.get(sid, 0.0)))
+
+    while i < n:
+        anchor_sid = ids[i]
+        anchor_score = _sid_score(anchor_sid)
+        j = i + 1
+        while j < n:
+            sid_j = ids[j]
+            if abs(_sid_score(sid_j) - anchor_score) <= threshold:
+                j += 1
+                continue
+            break
+        group = ids[i:j]
+        if len(group) <= 1:
+            out.extend(group)
+            i = j
+            continue
+
+        def _tie_key(sid):
+            feat = dict(features.get(sid, {}) or {})
+            q_overlap = float(feat.get("query_overlap_score", 0.0) or 0.0)
+            title = _unit_title(sid)
+            title_overlap = float(len(_token_set(title).intersection(question_tokens)))
+            role_rank = 0 if bool(feat.get("is_support_candidate", False) or feat.get("is_connector_adjacent", False)) else 1
+            return (
+                -q_overlap,
+                -title_overlap,
+                role_rank,
+                int(retrieval_rank.get(sid, 10**9)),
+                int(original_pos.get(sid, 10**9)),
+            )
+
+        sorted_group = sorted(group, key=_tie_key)
+        if sorted_group != group:
+            changed += int(sum(1 for idx, sid in enumerate(group) if sorted_group[idx] != sid))
+        out.extend(sorted_group)
+        i = j
+
+    rank_shifts = [abs(int(new_idx) - int(original_pos.get(sid, new_idx))) for new_idx, sid in enumerate(out)]
+    return out, {
+        "applied": bool(changed > 0),
+        "avg_rank_shift": float(_safe_ratio(sum(rank_shifts), max(1, len(rank_shifts)))),
+        "max_rank_shift": float(max(rank_shifts) if rank_shifts else 0.0),
+        "shift_count": int(changed),
+    }
+
+
 def _corridor_sentence_ids(corridor):
     return _ordered_unique(
         list(_corridor_get(corridor, "main_path_unit_ids", "main_path_sentence_ids"))
@@ -2131,6 +2212,11 @@ def render_corridor_aware_flat_context(
     answer_cue_highlight_enabled = bool("answer_cue_highlight" in strategy_flags)
     corridor_grouped_flat_enabled = bool("corridor_grouped_flat" in strategy_flags)
     role_tagged_compact_enabled = bool("role_tagged_compact" in strategy_flags)
+    minimal_role_prefix_enabled = bool("minimal_role_prefix" in strategy_flags)
+    inline_source_role_hint_enabled = bool("inline_source_role_hint" in strategy_flags)
+    title_preserving_compact_render_enabled = bool("title_preserving_compact_render" in strategy_flags)
+    light_separator_render_enabled = bool("light_separator_render" in strategy_flags)
+    query_aware_soft_ordering_enabled = bool("query_aware_soft_ordering" in strategy_flags)
     gen_quote_then_answer_light_enabled = bool("gen_quote_then_answer_light" in strategy_flags)
     gen_grounded_answer_light_enabled = bool("gen_grounded_answer_light" in strategy_flags)
     gen_evidence_focus_light_enabled = bool("gen_evidence_focus_light" in strategy_flags)
@@ -2259,6 +2345,18 @@ def render_corridor_aware_flat_context(
             max_n=max_n,
         )
 
+    query_aware_soft_order_diag = {"applied": False, "avg_rank_shift": 0.0, "max_rank_shift": 0.0, "shift_count": 0}
+    if query_aware_soft_ordering_enabled:
+        selected_ids, query_aware_soft_order_diag = _apply_query_aware_soft_ordering(
+            selected_ids=selected_ids,
+            features=features,
+            score_at_pick=score_at_pick,
+            base_scores=base_scores,
+            retrieval_rank=retrieval_rank,
+            question_text=sample.question,
+            tie_threshold=0.05,
+        )
+
     corridor_group_diag = {
         "enabled": bool(corridor_grouped_flat_enabled),
         "applied": False,
@@ -2321,12 +2419,23 @@ def render_corridor_aware_flat_context(
     role_tag_applied_count = 0
     role_unknown_count = 0
     role_total_count = 0
+    role_prefix_applied_count = 0
+    role_prefix_unknown_count = 0
+    role_prefix_total_count = 0
+    source_role_hint_applied_count = 0
+    source_role_hint_unknown_count = 0
+    source_role_hint_total_count = 0
+    source_role_hint_title_mentions = 0
+    separator_line_count = 0
+    title_group_count = 0
+    unique_title_count = 0
+    title_mentions_compact = 0
+    title_repetition_reduction = 0.0
+    duplicated_title_reduction_rate = 0.0
+    cueing_variant_name = "corridor_aware_flat"
 
-    def _render_line(idx, sid):
+    def _base_render_text(sid, sent):
         nonlocal answer_cue_highlight_count, role_tag_applied_count, role_unknown_count, role_total_count
-        sent = candidate_text_map.get(sid, "")
-        if not sent:
-            return None
         display_sent = str(sent)
         feat = dict(features.get(sid, {}) or {})
         if role_tagged_compact_enabled:
@@ -2346,28 +2455,131 @@ def render_corridor_aware_flat_context(
             if marker:
                 display_sent = f"{marker}{display_sent}"
                 answer_cue_highlight_count += 1
-        selected_sentences.append(sent)
-        return "[%d] (%s) %s" % (idx, sid, display_sent)
+        return display_sent
 
-    if corridor_grouped_flat_enabled and grouped_order:
+    # Lightweight cueing renderers (one variant expected per run; keep deterministic priority).
+    if title_preserving_compact_render_enabled:
+        cueing_variant_name = "title_preserving_compact_render"
+        groups = []
+        group_order = []
+        for sid in selected_ids:
+            title = _unit_title(sid)
+            if title not in groups:
+                groups.append(title)
+                group_order.append((title, []))
+            group_order[-1][1].append(sid) if group_order[-1][0] == title else None
+            if group_order[-1][0] != title:
+                group_order.append((title, [sid]))
+        # Fix grouping preserving first appearance order with stable sentence order.
+        grouped_map = {}
+        ordered_titles = []
+        for sid in selected_ids:
+            title = _unit_title(sid)
+            if title not in grouped_map:
+                grouped_map[title] = []
+                ordered_titles.append(title)
+            grouped_map[title].append(sid)
+
+        unique_title_count = int(len(ordered_titles))
+        title_group_count = int(len(ordered_titles))
+        title_mentions_compact = int(len(ordered_titles))
+        naive_mentions = int(len(selected_ids))
+        title_repetition_reduction = float(_safe_ratio(max(0, naive_mentions - title_mentions_compact), max(1, naive_mentions)))
+        duplicated_title_reduction_rate = float(title_repetition_reduction)
+
+        for title in ordered_titles:
+            lines.append(f"Title: {title}")
+            for sid in grouped_map.get(title, []):
+                sent = candidate_text_map.get(sid, "")
+                if not sent:
+                    continue
+                selected_sentences.append(sent)
+                lines.append(f"- {_base_render_text(sid, sent)}")
+            lines.append("")
+        while lines and not str(lines[-1]).strip():
+            lines.pop()
+    elif inline_source_role_hint_enabled:
+        cueing_variant_name = "inline_source_role_hint"
+        prev_title = None
+        title_mentions = 0
+        for sid in selected_ids:
+            sent = candidate_text_map.get(sid, "")
+            if not sent:
+                continue
+            feat = dict(features.get(sid, {}) or {})
+            role_code, is_unknown = _short_role_code_for_cueing(sid, feat)
+            title = _unit_title(sid)
+            show_title = bool(title != prev_title)
+            title_label = title if show_title else ""
+            if show_title:
+                title_mentions += 1
+            prefix = f"[{title_label} | {role_code}]"
+            selected_sentences.append(sent)
+            lines.append(f"{prefix} {_base_render_text(sid, sent)}")
+            prev_title = title
+
+            source_role_hint_applied_count += 1
+            source_role_hint_total_count += 1
+            source_role_hint_title_mentions += (1 if show_title else 0)
+            if is_unknown:
+                source_role_hint_unknown_count += 1
+
+        naive_mentions = int(len(selected_ids))
+        title_mentions_compact = int(title_mentions)
+        duplicated_title_reduction_rate = float(_safe_ratio(max(0, naive_mentions - title_mentions), max(1, naive_mentions)))
+        unique_title_count = int(len(set([_unit_title(sid) for sid in selected_ids])))
+        title_group_count = int(title_mentions)
+        title_repetition_reduction = float(duplicated_title_reduction_rate)
+    elif minimal_role_prefix_enabled:
+        cueing_variant_name = "minimal_role_prefix"
+        for sid in selected_ids:
+            sent = candidate_text_map.get(sid, "")
+            if not sent:
+                continue
+            feat = dict(features.get(sid, {}) or {})
+            role_code, is_unknown = _short_role_code_for_cueing(sid, feat)
+            selected_sentences.append(sent)
+            lines.append(f"{role_code}: {_base_render_text(sid, sent)}")
+            role_prefix_applied_count += 1
+            role_prefix_total_count += 1
+            if is_unknown:
+                role_prefix_unknown_count += 1
+    elif light_separator_render_enabled:
+        cueing_variant_name = "light_separator_render"
+        for sid in selected_ids:
+            sent = candidate_text_map.get(sid, "")
+            if not sent:
+                continue
+            title = _unit_title(sid)
+            selected_sentences.append(sent)
+            lines.append(f"- {title}: {_base_render_text(sid, sent)}")
+            separator_line_count += 1
+    elif corridor_grouped_flat_enabled and grouped_order:
+        cueing_variant_name = "corridor_grouped_flat"
         line_idx = 1
         for group_idx, (gid, sids) in enumerate(grouped_order, start=1):
             lines.append(f"[Corridor {group_idx} | id={gid}]")
             for sid in list(sids or []):
-                row = _render_line(line_idx, sid)
-                if row is None:
+                sent = candidate_text_map.get(sid, "")
+                if not sent:
                     continue
-                lines.append(f"- {row}")
+                selected_sentences.append(sent)
+                lines.append(f"- [{line_idx}] ({sid}) {_base_render_text(sid, sent)}")
                 line_idx += 1
             lines.append("")
         while lines and not str(lines[-1]).strip():
             lines.pop()
     else:
+        if query_aware_soft_ordering_enabled:
+            cueing_variant_name = "query_aware_soft_ordering"
+        elif role_tagged_compact_enabled:
+            cueing_variant_name = "role_tagged_compact_render"
         for idx, sid in enumerate(selected_ids, start=1):
-            row = _render_line(idx, sid)
-            if row is None:
+            sent = candidate_text_map.get(sid, "")
+            if not sent:
                 continue
-            lines.append(row)
+            selected_sentences.append(sent)
+            lines.append("[%d] (%s) %s" % (idx, sid, _base_render_text(sid, sent)))
 
     rendered_corridor_ids = _ordered_unique(
         [cid for sid in selected_ids for cid in (features.get(sid, {}).get("corridor_ids", []) or [])]
@@ -2452,7 +2664,7 @@ def render_corridor_aware_flat_context(
         retrieval_selected_sentence_ids=list(retrieval_result.selected_sentence_ids or []),
         metadata={
             "selected_unit_type": _selected_unit_type(retrieval_result),
-            "render_variant": "corridor_grouped_flat" if corridor_grouped_flat_enabled else ("role_tagged_compact_render" if role_tagged_compact_enabled else "corridor_aware_flat"),
+            "render_variant": str(cueing_variant_name),
             "final_order_strategy": str(strategy),
             "strategy_flags": sorted(list(strategy_flags)),
             "top_slice_reorder_applied": bool(top_slice_diag.get("applied", False)),
@@ -2481,6 +2693,34 @@ def render_corridor_aware_flat_context(
             "role_unknown_count": int(role_unknown_count),
             "role_total_count": int(role_total_count),
             "role_unknown_rate": float(_safe_ratio(role_unknown_count, max(1, role_total_count))),
+            "minimal_role_prefix_enabled": bool(minimal_role_prefix_enabled),
+            "role_prefix_applied_count": int(role_prefix_applied_count),
+            "role_prefix_total_count": int(role_prefix_total_count),
+            "role_prefix_unknown_count": int(role_prefix_unknown_count),
+            "role_prefix_activation_rate": float(_safe_ratio(role_prefix_applied_count, max(1, len(selected_ids)))),
+            "role_prefix_unknown_rate": float(_safe_ratio(role_prefix_unknown_count, max(1, role_prefix_total_count))),
+            "inline_source_role_hint_enabled": bool(inline_source_role_hint_enabled),
+            "source_role_hint_applied_count": int(source_role_hint_applied_count),
+            "source_role_hint_total_count": int(source_role_hint_total_count),
+            "source_role_hint_unknown_count": int(source_role_hint_unknown_count),
+            "source_role_hint_title_mentions": int(source_role_hint_title_mentions),
+            "source_role_hint_activation_rate": float(_safe_ratio(source_role_hint_applied_count, max(1, len(selected_ids)))),
+            "source_role_hint_unknown_rate": float(
+                _safe_ratio(source_role_hint_unknown_count, max(1, source_role_hint_total_count))
+            ),
+            "title_preserving_compact_render_enabled": bool(title_preserving_compact_render_enabled),
+            "title_group_count": int(title_group_count),
+            "unique_title_count": int(unique_title_count),
+            "title_mentions_compact": int(title_mentions_compact),
+            "title_repetition_reduction": float(title_repetition_reduction),
+            "duplicated_title_reduction_rate": float(duplicated_title_reduction_rate),
+            "light_separator_render_enabled": bool(light_separator_render_enabled),
+            "separator_line_count": int(separator_line_count),
+            "separator_activation_rate": float(_safe_ratio(separator_line_count, max(1, len(selected_ids)))),
+            "query_aware_soft_ordering_enabled": bool(query_aware_soft_ordering_enabled),
+            "reorder_activation_rate": 1.0 if bool(query_aware_soft_order_diag.get("applied", False)) else 0.0,
+            "avg_rank_shift": float(query_aware_soft_order_diag.get("avg_rank_shift", 0.0)),
+            "max_rank_shift": float(query_aware_soft_order_diag.get("max_rank_shift", 0.0)),
             "raw_focus_top_bundle_only_n": int(raw_focus_top_bundle_only_n),
             "raw_focus_top_bundle_only_applied": bool(top_bundle_only_diag.get("applied", False)),
             "raw_focus_scaffold_light_enabled": bool(raw_focus_scaffold_light_enabled),

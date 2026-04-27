@@ -826,6 +826,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reserve-top-corridor", type=str, default=None)
     parser.add_argument("--order-strategy", type=str, default=None)
     parser.add_argument("--prompt-variant", type=str, default=None, choices=["default", "evidence_first"])
+    parser.add_argument("--precomputed-retrieval-path", type=str, default=None)
+    parser.add_argument("--precomputed-retrieval-strict", type=str, default=None)
     parser.add_argument("--measure-gpu-peak", type=str, default=None)
     parser.add_argument("--measure-cpu-ram", type=str, default=None)
     parser.add_argument("--profile-stages", type=str, default=None)
@@ -873,6 +875,8 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
     run_qa_enabled = bool(getattr(cfg, "run_qa", True)) and (not bool(getattr(cfg, "retrieval_only", False)))
     qa_evaluator = QAEvaluator(mode=str(getattr(cfg, "evaluator_mode", "legacy")))
     retrieval_cache = {}
+    precomputed_retrieval_strict = bool(getattr(cfg, "precomputed_retrieval_strict", False))
+    missing_precomputed_sample_ids = []
     if precomputed_retrieval_path:
         retrieval_cache = _load_precomputed_retrieval(precomputed_retrieval_path)
 
@@ -927,9 +931,16 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
 
             cpu_peak = process_rss_mb() if cfg.measure_cpu_ram else 0.0
 
-            retrieval = retrieval_cache.get(sample.qid)
+            sample_id_key = str(sample.qid)
+            retrieval = retrieval_cache.get(sample_id_key)
             retrieval_source = "precomputed"
             if retrieval is None:
+                if precomputed_retrieval_path and precomputed_retrieval_strict:
+                    missing_precomputed_sample_ids.append(str(sample_id_key))
+                    raise KeyError(
+                        f"Missing precomputed retrieval for sample_id={sample_id_key} "
+                        f"(strict mode enabled, source={precomputed_retrieval_path})"
+                    )
                 retrieval = method_fn(sample, cfg)
                 retrieval_source = "on_the_fly"
             retrieval_source_counts[retrieval_source] = retrieval_source_counts.get(retrieval_source, 0) + 1
@@ -1243,7 +1254,9 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         "render_mode_requested": render_mode_requested or "(auto)",
         "render_mode_resolved": resolved_render_mode,
         "precomputed_retrieval_used": bool(precomputed_retrieval_path),
+        "precomputed_retrieval_strict": bool(precomputed_retrieval_strict),
         "retrieval_source_breakdown": retrieval_source_counts,
+        "missing_precomputed_sample_ids": list(missing_precomputed_sample_ids),
         "fallback_count": int(fallback_count),
         "fallback_rate": mean_or_zero(
             [1.0 if r.get("generation_fallback", False) else 0.0 for r in rows if r.get("qa_executed", False)]
@@ -1683,7 +1696,8 @@ def main() -> None:
     merged = apply_cli_overrides(base_config, args)
     cfg = dataclass_from_dict(RagConfig, merged)
 
-    _, summary = execute_rag_experiment(cfg)
+    precomputed_retrieval_path = str(getattr(cfg, "precomputed_retrieval_path", "") or "").strip() or None
+    _, summary = execute_rag_experiment(cfg, precomputed_retrieval_path=precomputed_retrieval_path)
 
     print("RAG run complete")
     print(f"Output dir: {summary.get('output_dir', '')}")

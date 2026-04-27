@@ -291,6 +291,8 @@ class RagConfig(RetrievalConfig):
     llm_max_new_tokens: int = 64
     # default | evidence_first
     prompt_variant: str = "default"
+    precomputed_retrieval_path: str = ""
+    precomputed_retrieval_strict: bool = False
     max_context_sentences: int = 14
     # flat | corridor | corridor_aware_flat | path_bundle
     render_mode: str = ""
