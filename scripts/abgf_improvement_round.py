@@ -3,7 +3,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import errno
 import json
+import os
+import pty
+import select
 import subprocess
 import sys
 import time
@@ -54,6 +58,66 @@ def _cmd(args: Sequence[str]) -> str:
         return subprocess.check_output(list(args), text=True).strip()
     except Exception:
         return ""
+
+
+def _run_with_live_tee(cmd: Sequence[str], log_bin_file: Any) -> int:
+    """Run command with live terminal output while also appending full bytes to log."""
+    master_fd, slave_fd = pty.openpty()
+    proc = subprocess.Popen(
+        list(cmd),
+        stdin=subprocess.DEVNULL,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        close_fds=True,
+        text=False,
+    )
+    os.close(slave_fd)
+    try:
+        while True:
+            ready, _, _ = select.select([master_fd], [], [], 0.2)
+            if master_fd in ready:
+                try:
+                    data = os.read(master_fd, 65536)
+                except OSError as exc:
+                    # PTY returns EIO on EOF for some platforms.
+                    if exc.errno == errno.EIO:
+                        data = b""
+                    else:
+                        raise
+                if data:
+                    log_bin_file.write(data)
+                    log_bin_file.flush()
+                    try:
+                        sys.stdout.buffer.write(data)
+                        sys.stdout.buffer.flush()
+                    except Exception:
+                        pass
+            if proc.poll() is not None:
+                # Drain remaining buffered bytes once process exits.
+                while True:
+                    try:
+                        data = os.read(master_fd, 65536)
+                    except OSError as exc:
+                        if exc.errno == errno.EIO:
+                            data = b""
+                        else:
+                            raise
+                    if not data:
+                        break
+                    log_bin_file.write(data)
+                    log_bin_file.flush()
+                    try:
+                        sys.stdout.buffer.write(data)
+                        sys.stdout.buffer.flush()
+                    except Exception:
+                        pass
+                break
+        return int(proc.wait())
+    finally:
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
 
 
 def _read_tsv(path: Path) -> List[Dict[str, str]]:
@@ -498,13 +562,16 @@ def main() -> None:
 
             start_ts = _utc_now()
             t0 = time.time()
-            with log_path.open("a", encoding="utf-8") as lf:
-                lf.write(f"[START] {start_ts}\n")
-                lf.write("[COMMAND] " + " ".join(cmd) + "\n")
-                lf.write(f"[CHAMPION_SUMMARY] {champion_summary_path}\n")
-                lf.write(f"[FLAGS] {flags}\n")
+            with log_path.open("ab") as lf:
+                header = (
+                    f"[START] {start_ts}\n"
+                    f"[COMMAND] {' '.join(cmd)}\n"
+                    f"[CHAMPION_SUMMARY] {champion_summary_path}\n"
+                    f"[FLAGS] {flags}\n"
+                )
+                lf.write(header.encode("utf-8", errors="replace"))
                 lf.flush()
-                rc = subprocess.run(cmd, stdout=lf, stderr=subprocess.STDOUT, check=False).returncode
+                rc = _run_with_live_tee(cmd, lf)
             elapsed = int(max(0, round(time.time() - t0)))
             end_ts = _utc_now()
 
