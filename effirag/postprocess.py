@@ -199,16 +199,16 @@ def apply_answer_realization_variant(
     answer_type = detect_answer_type(question)
     final = str(initial)
     cands = _extract_candidates(question=question, prediction=initial, sentences=sentences, answer_type=answer_type)
-
-    if variant == "answer_normalization_light":
+    vv = str(variant or "").strip().lower()
+    if vv in {"answer_normalization_light", "answer_surface_normalization"}:
         final = _normalize_to_evidence(initial, cands, answer_type)
-    elif variant == "answer_verification_light":
+    elif vv in {"answer_verification_light", "evidence_supported_verification"}:
         if not _prediction_supported(initial, sentences):
             replacement = _pick_best_candidate(cands, require_type_match=False)
             if replacement:
                 final = replacement
         final = _normalize_to_evidence(final, cands, answer_type)
-    elif variant == "answer_type_aware_extraction":
+    elif vv == "answer_type_aware_extraction":
         if answer_type != "yesno":
             replacement = _pick_best_candidate(cands, require_type_match=True) or _pick_best_candidate(cands)
             if replacement:

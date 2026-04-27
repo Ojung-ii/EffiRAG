@@ -1124,6 +1124,8 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     generation_diagnostics={
                         "evidence_supported_answer": bool(evidence_supported_answer),
                         "answer_type_match": bool(answer_type_match),
+                        "qa_utilization_applied": bool(qa_utilization_applied),
+                        "qa_utilization_variant": str(qa_utilization_variant),
                         "qa_utilization_changed": bool(qa_utilization_changed),
                     },
                     rendered_match=rendered_match,
@@ -1500,14 +1502,21 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
     if run_qa_enabled:
         summary["generation_latency_ms"] = mean_or_zero([r["efficiency"]["generation_latency_ms"] for r in rows])
         summary["generation_ms"] = mean_or_zero([r["efficiency"].get("generation_ms", 0.0) for r in rows])
+        gdiag_rows = [dict((r.get("generation_diagnostics", {}) or {})) for r in rows]
         summary["exact_match_surface_correction_rate"] = mean_or_zero(
-            [float((r.get("generation_diagnostics", {}) or {}).get("exact_match_surface_correction", 0.0)) for r in rows]
+            [float(g.get("exact_match_surface_correction", 0.0)) for g in gdiag_rows]
         )
         summary["evidence_supported_answer_rate"] = mean_or_zero(
-            [1.0 if bool((r.get("generation_diagnostics", {}) or {}).get("evidence_supported_answer", False)) else 0.0 for r in rows]
+            [1.0 if bool(g.get("evidence_supported_answer", False)) else 0.0 for g in gdiag_rows]
         )
         summary["answer_type_match_rate"] = mean_or_zero(
-            [1.0 if bool((r.get("generation_diagnostics", {}) or {}).get("answer_type_match", False)) else 0.0 for r in rows]
+            [1.0 if bool(g.get("answer_type_match", False)) else 0.0 for g in gdiag_rows]
+        )
+        summary["qa_utilization_activation_rate"] = mean_or_zero(
+            [1.0 if bool(g.get("qa_utilization_applied", False)) else 0.0 for g in gdiag_rows]
+        )
+        summary["qa_utilization_changed_rate"] = mean_or_zero(
+            [1.0 if bool(g.get("qa_utilization_changed", False)) else 0.0 for g in gdiag_rows]
         )
         variant_counts = {}
         for row in rows:
@@ -1516,6 +1525,56 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                 continue
             variant_counts[vname] = int(variant_counts.get(vname, 0) + 1)
         summary["qa_utilization_variant_counts"] = variant_counts
+
+        def _variant_name(gd):
+            return str((gd or {}).get("qa_utilization_variant", "") or "").strip().lower()
+
+        def _variant_stats(names):
+            keys = {str(x).strip().lower() for x in list(names or []) if str(x).strip()}
+            idx = [i for i, gd in enumerate(gdiag_rows) if _variant_name(gd) in keys]
+            act = [i for i in idx if bool(gdiag_rows[i].get("qa_utilization_applied", False))]
+            changed = [i for i in act if bool(gdiag_rows[i].get("qa_utilization_changed", False))]
+            helped = 0
+            hurt = 0
+            for i in act:
+                init_f1 = _safe_float(gdiag_rows[i].get("initial_f1", 0.0), 0.0)
+                final_f1 = _safe_float(((rows[i].get("metrics", {}) or {}).get("f1", 0.0)), 0.0)
+                if final_f1 > init_f1 + 1.0e-9:
+                    helped += 1
+                elif final_f1 + 1.0e-9 < init_f1:
+                    hurt += 1
+            return {
+                "activation_rate": float(len(act) / len(rows)) if rows else 0.0,
+                "changed_rate": float(len(changed) / len(rows)) if rows else 0.0,
+                "helped_count": int(helped),
+                "hurt_count": int(hurt),
+            }
+
+        norm_stats = _variant_stats(["answer_normalization_light", "answer_surface_normalization"])
+        ext_stats = _variant_stats(["answer_type_aware_extraction"])
+        ver_stats = _variant_stats(["answer_verification_light", "evidence_supported_verification"])
+        summary["normalization_activation_rate"] = float(norm_stats["activation_rate"])
+        summary["normalization_changed_rate"] = float(norm_stats["changed_rate"])
+        summary["normalization_helped_count"] = int(norm_stats["helped_count"])
+        summary["normalization_hurt_count"] = int(norm_stats["hurt_count"])
+        summary["extraction_activation_rate"] = float(ext_stats["activation_rate"])
+        summary["extraction_changed_rate"] = float(ext_stats["changed_rate"])
+        summary["extraction_helped_count"] = int(ext_stats["helped_count"])
+        summary["extraction_hurt_count"] = int(ext_stats["hurt_count"])
+        summary["verification_activation_rate"] = float(ver_stats["activation_rate"])
+        summary["verification_changed_rate"] = float(ver_stats["changed_rate"])
+        summary["verification_helped_count"] = int(ver_stats["helped_count"])
+        summary["verification_hurt_count"] = int(ver_stats["hurt_count"])
+
+        summary["highlight_activation_rate"] = mean_or_zero(
+            [
+                1.0
+                if bool(((r.get("rendered", {}) or {}).get("metadata", {}) or {}).get("answer_cue_highlight_applied", False))
+                else 0.0
+                for r in rows
+            ]
+        )
+
         finish_reason_counts = {}
         for row in rows:
             reason = str((row.get("generation_diagnostics", {}) or {}).get("finish_reason", "") or "")

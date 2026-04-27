@@ -2112,9 +2112,11 @@ def render_corridor_aware_flat_context(
     raw_focus_scaffold_ab1_enabled = bool("raw_focus_scaffold_ab1" in strategy_flags)
     raw_focus_scaffold_ab2_enabled = bool("raw_focus_scaffold_ab2" in strategy_flags)
     raw_focus_scaffold_ab3_enabled = bool("raw_focus_scaffold_ab3" in strategy_flags)
+    answer_cue_highlight_enabled = bool("answer_cue_highlight" in strategy_flags)
     gen_quote_then_answer_light_enabled = bool("gen_quote_then_answer_light" in strategy_flags)
     gen_grounded_answer_light_enabled = bool("gen_grounded_answer_light" in strategy_flags)
     gen_evidence_focus_light_enabled = bool("gen_evidence_focus_light" in strategy_flags)
+    gen_evidence_verify_light_enabled = bool("gen_evidence_verify_light" in strategy_flags)
     gen_light_ab_chain_enabled = bool("gen_light_ab_chain" in strategy_flags)
     gen_light_ab_wording_enabled = bool("gen_light_ab_wording" in strategy_flags)
     raw_focus_scaffold_light_enabled = bool(
@@ -2241,12 +2243,24 @@ def render_corridor_aware_flat_context(
 
     lines = []
     selected_sentences = []
+    answer_cue_highlight_count = 0
     for idx, sid in enumerate(selected_ids, start=1):
         sent = candidate_text_map.get(sid, "")
         if not sent:
             continue
+        display_sent = str(sent)
+        if answer_cue_highlight_enabled:
+            marker = ""
+            feat = dict(features.get(sid, {}) or {})
+            if sid in answer_bearing_sentence_scores:
+                marker = "[ANSWER-CUE] "
+            elif _is_support_like(feat):
+                marker = "[SUPPORT] "
+            if marker:
+                display_sent = f"{marker}{display_sent}"
+                answer_cue_highlight_count += 1
         selected_sentences.append(sent)
-        lines.append("[%d] (%s) %s" % (idx, sid, sent))
+        lines.append("[%d] (%s) %s" % (idx, sid, display_sent))
 
     rendered_corridor_ids = _ordered_unique(
         [cid for sid in selected_ids for cid in (features.get(sid, {}).get("corridor_ids", []) or [])]
@@ -2298,6 +2312,12 @@ def render_corridor_aware_flat_context(
             generation_intervention_text = (
                 "Prioritize the earliest answer-bearing evidence when deciding the answer; output only the final answer span."
             )
+    elif gen_evidence_verify_light_enabled:
+        generation_intervention_variant = "evidence_verify_light"
+        generation_intervention_text = (
+            "Briefly verify your answer is explicitly supported by context before finalizing. "
+            "If unsupported, choose the best supported answer span from context."
+        )
 
     if generation_intervention_text and gen_light_ab_chain_enabled:
         generation_intervention_text = (
@@ -2351,12 +2371,16 @@ def render_corridor_aware_flat_context(
             "raw_focus_answer_bearing_bundle_count": int(selected_answer_bearing_bundle_count),
             "raw_focus_first_answer_bearing_chunk_rank": int(first_answer_bearing_chunk_rank),
             "raw_focus_first_answer_bearing_bundle_rank": int(first_answer_bearing_bundle_rank),
+            "answer_cue_highlight_enabled": bool(answer_cue_highlight_enabled),
+            "answer_cue_highlight_applied": bool(answer_cue_highlight_count > 0),
+            "answer_cue_highlight_count": int(answer_cue_highlight_count),
             "generation_intervention_enabled": bool(generation_intervention_text),
             "generation_intervention_variant": str(generation_intervention_variant),
             "generation_intervention_text": str(generation_intervention_text),
             "generation_intervention_quote_then_answer": bool(gen_quote_then_answer_light_enabled),
             "generation_intervention_grounded_answer": bool(gen_grounded_answer_light_enabled),
             "generation_intervention_evidence_focus": bool(gen_evidence_focus_light_enabled),
+            "generation_intervention_evidence_verify": bool(gen_evidence_verify_light_enabled),
             "generation_intervention_focus_count": int(len(generation_focus_line_ranks)),
             "generation_intervention_focus_line_ranks": list(generation_focus_line_ranks),
             "generation_intervention_ab_chain": bool(gen_light_ab_chain_enabled),

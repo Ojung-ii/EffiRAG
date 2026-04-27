@@ -8,7 +8,7 @@ from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 from .eval.metrics_hipporag2_parity import normalize_answer_parity
 from .metrics import supporting_fact_match_details
-from .utils import markdown_table, mean_or_zero, safe_div
+from .utils import content_tokens, markdown_table, mean_or_zero, safe_div
 
 # Retrieval ranking metrics (research-standard IR metrics)
 RECALL_KS = (1, 5, 10, 20)
@@ -62,6 +62,83 @@ def _token_overlap_ratio(prediction: str, evidence_text: str) -> float:
     if not e:
         return 0.0
     return float(safe_div(len(p & e), len(p)))
+
+
+def _as_text_list(value: Any) -> List[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        text = str(value).strip()
+        return [text] if text else []
+    if isinstance(value, list):
+        out: List[str] = []
+        for item in value:
+            text = str(item or "").strip()
+            if text:
+                out.append(text)
+        return out
+    return []
+
+
+def _collect_answer_surface_aliases(sample: Any) -> List[str]:
+    out: List[str] = []
+    seen = set()
+
+    answer = str(getattr(sample, "answer", "") or "").strip()
+    if answer:
+        seen.add(answer.lower())
+        out.append(answer)
+
+    metadata = dict(getattr(sample, "metadata", {}) or {})
+    for key in ("possible_answers", "answers", "answer_aliases", "o_aliases", "aliases"):
+        for val in _as_text_list(metadata.get(key)):
+            low = val.lower()
+            if low in seen:
+                continue
+            seen.add(low)
+            out.append(val)
+    return out
+
+
+def _answer_surface_stats(rendered_text: str, aliases: Sequence[str]) -> Dict[str, Any]:
+    norm_text = _normalize_text(rendered_text)
+    tokens = [tok for tok in norm_text.split() if tok]
+    if not tokens:
+        return {
+            "present": False,
+            "token_count": 0,
+            "position": -1.0,
+        }
+
+    matched_positions = set()
+    for alias in list(aliases or []):
+        norm_alias = _normalize_text(alias)
+        if not norm_alias:
+            continue
+        alias_tokens = [tok for tok in norm_alias.split() if tok]
+        if not alias_tokens:
+            continue
+        n = len(alias_tokens)
+        if n > len(tokens):
+            continue
+        for idx in range(0, len(tokens) - n + 1):
+            if tokens[idx : idx + n] == alias_tokens:
+                for pos in range(idx, idx + n):
+                    matched_positions.add(int(pos))
+
+    if not matched_positions:
+        return {
+            "present": False,
+            "token_count": 0,
+            "position": -1.0,
+        }
+
+    first_pos = min(matched_positions)
+    return {
+        "present": True,
+        "token_count": int(len(matched_positions)),
+        "position": float(safe_div(first_pos, max(1, len(tokens)))),
+    }
 
 
 def _dcg_binary(relevance: Sequence[float], k: int) -> float:
@@ -275,6 +352,7 @@ def compute_query_eval_metrics(
     )
 
     diagnostics = dict(getattr(retrieval, "diagnostics", {}) or {})
+    gdiag = dict(generation_diagnostics or {})
     answer_bearing_texts = []
     for unit in list(retrieval_match.get("predicted_units", []) or []):
         if not list(unit.get("matched_gold_sentence_ids", []) or []):
@@ -285,6 +363,15 @@ def compute_query_eval_metrics(
     if not answer_bearing_texts:
         answer_bearing_texts = [str(s or "") for s in list(getattr(rendered, "sentences", []) or [])]
     overlap = _token_overlap_ratio(prediction, " ".join(answer_bearing_texts))
+    rendered_text = str(getattr(rendered, "text", "") or "")
+    if not rendered_text:
+        rendered_text = " ".join([str(s or "") for s in list(getattr(rendered, "sentences", []) or [])]).strip()
+    rendered_token_count = max(1, len(content_tokens(rendered_text)))
+    answer_aliases = _collect_answer_surface_aliases(sample)
+    surface = _answer_surface_stats(rendered_text, answer_aliases)
+    answer_surface_present = bool(surface.get("present", False))
+    answer_surface_token_count = int(surface.get("token_count", 0) or 0)
+    answer_surface_position = _safe_float(surface.get("position", -1.0), -1.0)
 
     answer_bearing_chunk_present = False
     if "answer_bearing_chunk_present" in diagnostics:
@@ -305,15 +392,41 @@ def compute_query_eval_metrics(
     if equivalent_cov is None:
         equivalent_cov = max(float(sf_recall), float(rendered_recall))
 
+    f1_low = bool(_safe_float(f1, 0.0) <= 0.01)
+    support_present = bool(matched_gold_total > 0)
+    qa_util_applied = bool(gdiag.get("qa_utilization_applied", False))
+    qa_util_variant = str(gdiag.get("qa_utilization_variant", "") or "").strip()
+    if (not qa_util_applied) and qa_util_variant:
+        qa_util_applied = True
+    qa_util_changed = bool(gdiag.get("qa_utilization_changed", False))
     if "answer_present_but_generation_fail" in diagnostics:
         abgf = _clip01(diagnostics.get("answer_present_but_generation_fail", 0.0))
     else:
-        abgf = 1.0 if (bool(answer_bearing_chunk_present) and bool(qa_executed) and _safe_float(f1, 0.0) <= 0.01) else 0.0
+        abgf = 1.0 if (bool(answer_bearing_chunk_present) and bool(qa_executed) and f1_low) else 0.0
+
+    abgf_support_present_generation_fail = 1.0 if (support_present and bool(qa_executed) and f1_low) else 0.0
+    abgf_answer_surface_present_generation_fail = 1.0 if (answer_surface_present and bool(qa_executed) and f1_low) else 0.0
+    support_present_answer_surface_absent = 1.0 if (support_present and (not answer_surface_present)) else 0.0
+    answer_surface_present_but_low_overlap = 1.0 if (answer_surface_present and float(overlap) < 0.35) else 0.0
 
     metrics["equivalent_evidence_coverage"] = _clip01(equivalent_cov)
     metrics["minimal_support_subset_coverage"] = _clip01(minimal_cov)
     metrics["answer_bearing_chunk_present"] = 1.0 if bool(answer_bearing_chunk_present) else 0.0
     metrics["answer_present_but_generation_fail"] = float(abgf)
+    metrics["abgf_support_present_generation_fail"] = float(abgf_support_present_generation_fail)
+    metrics["abgf_answer_surface_present_generation_fail"] = float(abgf_answer_surface_present_generation_fail)
+    metrics["support_present_answer_surface_absent"] = float(support_present_answer_surface_absent)
+    metrics["answer_surface_present_but_low_overlap"] = float(answer_surface_present_but_low_overlap)
+    metrics["answer_surface_present"] = 1.0 if answer_surface_present else 0.0
+    metrics["answer_surface_position"] = float(answer_surface_position if answer_surface_position >= 0.0 else -1.0)
+    metrics["answer_surface_position_avg"] = float(answer_surface_position if answer_surface_position >= 0.0 else 0.0)
+    metrics["answer_surface_token_density"] = float(
+        safe_div(float(answer_surface_token_count), float(rendered_token_count))
+    )
+    metrics["qa_utilization_activation"] = 1.0 if qa_util_applied else 0.0
+    metrics["qa_utilization_changed"] = 1.0 if qa_util_changed else 0.0
+    metrics["matched_gold_total"] = float(matched_gold_total)
+    metrics["support_present"] = 1.0 if support_present else 0.0
     metrics["output_overlap_answer_bearing"] = _clip01(overlap)
     metrics["faithfulness"] = _query_faithfulness_proxy(
         prediction=str(prediction or ""),
@@ -333,6 +446,12 @@ def aggregate_run_eval_metrics(rows: Sequence[Mapping[str, Any]]) -> Dict[str, f
 
     def _m(row: Mapping[str, Any], key: str, default: float = 0.0) -> float:
         return _safe_float(((row.get("metrics", {}) or {}).get(key, default)), default)
+
+    def _mean_nonneg(vals: Sequence[float]) -> float:
+        seq_vals = [float(v) for v in list(vals or []) if _safe_float(v, -1.0) >= 0.0]
+        if not seq_vals:
+            return 0.0
+        return float(sum(seq_vals) / len(seq_vals))
 
     out: Dict[str, float] = {
         "n_samples": float(len(seq)),
@@ -367,9 +486,23 @@ def aggregate_run_eval_metrics(rows: Sequence[Mapping[str, Any]]) -> Dict[str, f
         "minimal_support_subset_coverage": mean_or_zero([_m(r, "minimal_support_subset_coverage") for r in seq]),
         "answer_bearing_chunk_present": mean_or_zero([_m(r, "answer_bearing_chunk_present") for r in seq]),
         "answer_present_but_generation_fail": mean_or_zero([_m(r, "answer_present_but_generation_fail") for r in seq]),
+        "abgf_support_present_generation_fail": mean_or_zero([_m(r, "abgf_support_present_generation_fail") for r in seq]),
+        "abgf_answer_surface_present_generation_fail": mean_or_zero(
+            [_m(r, "abgf_answer_surface_present_generation_fail") for r in seq]
+        ),
+        "support_present_answer_surface_absent": mean_or_zero([_m(r, "support_present_answer_surface_absent") for r in seq]),
+        "answer_surface_present_but_low_overlap": mean_or_zero(
+            [_m(r, "answer_surface_present_but_low_overlap") for r in seq]
+        ),
+        "answer_surface_present": mean_or_zero([_m(r, "answer_surface_present") for r in seq]),
+        "answer_surface_position_avg": _mean_nonneg([_m(r, "answer_surface_position", -1.0) for r in seq]),
+        "answer_surface_token_density": mean_or_zero([_m(r, "answer_surface_token_density") for r in seq]),
+        "qa_utilization_activation_rate": mean_or_zero([_m(r, "qa_utilization_activation") for r in seq]),
+        "qa_utilization_changed_rate": mean_or_zero([_m(r, "qa_utilization_changed") for r in seq]),
         "output_overlap_answer_bearing": mean_or_zero([_m(r, "output_overlap_answer_bearing") for r in seq]),
         "em": mean_or_zero([_m(r, "em") for r in seq]),
         "f1": mean_or_zero([_m(r, "f1") for r in seq]),
+        "fallback_rate": mean_or_zero([1.0 if bool(r.get("generation_fallback", False)) else 0.0 for r in seq]),
         "retrieval_ms": mean_or_zero(
             [_safe_float((r.get("efficiency", {}) or {}).get("retrieval_latency_ms", 0.0), 0.0) for r in seq]
         ),
@@ -931,6 +1064,388 @@ def build_context_efficiency_metric_registry() -> MetricRegistry:
     return MetricRegistry(specs)
 
 
+def build_abgf_improvement_metric_registry() -> MetricRegistry:
+    specs = [
+        MetricSpec(
+            name="recall_at_1",
+            display_name="R@1",
+            group="Retrieval Ranking Metrics",
+            description="Strict supporting-fact Recall@1.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="retrieval",
+        ),
+        MetricSpec(
+            name="recall_at_5",
+            display_name="R@5",
+            group="Retrieval Ranking Metrics",
+            description="Strict supporting-fact Recall@5.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="retrieval",
+        ),
+        MetricSpec(
+            name="recall_at_10",
+            display_name="R@10",
+            group="Retrieval Ranking Metrics",
+            description="Strict supporting-fact Recall@10.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="retrieval",
+        ),
+        MetricSpec(
+            name="supporting_fact_precision",
+            display_name="sf_P",
+            group="Multi-hop Evidence Metrics",
+            description="Supporting-fact precision.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="retrieval",
+        ),
+        MetricSpec(
+            name="supporting_fact_recall",
+            display_name="sf_R",
+            group="Multi-hop Evidence Metrics",
+            description="Supporting-fact recall.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="retrieval",
+        ),
+        MetricSpec(
+            name="supporting_fact_f1",
+            display_name="sf_F1",
+            group="Multi-hop Evidence Metrics",
+            description="Supporting-fact F1.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="retrieval",
+        ),
+        MetricSpec(
+            name="avg_context_tokens",
+            display_name="AvgContextTok",
+            group="Context Compactness Guard Table",
+            description="Average rendered context tokens.",
+            higher_is_better=False,
+            fmt=".1f",
+            source_level="context",
+        ),
+        MetricSpec(
+            name="sf_token_density",
+            display_name="sf_token_density",
+            group="Context Compactness Guard Table",
+            description="Matched supporting-fact tokens / rendered context tokens.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="context",
+        ),
+        MetricSpec(
+            name="answer_token_density",
+            display_name="answer_token_density",
+            group="Context Compactness Guard Table",
+            description="Answer-surface cue tokens / rendered context tokens.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="context",
+        ),
+        MetricSpec(
+            name="F1_per_1k_context_tokens",
+            display_name="F1/1KTok",
+            group="Context Compactness Guard Table",
+            description="F1 normalized by average context tokens.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="efficiency",
+            is_proxy=True,
+        ),
+        MetricSpec(
+            name="answer_bearing_chunk_present",
+            display_name="answer_bearing_chunk_present",
+            group="ABGF Breakdown Table",
+            description="Rate of answer-bearing chunk present.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="diagnostic",
+        ),
+        MetricSpec(
+            name="output_overlap_answer_bearing",
+            display_name="output_overlap_answer_bearing",
+            group="ABGF Breakdown Table",
+            description="Prediction overlap with answer-bearing evidence.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="diagnostic",
+        ),
+        MetricSpec(
+            name="answer_present_but_generation_fail",
+            display_name="ABGF",
+            group="ABGF Breakdown Table",
+            description="Legacy ABGF metric.",
+            higher_is_better=False,
+            fmt=".4f",
+            source_level="diagnostic",
+        ),
+        MetricSpec(
+            name="abgf_support_present_generation_fail",
+            display_name="abgf_support_present_generation_fail",
+            group="ABGF Breakdown Table",
+            description="support present + qa executed + low F1.",
+            higher_is_better=False,
+            fmt=".4f",
+            source_level="diagnostic",
+        ),
+        MetricSpec(
+            name="abgf_answer_surface_present_generation_fail",
+            display_name="abgf_answer_surface_present_generation_fail",
+            group="ABGF Breakdown Table",
+            description="answer surface present + qa executed + low F1.",
+            higher_is_better=False,
+            fmt=".4f",
+            source_level="diagnostic",
+        ),
+        MetricSpec(
+            name="support_present_answer_surface_absent",
+            display_name="support_present_answer_surface_absent",
+            group="ABGF Breakdown Table",
+            description="support present but answer surface absent in rendered context.",
+            higher_is_better=False,
+            fmt=".4f",
+            source_level="diagnostic",
+        ),
+        MetricSpec(
+            name="answer_surface_present_but_low_overlap",
+            display_name="answer_surface_present_but_low_overlap",
+            group="ABGF Breakdown Table",
+            description="answer surface present with low output overlap.",
+            higher_is_better=False,
+            fmt=".4f",
+            source_level="diagnostic",
+        ),
+        MetricSpec(
+            name="qa_utilization_activation_rate",
+            display_name="qa_utilization_activation_rate",
+            group="QA Utilization Activation Table",
+            description="Share of queries where QA utilization/postprocess was applied.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="generation",
+        ),
+        MetricSpec(
+            name="qa_utilization_changed_rate",
+            display_name="qa_utilization_changed_rate",
+            group="QA Utilization Activation Table",
+            description="Share of queries where QA utilization changed prediction.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="generation",
+        ),
+        MetricSpec(
+            name="normalization_activation_rate",
+            display_name="normalization_activation_rate",
+            group="QA Utilization Activation Table",
+            description="Share with normalization variant activated.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="generation",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="normalization_changed_rate",
+            display_name="normalization_changed_rate",
+            group="QA Utilization Activation Table",
+            description="Share with normalization variant changing prediction.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="generation",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="normalization_helped_count",
+            display_name="normalization_helped_count",
+            group="QA Utilization Activation Table",
+            description="Count of normalization queries where final F1 improved vs initial.",
+            higher_is_better=True,
+            fmt=".0f",
+            source_level="generation",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="normalization_hurt_count",
+            display_name="normalization_hurt_count",
+            group="QA Utilization Activation Table",
+            description="Count of normalization queries where final F1 dropped vs initial.",
+            higher_is_better=False,
+            fmt=".0f",
+            source_level="generation",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="extraction_activation_rate",
+            display_name="extraction_activation_rate",
+            group="QA Utilization Activation Table",
+            description="Share with type-aware extraction activated.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="generation",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="extraction_changed_rate",
+            display_name="extraction_changed_rate",
+            group="QA Utilization Activation Table",
+            description="Share with type-aware extraction changing prediction.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="generation",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="extraction_helped_count",
+            display_name="extraction_helped_count",
+            group="QA Utilization Activation Table",
+            description="Count of type-aware extraction queries where final F1 improved.",
+            higher_is_better=True,
+            fmt=".0f",
+            source_level="generation",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="extraction_hurt_count",
+            display_name="extraction_hurt_count",
+            group="QA Utilization Activation Table",
+            description="Count of type-aware extraction queries where final F1 dropped.",
+            higher_is_better=False,
+            fmt=".0f",
+            source_level="generation",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="verification_activation_rate",
+            display_name="verification_activation_rate",
+            group="QA Utilization Activation Table",
+            description="Share with evidence-supported verification activated.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="generation",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="verification_changed_rate",
+            display_name="verification_changed_rate",
+            group="QA Utilization Activation Table",
+            description="Share with evidence-supported verification changing prediction.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="generation",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="verification_helped_count",
+            display_name="verification_helped_count",
+            group="QA Utilization Activation Table",
+            description="Count of verification queries where final F1 improved.",
+            higher_is_better=True,
+            fmt=".0f",
+            source_level="generation",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="verification_hurt_count",
+            display_name="verification_hurt_count",
+            group="QA Utilization Activation Table",
+            description="Count of verification queries where final F1 dropped.",
+            higher_is_better=False,
+            fmt=".0f",
+            source_level="generation",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="highlight_activation_rate",
+            display_name="highlight_activation_rate",
+            group="QA Utilization Activation Table",
+            description="Share of queries where answer-cue highlight marker was applied.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="context",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="em",
+            display_name="EM",
+            group="Main QA Table",
+            description="Exact match.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="generation",
+        ),
+        MetricSpec(
+            name="f1",
+            display_name="F1",
+            group="Main QA Table",
+            description="Token-level F1.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="generation",
+        ),
+        MetricSpec(
+            name="retrieval_ms",
+            display_name="retrieval_ms",
+            group="Latency Metrics",
+            description="Average retrieval latency (ms).",
+            higher_is_better=False,
+            fmt=".2f",
+            source_level="efficiency",
+        ),
+        MetricSpec(
+            name="generation_ms",
+            display_name="generation_ms",
+            group="Latency Metrics",
+            description="Average generation latency (ms).",
+            higher_is_better=False,
+            fmt=".2f",
+            source_level="efficiency",
+        ),
+        MetricSpec(
+            name="total_ms",
+            display_name="total_ms",
+            group="Latency Metrics",
+            description="Average end-to-end latency (ms).",
+            higher_is_better=False,
+            fmt=".2f",
+            source_level="efficiency",
+        ),
+        MetricSpec(
+            name="fallback_rate",
+            display_name="fallback_rate",
+            group="Latency Metrics",
+            description="Fallback generation rate.",
+            higher_is_better=False,
+            fmt=".4f",
+            source_level="diagnostic",
+        ),
+        MetricSpec(
+            name="answer_surface_position_avg",
+            display_name="answer_surface_position_avg",
+            group="Diagnostic Metrics",
+            description="Average normalized position of first answer surface cue in rendered context.",
+            higher_is_better=False,
+            fmt=".4f",
+            source_level="diagnostic",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="answer_surface_token_density",
+            display_name="answer_surface_token_density",
+            group="Diagnostic Metrics",
+            description="Token density of answer surface cues in rendered context.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="diagnostic",
+            is_diagnostic=True,
+        ),
+    ]
+    return MetricRegistry(specs)
+
+
 def aggregate_context_efficiency_metrics(
     query_metrics: Sequence[Mapping[str, Any]],
     base_metrics: Optional[Mapping[str, Any]] = None,
@@ -1054,6 +1569,8 @@ def aggregate_context_efficiency_metrics(
         )
     else:
         out["F1_per_1k_tokens_per_100ms"] = 0.0
+    out["sf_token_density"] = float(out.get("supporting_fact_token_density", 0.0))
+    out["answer_token_density"] = float(out.get("answer_bearing_token_density", 0.0))
     return out
 
 

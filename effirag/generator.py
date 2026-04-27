@@ -178,13 +178,19 @@ def _resolve_qa_utilization_variant(rendered: RenderedContext) -> str:
     explicit = str(meta.get("qa_utilization_variant", "") or "").strip().lower()
     if explicit in {
         "answer_normalization_light",
+        "answer_surface_normalization",
         "answer_verification_light",
+        "evidence_supported_verification",
         "answer_type_aware_extraction",
     }:
         return explicit
     flags = {str(x).strip().lower() for x in list(meta.get("strategy_flags", []) or []) if str(x).strip()}
+    if "qa_answer_surface_normalization" in flags:
+        return "answer_surface_normalization"
     if "qa_answer_normalization_light" in flags:
         return "answer_normalization_light"
+    if "qa_evidence_supported_verification" in flags:
+        return "evidence_supported_verification"
     if "qa_answer_verification_light" in flags:
         return "answer_verification_light"
     if "qa_answer_type_aware_extraction" in flags:
