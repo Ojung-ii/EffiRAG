@@ -2213,6 +2213,123 @@ def build_lightweight_context_cueing_metric_registry() -> MetricRegistry:
     return MetricRegistry(specs)
 
 
+def build_light_separator_lockin_metric_registry() -> MetricRegistry:
+    # Reuse lightweight cueing registry as a base and add lock-in specific fields.
+    registry = build_lightweight_context_cueing_metric_registry()
+    for spec in [
+        MetricSpec(
+            name="median_context_tokens",
+            display_name="median_context_tokens",
+            group="Context Compactness Guard Table",
+            description="Median rendered context token count.",
+            higher_is_better=False,
+            fmt=".1f",
+            source_level="context",
+        ),
+        MetricSpec(
+            name="p90_context_tokens",
+            display_name="p90_context_tokens",
+            group="Context Compactness Guard Table",
+            description="P90 rendered context token count.",
+            higher_is_better=False,
+            fmt=".1f",
+            source_level="context",
+        ),
+        MetricSpec(
+            name="context_token_reduction_percent",
+            display_name="context_token_reduction_percent",
+            group="Context Compactness Guard Table",
+            description="Percent reduction in avg context tokens vs champion_reconfirm.",
+            higher_is_better=True,
+            fmt=".2f",
+            source_level="efficiency",
+            is_proxy=True,
+        ),
+        MetricSpec(
+            name="retrieval_source_precomputed_rate",
+            display_name="retrieval_source_precomputed_rate",
+            group="Retrieval Invariance Table",
+            description="Share of samples served from precomputed retrieval records.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="diagnostic",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="retrieval_fixed_expected",
+            display_name="retrieval_fixed_expected",
+            group="Retrieval Invariance Table",
+            description="Whether retrieval-fixed artifacts were expected for this run.",
+            higher_is_better=True,
+            fmt=".0f",
+            source_level="diagnostic",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="qa_utilization_changed_rate",
+            display_name="qa_utilization_changed_rate",
+            group="Retrieval Invariance Table",
+            description="Prediction rewrite changed rate (must be 0 for this round).",
+            higher_is_better=False,
+            fmt=".4f",
+            source_level="diagnostic",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="no_prediction_rewrite_pass",
+            display_name="no_prediction_rewrite_pass",
+            group="Retrieval Invariance Table",
+            description="Pass/fail flag for no-prediction-rewrite integrity.",
+            higher_is_better=True,
+            fmt="",
+            source_level="diagnostic",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="delta_em",
+            display_name="ΔEM",
+            group="Delta Table",
+            description="EM delta vs champion_reconfirm.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="diagnostic",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="delta_f1",
+            display_name="ΔF1",
+            group="Delta Table",
+            description="F1 delta vs champion_reconfirm.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="diagnostic",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="delta_abgf",
+            display_name="ΔABGF",
+            group="Delta Table",
+            description="ABGF delta vs champion_reconfirm.",
+            higher_is_better=False,
+            fmt=".4f",
+            source_level="diagnostic",
+            is_diagnostic=True,
+        ),
+        MetricSpec(
+            name="delta_output_overlap",
+            display_name="Δoverlap",
+            group="Delta Table",
+            description="Output-overlap delta vs champion_reconfirm.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="diagnostic",
+            is_diagnostic=True,
+        ),
+    ]:
+        registry.register(spec)
+    return registry
+
+
 def aggregate_context_efficiency_metrics(
     query_metrics: Sequence[Mapping[str, Any]],
     base_metrics: Optional[Mapping[str, Any]] = None,
