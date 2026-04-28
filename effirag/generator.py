@@ -244,6 +244,41 @@ def _build_qa_prompt(sample: Sample, rendered: RenderedContext, cfg=None) -> str
             "Do not output reasoning, explanations, or <think> tags.",
             "If the question is yes/no, output exactly yes or no.",
         ]
+    elif prompt_variant in {"light_separator_bridge_instruction", "bridge_instruction"}:
+        parts = [
+            "You are a QA assistant.",
+            "Use only the provided context.",
+            "Use source titles and evidence lines to resolve entity links.",
+            "When the answer is stated in the context, copy the shortest exact answer span.",
+            "Return only the final answer span.",
+            "Do not output reasoning, explanations, or <think> tags.",
+            "If the question is yes/no, output exactly yes or no.",
+        ]
+    elif prompt_variant in {"light_separator_copy_span_instruction", "copy_span_instruction"}:
+        parts = [
+            "You are a QA assistant.",
+            "Use only the provided context.",
+            "When the answer is stated in the context, copy the shortest exact answer span.",
+            "Return only the final answer span.",
+            "Do not output reasoning, explanations, or <think> tags.",
+            "If the question is yes/no, output exactly yes or no.",
+        ]
+    elif prompt_variant in {"light_separator_final_answer_oneshot", "final_answer_oneshot"}:
+        parts = [
+            "You are a QA assistant.",
+            "Use only the provided context.",
+            "Return only the final answer span.",
+            "Do not output reasoning, explanations, or <think> tags.",
+            "If the question is yes/no, output exactly yes or no.",
+            "",
+            "Example:",
+            "Question: When was Neville A. Stanton's employer founded?",
+            "Context:",
+            "- Neville A. Stanton: Neville A. Stanton is a British Professor at the University of Southampton.",
+            "- University of Southampton: The University of Southampton was founded in 1862.",
+            "Final answer: 1862",
+            "",
+        ]
     else:
         parts = [
             "You are a QA assistant.",

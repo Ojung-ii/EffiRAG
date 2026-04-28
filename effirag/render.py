@@ -2214,6 +2214,7 @@ def render_corridor_aware_flat_context(
     role_tagged_compact_enabled = bool("role_tagged_compact" in strategy_flags)
     minimal_role_prefix_enabled = bool("minimal_role_prefix" in strategy_flags)
     inline_source_role_hint_enabled = bool("inline_source_role_hint" in strategy_flags)
+    title_grounded_format_enabled = bool("title_grounded_format" in strategy_flags)
     title_preserving_compact_render_enabled = bool("title_preserving_compact_render" in strategy_flags)
     light_separator_render_enabled = bool("light_separator_render" in strategy_flags)
     query_aware_soft_ordering_enabled = bool("query_aware_soft_ordering" in strategy_flags)
@@ -2544,6 +2545,16 @@ def render_corridor_aware_flat_context(
             role_prefix_total_count += 1
             if is_unknown:
                 role_prefix_unknown_count += 1
+    elif title_grounded_format_enabled:
+        cueing_variant_name = "light_separator_title_grounded_format"
+        for sid in selected_ids:
+            sent = candidate_text_map.get(sid, "")
+            if not sent:
+                continue
+            title = _unit_title(sid)
+            selected_sentences.append(sent)
+            lines.append(f"- [{title}] {_base_render_text(sid, sent)}")
+            separator_line_count += 1
     elif light_separator_render_enabled:
         cueing_variant_name = "light_separator_render"
         for sid in selected_ids:
@@ -2700,6 +2711,7 @@ def render_corridor_aware_flat_context(
             "role_prefix_activation_rate": float(_safe_ratio(role_prefix_applied_count, max(1, len(selected_ids)))),
             "role_prefix_unknown_rate": float(_safe_ratio(role_prefix_unknown_count, max(1, role_prefix_total_count))),
             "inline_source_role_hint_enabled": bool(inline_source_role_hint_enabled),
+            "title_grounded_format_enabled": bool(title_grounded_format_enabled),
             "source_role_hint_applied_count": int(source_role_hint_applied_count),
             "source_role_hint_total_count": int(source_role_hint_total_count),
             "source_role_hint_unknown_count": int(source_role_hint_unknown_count),
