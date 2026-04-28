@@ -281,6 +281,10 @@ def _assert_retrieval_locked(champion_cfg: Mapping[str, Any], variant_cfg: Mappi
         if key == "global_corpus_path":
             lhs = _normalize_global_corpus_path(lhs)
             rhs = _normalize_global_corpus_path(rhs)
+            # Some champion artifacts leave this empty and rely on runtime data-path/corpus-path.
+            # In that case, we cannot enforce a strict lock on this key.
+            if not _strip(lhs):
+                continue
         if lhs != rhs:
             raise RuntimeError(
                 f"retrieval lock violated for dataset={dataset} variant={variant} key={key}: "
