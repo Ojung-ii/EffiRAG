@@ -529,12 +529,11 @@ def _build_readme(
 - Markdown report: `validation/input_validation_report.md`
 
 ## Next Step
-1. Open `prompts/llm_judge_rubric.md`.
-2. Open `prompts/operational_instruction_for_chatgpt_or_codex.md`.
-3. For each chunk in `judge_chunks/`, apply the judge rubric.
-4. Save outputs as `judge_outputs/<chunk_name>_judged.jsonl`.
-5. Run `aggregation/validate_judge_outputs.py`.
-6. Run `aggregation/aggregate_judge_outputs_template.py`.
+1. Preferred flow: use `scripts/run_qwen32b_llm_judge_round.sh` (Qwen32B-AWQ via vLLM).
+2. Deprecated flow: Codex/ChatGPT direct judging from `operational_instruction_for_chatgpt_or_codex.md`.
+3. Save model outputs as `judge_outputs/<chunk_name>_judged.jsonl`.
+4. Run `aggregation/validate_judge_outputs.py`.
+5. Run `aggregation/aggregate_judge_outputs_template.py`.
 """
     (round_dir / "README.md").write_text(text, encoding="utf-8")
 
