@@ -4,9 +4,11 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import MISSING, fields
 from pathlib import Path
 from typing import Any, Dict, List
 
+from effirag.config import RagConfig
 from effirag.profiles import (
     COPY_SPAN_CANONICAL_VARIANT,
     COPY_SPAN_DATASET_LOCKS,
@@ -19,6 +21,12 @@ from effirag.utils import load_yaml
 
 
 DATASETS = ("hotpotqa", "2wikimultihopqa", "musique", "popqa")
+RAG_DEFAULTS = {}
+for f in fields(RagConfig):
+    if f.default is not MISSING:
+        RAG_DEFAULTS[f.name] = f.default
+    elif f.default_factory is not MISSING:  # pragma: no cover - not used currently
+        RAG_DEFAULTS[f.name] = f.default_factory()
 
 
 def _values_equal(expected: Any, actual: Any) -> bool:
@@ -57,7 +65,7 @@ def _audit_dataset(config_root: Path, dataset: str) -> Dict[str, Any]:
     mismatches: List[Dict[str, Any]] = []
     for key in checked_keys:
         expected_value = expected.get(key)
-        actual_value = payload.get(key, "__missing__")
+        actual_value = payload.get(key, RAG_DEFAULTS.get(key, "__missing__"))
         if not _values_equal(expected_value, actual_value):
             mismatches.append(
                 {
