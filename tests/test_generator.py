@@ -43,8 +43,9 @@ def test_generate_hf_falls_back_to_text_generation(monkeypatch):
     sample, rendered = _sample_and_rendered()
     result = generate_hf(sample, rendered, model_name="Qwen/Qwen3.5-2B")
 
-    assert calls[0] == "text2text-generation"
-    assert calls[-1] == "text-generation"
+    # Qwen-like causal LMs prefer text-generation first.
+    assert calls[0] == "text-generation"
+    assert "text-generation" in calls
     assert result.prediction == "Paris"
     assert result.raw_text == "Paris"
 
