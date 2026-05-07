@@ -1512,6 +1512,8 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         vals = [float((r["metrics"].get("recall_at_k", {}) or {}).get(key, 0.0)) for r in rows]
         agg = mean_or_zero(vals)
         recall_at_k_summary[key] = agg
+        summary[f"recall_at_{key}"] = agg
+        summary[f"R@{key}"] = agg
         summary[f"supporting_fact_recall_at_{key}"] = agg
     summary["supporting_fact_recall_at_k"] = recall_at_k_summary
     summary.update(aggregate_run_eval_metrics(rows))
@@ -1710,7 +1712,10 @@ def main() -> None:
                 "sf_recall",
                 "Recall@1",
                 "Recall@5",
+                "Recall@10",
                 "Recall@20",
+                "Recall@30",
+                "Recall@50",
                 "rendered_sf_recall",
                 "EM",
                 "F1",
@@ -1730,7 +1735,10 @@ def main() -> None:
                     "%.4f" % summary["supporting_fact_recall"],
                     "%.4f" % summary.get("supporting_fact_recall_at_1", 0.0),
                     "%.4f" % summary.get("supporting_fact_recall_at_5", 0.0),
+                    "%.4f" % summary.get("supporting_fact_recall_at_10", 0.0),
                     "%.4f" % summary.get("supporting_fact_recall_at_20", 0.0),
+                    "%.4f" % summary.get("supporting_fact_recall_at_30", 0.0),
+                    "%.4f" % summary.get("supporting_fact_recall_at_50", 0.0),
                     "%.4f" % summary.get("rendered_supporting_fact_recall", 0.0),
                     "%.4f" % summary["em"],
                     "%.4f" % summary["f1"],

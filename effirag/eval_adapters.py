@@ -263,11 +263,34 @@ def _resolve_qa_item(index: QASampleIndex, qid: str, question: str, sample_index
 
 def _summary_to_base_metrics(summary: Mapping[str, Any]) -> Dict[str, float]:
     s = dict(summary or {})
+    recall_at_k = dict(s.get("supporting_fact_recall_at_k", {}) or {})
+
+    def _recall_k(k: int) -> float:
+        key = str(int(k))
+        return _safe_float(
+            s.get(
+                f"recall_at_{key}",
+                s.get(
+                    f"R@{key}",
+                    s.get(
+                        f"Recall@{key}",
+                        s.get(
+                            f"supporting_fact_recall_at_{key}",
+                            recall_at_k.get(key, recall_at_k.get(int(k), 0.0)),
+                        ),
+                    ),
+                ),
+            ),
+            0.0,
+        )
+
     out: Dict[str, float] = {
-        "recall_at_1": _safe_float(s.get("recall_at_1", s.get("R@1", s.get("Recall@1", 0.0))), 0.0),
-        "recall_at_5": _safe_float(s.get("recall_at_5", s.get("R@5", s.get("Recall@5", 0.0))), 0.0),
-        "recall_at_10": _safe_float(s.get("recall_at_10", s.get("R@10", s.get("Recall@10", 0.0))), 0.0),
-        "recall_at_20": _safe_float(s.get("recall_at_20", s.get("R@20", s.get("Recall@20", 0.0))), 0.0),
+        "recall_at_1": _recall_k(1),
+        "recall_at_5": _recall_k(5),
+        "recall_at_10": _recall_k(10),
+        "recall_at_20": _recall_k(20),
+        "recall_at_30": _recall_k(30),
+        "recall_at_50": _recall_k(50),
         "hit_at_5": _safe_float(s.get("hit_at_5", s.get("Hit@5", 0.0)), 0.0),
         "hit_at_10": _safe_float(s.get("hit_at_10", s.get("Hit@10", 0.0)), 0.0),
         "mrr_at_10": _safe_float(s.get("mrr_at_10", s.get("MRR@10", 0.0)), 0.0),

@@ -3,7 +3,9 @@ set -euo pipefail
 
 # Usage:
 #   bash stop_vllm.sh --port 8011
+#   bash stop_vllm.sh --port 8012
 #   PORT=8011 bash stop_vllm.sh
+#   PORT=8012 bash stop_vllm.sh
 # Optional:
 #   bash stop_vllm.sh --port 8011 --timeout 12
 
@@ -90,6 +92,19 @@ collect_descendants() {
   done
 }
 
+has_tracked_ancestor() {
+  local pid="${1:-}"
+  local hops=0
+  while [[ -n "${pid}" && "${pid}" =~ ^[0-9]+$ && "${pid}" != "1" && ${hops} -lt 40 ]]; do
+    if [[ -n "${PID_SET[${pid}]:-}" ]]; then
+      return 0
+    fi
+    pid="$(ps -p "${pid}" -o ppid= 2>/dev/null | awk '{print $1}' || true)"
+    hops=$((hops + 1))
+  done
+  return 1
+}
+
 listener_pids=()
 if command -v lsof >/dev/null 2>&1; then
   mapfile -t listener_pids < <(lsof -t -iTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null || true)
@@ -113,6 +128,18 @@ done
 initial_targets=("${!PID_SET[@]}")
 for pid in "${initial_targets[@]:-}"; do
   collect_descendants "${pid}"
+done
+
+# Safety: include ray/stale python processes only when they descend from tracked vLLM targets.
+ray_candidate_pids=()
+mapfile -t ray_candidate_pids < <(
+  pgrep -f "ray::|raylet|gcs_server|python.*ray" 2>/dev/null || true
+)
+for pid in "${ray_candidate_pids[@]:-}"; do
+  if has_tracked_ancestor "${pid}"; then
+    add_pid "${pid}"
+    collect_descendants "${pid}"
+  fi
 done
 
 targets=()

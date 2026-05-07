@@ -385,6 +385,8 @@ def aggregate_retrieval_metrics(rows, recall_ks=DEFAULT_RECALL_KS):
             vals.append(float(per_row.get(key, 0.0)))
         agg = mean_or_zero(vals)
         recall_at_k_summary[key] = agg
+        summary[f"recall_at_{key}"] = agg
+        summary[f"R@{key}"] = agg
         summary[f"supporting_fact_recall_at_{key}"] = agg
 
     summary["supporting_fact_recall_at_k"] = recall_at_k_summary

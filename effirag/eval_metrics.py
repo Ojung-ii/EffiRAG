@@ -11,7 +11,7 @@ from .metrics import supporting_fact_match_details
 from .utils import content_tokens, markdown_table, mean_or_zero, safe_div
 
 # Retrieval ranking metrics (research-standard IR metrics)
-RECALL_KS = (1, 5, 10, 20)
+RECALL_KS = (1, 5, 10, 20, 30, 50)
 HIT_KS = (1, 5, 10, 20)
 MRR_KS = (10, 20)
 NDCG_KS = (5, 10, 20)
@@ -459,6 +459,8 @@ def aggregate_run_eval_metrics(rows: Sequence[Mapping[str, Any]]) -> Dict[str, f
         "recall_at_5": mean_or_zero([_m(r, "recall_at_5") for r in seq]),
         "recall_at_10": mean_or_zero([_m(r, "recall_at_10") for r in seq]),
         "recall_at_20": mean_or_zero([_m(r, "recall_at_20") for r in seq]),
+        "recall_at_30": mean_or_zero([_m(r, "recall_at_30") for r in seq]),
+        "recall_at_50": mean_or_zero([_m(r, "recall_at_50") for r in seq]),
         "hit_at_1": mean_or_zero([_m(r, "hit_at_1") for r in seq]),
         "hit_at_5": mean_or_zero([_m(r, "hit_at_5") for r in seq]),
         "hit_at_10": mean_or_zero([_m(r, "hit_at_10") for r in seq]),
@@ -684,6 +686,24 @@ def build_context_efficiency_metric_registry() -> MetricRegistry:
             display_name="R@20",
             group="Retrieval Ranking Metrics",
             description="Strict supporting-fact Recall@20.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="retrieval",
+        ),
+        MetricSpec(
+            name="recall_at_30",
+            display_name="R@30",
+            group="Retrieval Ranking Metrics",
+            description="Strict supporting-fact Recall@30.",
+            higher_is_better=True,
+            fmt=".4f",
+            source_level="retrieval",
+        ),
+        MetricSpec(
+            name="recall_at_50",
+            display_name="R@50",
+            group="Retrieval Ranking Metrics",
+            description="Strict supporting-fact Recall@50.",
             higher_is_better=True,
             fmt=".4f",
             source_level="retrieval",
@@ -2582,6 +2602,8 @@ def aggregate_context_efficiency_metrics(
     )
     out["recall_at_10"] = _lookup_metric(base, ("recall_at_10", "R@10", "supporting_fact_recall_at_10"), default=0.0)
     out["recall_at_20"] = _lookup_metric(base, ("recall_at_20", "R@20", "supporting_fact_recall_at_20"), default=0.0)
+    out["recall_at_30"] = _lookup_metric(base, ("recall_at_30", "R@30", "supporting_fact_recall_at_30"), default=0.0)
+    out["recall_at_50"] = _lookup_metric(base, ("recall_at_50", "R@50", "supporting_fact_recall_at_50"), default=0.0)
     out["hit_at_5"] = _lookup_metric(base, ("hit_at_5", "Hit@5"), default=0.0)
     out["hit_at_10"] = _lookup_metric(base, ("hit_at_10", "Hit@10"), default=0.0)
     out["mrr_at_10"] = _lookup_metric(base, ("mrr_at_10", "MRR@10"), default=0.0)
