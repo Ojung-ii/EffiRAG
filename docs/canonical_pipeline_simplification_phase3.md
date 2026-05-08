@@ -46,3 +46,8 @@ Phase-3에서는 아래 구조를 도입했습니다.
 - `canonical_copy_span`는 Phase-3 main candidate로 추가되었습니다.
 - minimal ablation modes는 실험 훅으로만 추가되었고, 기본 mainline으로 merge하지 않았습니다.
 - 실제 pruning 결정은 Stage-B/Stage-C 결과(성능/latency/parity) 확인 후 진행합니다.
+
+## Phase-3.5 Note
+- Phase-3.5에서는 Stage-C(HotpotQA/2Wiki) 무변화 결과를 근거로 canonical mainline에서 no-op optional scoring 가지를 제거합니다.
+- 핵심 안전장치(dataset guard, bridge induction, redundancy, copy-span interface)는 유지합니다.
+- MuSiQue/PopQA 일반화 이슈는 별도 `Phase-4`로 분리합니다.

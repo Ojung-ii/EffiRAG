@@ -8,6 +8,10 @@ from effirag.canonical_objective import (
     CANONICAL_OBJECTIVE_MODES,
     apply_canonical_copy_span_objective,
 )
+from effirag.canonical_scoring import (
+    CANONICAL_CORE_WEIGHT_FIELDS,
+    CANONICAL_PRUNED_WEIGHT_FIELDS,
+)
 from effirag.config import RagConfig, dataclass_from_dict
 from effirag.grouped_profiles import (
     INSTRUCTION_GROUPED_PROFILE_NAMES,
@@ -224,6 +228,22 @@ def trace_active_pipeline(cfg, *, dataset: str | None = None, profile: str | Non
     active_flags, inactive_flags = _overlay_effective_objective_flags(active_flags, inactive_flags, objective_flags)
     active_weights, inactive_weights, absent_weights = _split_weights(cfg_obj, TRACE_WEIGHT_FIELDS)
 
+    canonical_mode = requested_mode in set(CANONICAL_OBJECTIVE_MODES)
+    canonical_core_active_weights: Dict[str, float] = {}
+    canonical_legacy_or_pruned_nonzero_weights: Dict[str, float] = {}
+    canonical_pruned_zero_weights: Dict[str, float] = {}
+    if canonical_mode:
+        for key in CANONICAL_PRUNED_WEIGHT_FIELDS:
+            if key in active_weights:
+                canonical_legacy_or_pruned_nonzero_weights[key] = float(active_weights.pop(key))
+            elif key in inactive_weights:
+                canonical_pruned_zero_weights[key] = float(inactive_weights.get(key, 0.0))
+        canonical_core_active_weights = {
+            key: float(val)
+            for key, val in active_weights.items()
+            if key in set(CANONICAL_CORE_WEIGHT_FIELDS)
+        }
+
     core_modules = {
         "query_conditioned_proposal": {
             "bridge_candidate_induction_enabled": bool(_get_attr(cfg_obj, "bridge_candidate_induction_enabled")),
@@ -264,6 +284,11 @@ def trace_active_pipeline(cfg, *, dataset: str | None = None, profile: str | Non
             ),
         },
     }
+    if canonical_mode:
+        legacy_like_modules["canonical_pruned_weight_terms"] = {
+            "nonzero_pruned_or_legacy_weights": dict(canonical_legacy_or_pruned_nonzero_weights),
+            "zero_pruned_weights": dict(canonical_pruned_zero_weights),
+        }
 
     notes = []
     if absent_flags:
@@ -276,6 +301,11 @@ def trace_active_pipeline(cfg, *, dataset: str | None = None, profile: str | Non
         )
     if ds in COPY_SPAN_DATASET_LOCKS:
         notes.append(f"dataset_lock={COPY_SPAN_DATASET_LOCKS[ds]}")
+    if canonical_mode and canonical_legacy_or_pruned_nonzero_weights:
+        notes.append(
+            "canonical_mode_pruned_weights_present_nonzero="
+            + str(sorted(canonical_legacy_or_pruned_nonzero_weights.keys()))
+        )
 
     return {
         "dataset": ds,
@@ -286,6 +316,9 @@ def trace_active_pipeline(cfg, *, dataset: str | None = None, profile: str | Non
         "inactive_flags": inactive_flags,
         "active_nonzero_weights": active_weights,
         "inactive_zero_weights": inactive_weights,
+        "canonical_mode": bool(canonical_mode),
+        "canonical_active_core_weights": canonical_core_active_weights,
+        "canonical_legacy_or_pruned_nonzero_weights": canonical_legacy_or_pruned_nonzero_weights,
         "core_modules": core_modules,
         "legacy_like_modules": legacy_like_modules,
         "objective_profile_diag": objective_profile_diag,

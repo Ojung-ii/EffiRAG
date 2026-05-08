@@ -19,6 +19,12 @@ from .canonical_objective import (
     canonical_effective_reference_mode,
     is_canonical_copy_span_mode,
 )
+from .canonical_scoring import (
+    canonical_run_score,
+    canonical_run_surrogate_loss,
+    canonical_run_weight_bundle,
+    canonical_seed_score_map,
+)
 from .config import RetrievalConfig
 from .embedding import cosine_similarity, encode_texts, rerank_sentences_by_embedding, topk_cosine_similarity
 from .global_index import load_or_build_global_index, load_semantic_index
@@ -2419,6 +2425,16 @@ def _seed_hybrid_scores(
         node: max(0.0, min(1.0, float((chunk_grounding_bonus_map or {}).get(node, 0.0)))) for node in candidates
     }
     grounding_norm = _normalize_map(grounding_raw)
+
+    if is_canonical_copy_span_mode(str(getattr(cfg, "retrieval_objective_mode", "") or "").strip().lower()):
+        score = canonical_seed_score_map(
+            candidates=candidates,
+            graph_norm=graph_norm,
+            semantic_norm=semantic_norm,
+            anchor_norm=anchor_norm,
+            cfg=cfg,
+        )
+        return score, graph_norm, semantic_norm, anchor_norm, bridge_norm, grounding_norm
 
     w_sem = max(0.0, float(getattr(cfg, "seed_score_semantic_weight", 0.30)))
     w_graph = max(0.0, float(getattr(cfg, "seed_score_graph_weight", 0.50)))
@@ -6097,39 +6113,54 @@ def run_graphrag_core(
         if not surrogate_focus_nodes:
             surrogate_focus_nodes = list(surrogate_universe)
 
-        w_sem = max(0.0, float(getattr(cfg, "run_score_semantic_weight", 0.30)))
-        w_anchor = max(0.0, float(getattr(cfg, "run_score_anchor_weight", 0.20)))
-        w_struct = max(0.0, float(getattr(cfg, "run_score_structure_weight", 0.25)))
-        w_bridge = max(0.0, float(getattr(cfg, "run_score_bridge_weight", 0.15)))
-        w_redundancy = max(0.0, float(getattr(cfg, "run_score_redundancy_weight", 0.10)))
-        w_pair_cov = max(0.0, float(getattr(cfg, "run_score_pair_coverage_weight", 0.0)))
-        w_bridge_complete = max(0.0, float(getattr(cfg, "run_score_bridge_completeness_weight", 0.0)))
-        w_grounding = max(0.0, float(getattr(cfg, "run_score_entity_chunk_grounding_weight", 0.0)))
-        w_anchor_disp = max(0.0, float(getattr(cfg, "run_score_anchor_dispersion_penalty", 0.0)))
-        total = (
-            w_sem
-            + w_anchor
-            + w_struct
-            + w_bridge
-            + w_redundancy
-            + w_pair_cov
-            + w_bridge_complete
-            + w_grounding
-            + w_anchor_disp
+        canonical_mode = is_canonical_copy_span_mode(
+            str(getattr(cfg, "retrieval_objective_mode", "") or "").strip().lower()
         )
-        if total <= 0.0:
-            w_sem, w_anchor, w_struct, w_bridge, w_redundancy = 0.30, 0.20, 0.25, 0.15, 0.10
-            w_pair_cov, w_bridge_complete, w_grounding, w_anchor_disp = 0.0, 0.0, 0.0, 0.0
-            total = 1.0
-        w_sem /= total
-        w_anchor /= total
-        w_struct /= total
-        w_bridge /= total
-        w_redundancy /= total
-        w_pair_cov /= total
-        w_bridge_complete /= total
-        w_grounding /= total
-        w_anchor_disp /= total
+        if canonical_mode:
+            run_weights = canonical_run_weight_bundle(cfg)
+            w_sem = float(run_weights["semantic"])
+            w_anchor = float(run_weights["anchor"])
+            w_struct = float(run_weights["structure"])
+            w_bridge = float(run_weights["bridge"])
+            w_redundancy = float(run_weights["redundancy"])
+            w_pair_cov = 0.0
+            w_bridge_complete = 0.0
+            w_grounding = 0.0
+            w_anchor_disp = 0.0
+        else:
+            w_sem = max(0.0, float(getattr(cfg, "run_score_semantic_weight", 0.30)))
+            w_anchor = max(0.0, float(getattr(cfg, "run_score_anchor_weight", 0.20)))
+            w_struct = max(0.0, float(getattr(cfg, "run_score_structure_weight", 0.25)))
+            w_bridge = max(0.0, float(getattr(cfg, "run_score_bridge_weight", 0.15)))
+            w_redundancy = max(0.0, float(getattr(cfg, "run_score_redundancy_weight", 0.10)))
+            w_pair_cov = max(0.0, float(getattr(cfg, "run_score_pair_coverage_weight", 0.0)))
+            w_bridge_complete = max(0.0, float(getattr(cfg, "run_score_bridge_completeness_weight", 0.0)))
+            w_grounding = max(0.0, float(getattr(cfg, "run_score_entity_chunk_grounding_weight", 0.0)))
+            w_anchor_disp = max(0.0, float(getattr(cfg, "run_score_anchor_dispersion_penalty", 0.0)))
+            total = (
+                w_sem
+                + w_anchor
+                + w_struct
+                + w_bridge
+                + w_redundancy
+                + w_pair_cov
+                + w_bridge_complete
+                + w_grounding
+                + w_anchor_disp
+            )
+            if total <= 0.0:
+                w_sem, w_anchor, w_struct, w_bridge, w_redundancy = 0.30, 0.20, 0.25, 0.15, 0.10
+                w_pair_cov, w_bridge_complete, w_grounding, w_anchor_disp = 0.0, 0.0, 0.0, 0.0
+                total = 1.0
+            w_sem /= total
+            w_anchor /= total
+            w_struct /= total
+            w_bridge /= total
+            w_redundancy /= total
+            w_pair_cov /= total
+            w_bridge_complete /= total
+            w_grounding /= total
+            w_anchor_disp /= total
 
         best = None
         best_score = float("-inf")
@@ -6174,66 +6205,90 @@ def run_graphrag_core(
                 )
             redundancy = float(redundancy_cache[seeds_key])
 
-            if seeds_key not in pair_cov_cache:
-                pair_cov_cache[seeds_key] = _run_pair_coverage_score(
-                    anchors=anchors,
-                    seeds=run.get("seeds", set()),
-                    anchor_distance_maps=anchor_distance_maps,
-                    tau=int(getattr(cfg, "tau", 4)),
-                )
-            pair_coverage = float(pair_cov_cache[seeds_key])
+            pair_coverage = 0.0
+            bridge_completeness = 0.0
+            grounding_score = 0.0
+            anchor_dispersion = 0.0
+            if not canonical_mode:
+                if seeds_key not in pair_cov_cache:
+                    pair_cov_cache[seeds_key] = _run_pair_coverage_score(
+                        anchors=anchors,
+                        seeds=run.get("seeds", set()),
+                        anchor_distance_maps=anchor_distance_maps,
+                        tau=int(getattr(cfg, "tau", 4)),
+                    )
+                pair_coverage = float(pair_cov_cache[seeds_key])
 
-            bridge_complete_key = tuple(run_nodes)
-            if bridge_complete_key not in bridge_complete_cache:
-                bridge_complete_cache[bridge_complete_key] = _run_bridge_path_completeness(
-                    anchors=anchors,
-                    run_nodes=run_nodes,
-                    anchor_distance_maps=anchor_distance_maps,
-                    tau=int(getattr(cfg, "tau", 4)),
-                )
-            bridge_completeness = float(bridge_complete_cache[bridge_complete_key])
+                bridge_complete_key = tuple(run_nodes)
+                if bridge_complete_key not in bridge_complete_cache:
+                    bridge_complete_cache[bridge_complete_key] = _run_bridge_path_completeness(
+                        anchors=anchors,
+                        run_nodes=run_nodes,
+                        anchor_distance_maps=anchor_distance_maps,
+                        tau=int(getattr(cfg, "tau", 4)),
+                    )
+                bridge_completeness = float(bridge_complete_cache[bridge_complete_key])
 
-            grounding_key = (seeds_key, bridge_complete_key)
-            if grounding_key not in grounding_cache:
-                grounding_cache[grounding_key] = _run_entity_chunk_grounding_score(
-                    seeds=run.get("seeds", set()),
-                    run_nodes=run_nodes,
-                    semantic_state=semantic_state,
-                )
-            grounding_score = float(grounding_cache[grounding_key])
+                grounding_key = (seeds_key, bridge_complete_key)
+                if grounding_key not in grounding_cache:
+                    grounding_cache[grounding_key] = _run_entity_chunk_grounding_score(
+                        seeds=run.get("seeds", set()),
+                        run_nodes=run_nodes,
+                        semantic_state=semantic_state,
+                    )
+                grounding_score = float(grounding_cache[grounding_key])
 
-            if seeds_key not in anchor_disp_cache:
-                anchor_disp_cache[seeds_key] = _run_anchor_dispersion_penalty(
-                    anchors=anchors,
-                    seeds=run.get("seeds", set()),
-                    anchor_distance_maps=anchor_distance_maps,
-                    tau=int(getattr(cfg, "tau", 4)),
-                )
-            anchor_dispersion = float(anchor_disp_cache[seeds_key])
+                if seeds_key not in anchor_disp_cache:
+                    anchor_disp_cache[seeds_key] = _run_anchor_dispersion_penalty(
+                        anchors=anchors,
+                        seeds=run.get("seeds", set()),
+                        anchor_distance_maps=anchor_distance_maps,
+                        tau=int(getattr(cfg, "tau", 4)),
+                    )
+                anchor_dispersion = float(anchor_disp_cache[seeds_key])
 
-            run_score = (
-                w_sem * semantic_cov
-                + w_anchor * anchor_align
-                + w_struct * structural_conn
-                + w_bridge * bridge
-                + w_pair_cov * pair_coverage
-                + w_bridge_complete * bridge_completeness
-                + w_grounding * grounding_score
-                - w_anchor_disp * anchor_dispersion
-                - w_redundancy * redundancy
-            )
-            surrogate_loss = (
-                w_sem * (1.0 - semantic_cov)
-                + w_anchor * (1.0 - anchor_align)
-                + w_struct * (1.0 - structural_conn)
-                + w_bridge * (1.0 - bridge)
-                + w_pair_cov * (1.0 - pair_coverage)
-                + w_bridge_complete * (1.0 - bridge_completeness)
-                + w_grounding * (1.0 - grounding_score)
-                + w_anchor_disp * anchor_dispersion
-                + w_redundancy * redundancy
-                + 0.25 * dispersion_penalty
-            )
+            if canonical_mode:
+                run_score = canonical_run_score(
+                    semantic=semantic_cov,
+                    anchor=anchor_align,
+                    structure=structural_conn,
+                    bridge=bridge,
+                    redundancy=redundancy,
+                    cfg=cfg,
+                )
+                surrogate_loss = canonical_run_surrogate_loss(
+                    semantic=semantic_cov,
+                    anchor=anchor_align,
+                    structure=structural_conn,
+                    bridge=bridge,
+                    redundancy=redundancy,
+                    cfg=cfg,
+                    dispersion_penalty=dispersion_penalty,
+                )
+            else:
+                run_score = (
+                    w_sem * semantic_cov
+                    + w_anchor * anchor_align
+                    + w_struct * structural_conn
+                    + w_bridge * bridge
+                    + w_pair_cov * pair_coverage
+                    + w_bridge_complete * bridge_completeness
+                    + w_grounding * grounding_score
+                    - w_anchor_disp * anchor_dispersion
+                    - w_redundancy * redundancy
+                )
+                surrogate_loss = (
+                    w_sem * (1.0 - semantic_cov)
+                    + w_anchor * (1.0 - anchor_align)
+                    + w_struct * (1.0 - structural_conn)
+                    + w_bridge * (1.0 - bridge)
+                    + w_pair_cov * (1.0 - pair_coverage)
+                    + w_bridge_complete * (1.0 - bridge_completeness)
+                    + w_grounding * (1.0 - grounding_score)
+                    + w_anchor_disp * anchor_dispersion
+                    + w_redundancy * redundancy
+                    + 0.25 * dispersion_penalty
+                )
             run["run_score_components"] = {
                 "semantic_coverage": float(semantic_cov),
                 "anchor_alignment": float(anchor_align),
@@ -6248,6 +6303,7 @@ def run_graphrag_core(
                 "cheap_pre_score": float(run.get("cheap_pre_score", 0.0)),
                 "cheap_pre_components": dict(run.get("cheap_pre_components", {}) or {}),
                 "full_eval_selected": True,
+                "canonical_core_scoring": bool(canonical_mode),
             }
             run["hybrid_run_score"] = float(run_score)
             run["surrogate_loss"] = float(surrogate_loss)

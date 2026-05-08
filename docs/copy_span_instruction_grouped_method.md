@@ -37,3 +37,7 @@
 ## Phase-3 Link
 - `copy_span_instruction_grouped_v1`는 Phase-2의 behavior-preserving grouped profile입니다.
 - Phase-3에서는 `canonical_copy_span` objective path를 도입해, 계수 그룹화가 아니라 **실제 구현 경로 단순화**를 목표로 합니다.
+
+## Phase-3.5 Link
+- Phase-3.5는 grouped/canonical 인터페이스 위에서, canonical mainline 내부의 no-op optional scoring 분기를 실제 코드 경로에서 정리하는 단계입니다.
+- HotpotQA/2Wiki 기준 pruning parity를 우선 검증하고, MuSiQue/PopQA 일반화는 Phase-4로 분리합니다.

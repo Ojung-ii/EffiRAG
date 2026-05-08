@@ -1,4 +1,6 @@
 from .types import RenderedContext
+from .canonical_objective import is_canonical_copy_span_mode
+from .canonical_scoring import canonical_sentence_score
 from .metrics import supporting_fact_match_details
 from .utils import content_tokens
 
@@ -858,13 +860,19 @@ def _corridor_aware_linear_score(
     eta_connector,
     zeta_query,
     xi_locality,
+    canonical_core_only=False,
 ):
-    return (
+    score = (
         alpha * float(feat.get("base_retrieval_score", 0.0))
         + beta * float(feat.get("best_corridor_score", 0.0))
         + gamma_main * (1.0 if feat.get("is_main_candidate") else 0.0)
         + delta_support * (1.0 if feat.get("is_support_candidate") else 0.0)
         + eta_connector * (1.0 if feat.get("is_connector_adjacent") else 0.0)
+    )
+    if canonical_core_only:
+        return float(score)
+    return float(
+        score
         + zeta_query * float(feat.get("query_overlap_score", 0.0))
         + xi_locality * float(feat.get("locality_score", 0.0))
     )
@@ -2052,6 +2060,10 @@ def render_corridor_aware_flat_context(
     reserve_top_corridor,
     order_strategy,
 ):
+    diagnostics = (getattr(retrieval_result, "diagnostics", {}) or {})
+    objective_mode = str(diagnostics.get("retrieval_objective_mode", "") or "").strip().lower()
+    canonical_core_mode = bool(is_canonical_copy_span_mode(objective_mode))
+
     pairs = _extract_selected_pairs(sample, retrieval_result)
     if not pairs:
         return RenderedContext(
@@ -2105,6 +2117,7 @@ def render_corridor_aware_flat_context(
             eta_connector=eta_connector,
             zeta_query=zeta_query,
             xi_locality=xi_locality,
+            canonical_core_only=canonical_core_mode,
         )
         for sid in candidate_ids
     }
@@ -2122,25 +2135,38 @@ def render_corridor_aware_flat_context(
         redundancy = 0.0
         if selected_tokens:
             redundancy = max(_jaccard(token_cache.get(sid, set()), prev) for prev in selected_tokens)
-        score = float(base_scores.get(sid, 0.0)) - float(lambda_redundancy) * redundancy
-
-        # Bridge-priority boost (connector-side evidence), preserving backward compatibility via eta_connector.
-        if bool(feat.get("is_connector_adjacent", False)):
-            score += 0.25 * max(0.0, float(eta_connector))
-
-        # Diversity control: avoid over-selecting the same title/chunk family.
         title = _unit_title(sid)
         title_repeats = int(selected_title_counts.get(title, 0))
-        score -= 0.20 * max(0.0, float(lambda_redundancy)) * float(title_repeats)
+        if canonical_core_mode:
+            score = canonical_sentence_score(
+                feat=feat,
+                alpha=float(alpha),
+                beta=float(beta),
+                gamma_main=float(gamma_main),
+                delta_support=float(delta_support),
+                eta_connector=float(eta_connector),
+                lambda_redundancy=float(lambda_redundancy),
+                redundancy=float(redundancy),
+                title_repeats=float(title_repeats),
+            )
+        else:
+            score = float(base_scores.get(sid, 0.0)) - float(lambda_redundancy) * redundancy
 
-        # Keep answer-side and connector-side evidence balanced.
-        balance_w = 0.10 * max(0.0, float(eta_connector) + float(delta_support))
-        bridge_count = int(selected_role_counts.get("bridge", 0))
-        answer_count = int(selected_role_counts.get("answer", 0))
-        if role == "bridge":
-            score -= balance_w * float(max(0, bridge_count - answer_count))
-        elif role == "answer":
-            score -= balance_w * float(max(0, answer_count - bridge_count - 1))
+            # Bridge-priority boost (connector-side evidence), preserving backward compatibility via eta_connector.
+            if bool(feat.get("is_connector_adjacent", False)):
+                score += 0.25 * max(0.0, float(eta_connector))
+
+            # Diversity control: avoid over-selecting the same title/chunk family.
+            score -= 0.20 * max(0.0, float(lambda_redundancy)) * float(title_repeats)
+
+            # Keep answer-side and connector-side evidence balanced.
+            balance_w = 0.10 * max(0.0, float(eta_connector) + float(delta_support))
+            bridge_count = int(selected_role_counts.get("bridge", 0))
+            answer_count = int(selected_role_counts.get("answer", 0))
+            if role == "bridge":
+                score -= balance_w * float(max(0, bridge_count - answer_count))
+            elif role == "answer":
+                score -= balance_w * float(max(0, answer_count - bridge_count - 1))
 
         return float(score), role, title
 
@@ -2676,6 +2702,7 @@ def render_corridor_aware_flat_context(
         metadata={
             "selected_unit_type": _selected_unit_type(retrieval_result),
             "render_variant": str(cueing_variant_name),
+            "canonical_render_core_mode": bool(canonical_core_mode),
             "final_order_strategy": str(strategy),
             "strategy_flags": sorted(list(strategy_flags)),
             "top_slice_reorder_applied": bool(top_slice_diag.get("applied", False)),
