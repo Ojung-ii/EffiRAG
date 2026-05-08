@@ -101,6 +101,13 @@ class RetrievalConfig:
     # p3_answer_preserve_base
     # p3_answer_preserve_guarded_hotpot
     # p3_answer_preserve_confidence_gated
+    # canonical_copy_span
+    # canonical_no_seed_optional
+    # canonical_no_run_optional
+    # canonical_no_pair_coverage
+    # canonical_no_bridge_completeness
+    # canonical_render_core_only
+    # canonical_no_dataset_guard
     # r2_connector_core
     # r2_plus_path_preserve
     # r2_plus_path_preserve_compact

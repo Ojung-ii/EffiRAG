@@ -34,3 +34,6 @@
 - 먼저 v0 parity(가중치/Recall/sample alignment)를 통과해야 합니다.
 - v1/minimal 평가는 v0 parity 통과 후에만 해석합니다.
 
+## Phase-3 Link
+- `copy_span_instruction_grouped_v1`는 Phase-2의 behavior-preserving grouped profile입니다.
+- Phase-3에서는 `canonical_copy_span` objective path를 도입해, 계수 그룹화가 아니라 **실제 구현 경로 단순화**를 목표로 합니다.

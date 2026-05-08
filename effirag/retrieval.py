@@ -14,10 +14,20 @@ import networkx as nx
 import numpy as np
 
 from .anchors import select_lexical_anchors
+from .canonical_objective import (
+    apply_canonical_copy_span_objective,
+    canonical_effective_reference_mode,
+    is_canonical_copy_span_mode,
+)
 from .config import RetrievalConfig
 from .embedding import cosine_similarity, encode_texts, rerank_sentences_by_embedding, topk_cosine_similarity
 from .global_index import load_or_build_global_index, load_semantic_index
 from .graph import build_document_entity_graph
+from .legacy_objectives import (
+    apply_legacy_objective_flag_overrides,
+    is_legacy_objective_mode,
+    normalize_objective_mode,
+)
 from .metrics import supporting_fact_match_details
 from .registry import register_method
 from .types import AnchorResult, RetrievalResult
@@ -161,97 +171,14 @@ def _apply_shared_budget_profile_once(cfg):
 
 def _resolve_retrieval_objective_mode(cfg):
     mode = str(getattr(cfg, "retrieval_objective_mode", "baseline") or "baseline").strip().lower()
-    aliases = {
-        "off": "baseline",
-        "default": "baseline",
-        "r1": "hybrid_anchor_recall",
-        "r2": "bridge_candidate_induction",
-        "r3": "role_aware_chunk_scoring",
-        "r4": "coverage_selection",
-        # Connector-lite refinement aliases
-        "r2_bridge": "r2_bridge_only",
-        "r2_bridge_only": "r2_bridge_only",
-        "r2_connector_core": "r2_connector_core",
-        "r2+r3_anchor_light": "r2_plus_r3_anchor_light",
-        "r2_plus_r3_anchor_light": "r2_plus_r3_anchor_light",
-        "r2+r3_answer_light": "r2_plus_r3_answer_light",
-        "r2_plus_r3_answer_light": "r2_plus_r3_answer_light",
-        "r2_path": "r2_plus_path_preserve",
-        "r2_plus_path_preserve": "r2_plus_path_preserve",
-        "r2_path_compact": "r2_plus_path_preserve_compact",
-        "r2_plus_path_preserve_compact": "r2_plus_path_preserve_compact",
-        "r2_path_guarded": "r2_plus_path_preserve_guarded",
-        "r2_plus_path_preserve_guarded": "r2_plus_path_preserve_guarded",
-        "r2_path_compact_lite": "r2_plus_path_preserve_compact_lite",
-        "r2_plus_path_preserve_compact_lite": "r2_plus_path_preserve_compact_lite",
-        "full": "bridge_coverage_full",
-        "bridge_coverage": "bridge_coverage_full",
-        # PAMAE-style bounded-budget connector rounds
-        "p1": "seed_quality_analysis",
-        "p2_bridge": "run_objective_bridge_aware",
-        "p2_role": "run_objective_role_balanced",
-        "p3_corridor": "corridor_role_constrained",
-        "p3_combo": "bridge_aware_run_plus_role_constrained_corridor",
-        # PAMAE seed-run-corridor refinement variants
-        "pamae_seed_run_core": "seed_run_connector_core",
-        "seed_run_connector_core": "seed_run_connector_core",
-        "p2_corridor_compact": "seed_run_connector_core_corridor_compact",
-        "seed_run_connector_core_corridor_compact": "seed_run_connector_core_corridor_compact",
-        "p3_corridor_answer_preserve": "seed_run_connector_core_corridor_answer_preserve",
-        "seed_run_connector_core_corridor_answer_preserve": "seed_run_connector_core_corridor_answer_preserve",
-        "p4_corridor_bridge_purity": "seed_run_connector_core_corridor_bridge_purity",
-        "seed_run_connector_core_corridor_bridge_purity": "seed_run_connector_core_corridor_bridge_purity",
-        "p5_compact_answer_preserve": "seed_run_connector_core_corridor_compact_answer_preserve",
-        "seed_run_connector_core_corridor_compact_answer_preserve": "seed_run_connector_core_corridor_compact_answer_preserve",
-        # Guarded answer-preserve refinement round
-        "p3_base": "p3_answer_preserve_base",
-        "p3_answer_preserve_base": "p3_answer_preserve_base",
-        "p3_guarded_hotpot": "p3_answer_preserve_guarded_hotpot",
-        "p3_answer_preserve_guarded_hotpot": "p3_answer_preserve_guarded_hotpot",
-        "p3_confidence_gated": "p3_answer_preserve_confidence_gated",
-        "p3_answer_preserve_confidence_gated": "p3_answer_preserve_confidence_gated",
-    }
-    mode = aliases.get(mode, mode)
-    valid = {
-        "baseline",
-        "hybrid_anchor_recall",
-        "bridge_candidate_induction",
-        "role_aware_chunk_scoring",
-        "coverage_selection",
-        "bridge_coverage_full",
-        # Connector-lite refinement modes
-        "r2_bridge_only",
-        "r2_connector_core",
-        "r2_plus_r3_anchor_light",
-        "r2_plus_r3_answer_light",
-        "r2_plus_path_preserve",
-        "r2_plus_path_preserve_compact",
-        "r2_plus_path_preserve_guarded",
-        "r2_plus_path_preserve_compact_lite",
-        # PAMAE-style bounded-budget connector rounds
-        "seed_quality_analysis",
-        "run_objective_bridge_aware",
-        "run_objective_role_balanced",
-        "corridor_role_constrained",
-        "bridge_aware_run_plus_role_constrained_corridor",
-        # PAMAE seed-run-corridor refinement variants
-        "seed_run_connector_core",
-        "seed_run_connector_core_corridor_compact",
-        "seed_run_connector_core_corridor_answer_preserve",
-        "seed_run_connector_core_corridor_bridge_purity",
-        "seed_run_connector_core_corridor_compact_answer_preserve",
-        # Guarded answer-preserve refinement round
-        "p3_answer_preserve_base",
-        "p3_answer_preserve_guarded_hotpot",
-        "p3_answer_preserve_confidence_gated",
-    }
-    if mode not in valid:
-        mode = "baseline"
-    return mode
+    return normalize_objective_mode(mode)
 
 
 def _resolve_retrieval_objective_flags(cfg):
     mode = _resolve_retrieval_objective_mode(cfg)
+    if is_canonical_copy_span_mode(mode):
+        apply_canonical_copy_span_objective(cfg, dataset=getattr(cfg, "dataset", None), mode=mode)
+
     hybrid = bool(getattr(cfg, "hybrid_anchor_recall_enabled", False))
     bridge_induction = bool(getattr(cfg, "bridge_candidate_induction_enabled", False))
     role_chunk = bool(getattr(cfg, "role_aware_chunk_scoring_enabled", False))
@@ -283,174 +210,49 @@ def _resolve_retrieval_objective_flags(cfg):
         bridge_induction = True
         role_chunk = True
         coverage = True
-    elif mode in {"r2_bridge_only", "r2_connector_core"}:
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_path_preserve = False
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-    elif mode in {"r2_plus_r3_anchor_light", "r2_plus_r3_answer_light"}:
-        bridge_induction = True
-        role_chunk = True
-        coverage = False
-        corridor_path_preserve = False
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-    elif mode == "r2_plus_path_preserve":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = False
-        corridor_answer_preserve = False
-        corridor_bridge_purity = False
-        corridor_path_preserve = True
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-        corridor_answer_preserve_guarded_hotpot = False
-        corridor_answer_preserve_confidence_gated = False
-    elif mode == "r2_plus_path_preserve_compact":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = True
-        corridor_answer_preserve = False
-        corridor_bridge_purity = False
-        corridor_path_preserve = True
-        corridor_path_preserve_compact = True
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-        corridor_answer_preserve_guarded_hotpot = False
-        corridor_answer_preserve_confidence_gated = False
-    elif mode == "r2_plus_path_preserve_guarded":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = False
-        corridor_answer_preserve = False
-        corridor_bridge_purity = False
-        corridor_path_preserve = True
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = True
-        corridor_path_preserve_compact_lite = False
-        corridor_answer_preserve_guarded_hotpot = False
-        corridor_answer_preserve_confidence_gated = False
-    elif mode == "r2_plus_path_preserve_compact_lite":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = True
-        corridor_answer_preserve = False
-        corridor_bridge_purity = False
-        corridor_path_preserve = True
-        corridor_path_preserve_compact = True
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = True
-        corridor_answer_preserve_guarded_hotpot = False
-        corridor_answer_preserve_confidence_gated = False
-    elif mode == "corridor_role_constrained":
-        coverage = True
-    elif mode == "bridge_aware_run_plus_role_constrained_corridor":
-        coverage = True
-    elif mode == "seed_run_connector_core":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = False
-        corridor_answer_preserve = False
-        corridor_bridge_purity = False
-        corridor_path_preserve = False
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-    elif mode == "seed_run_connector_core_corridor_compact":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = True
-        corridor_answer_preserve = False
-        corridor_bridge_purity = False
-        corridor_path_preserve = False
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-    elif mode == "seed_run_connector_core_corridor_answer_preserve":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = False
-        corridor_answer_preserve = True
-        corridor_bridge_purity = False
-        corridor_path_preserve = False
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-    elif mode == "seed_run_connector_core_corridor_bridge_purity":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = False
-        corridor_answer_preserve = False
-        corridor_bridge_purity = True
-        corridor_path_preserve = False
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-    elif mode == "seed_run_connector_core_corridor_compact_answer_preserve":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = True
-        corridor_answer_preserve = True
-        corridor_bridge_purity = False
-        corridor_path_preserve = False
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-        corridor_answer_preserve_guarded_hotpot = False
-        corridor_answer_preserve_confidence_gated = False
-    elif mode == "p3_answer_preserve_base":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = False
-        corridor_answer_preserve = True
-        corridor_bridge_purity = False
-        corridor_path_preserve = False
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-        corridor_answer_preserve_guarded_hotpot = False
-        corridor_answer_preserve_confidence_gated = False
-    elif mode == "p3_answer_preserve_guarded_hotpot":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = False
-        corridor_answer_preserve = True
-        corridor_bridge_purity = False
-        corridor_path_preserve = False
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-        corridor_answer_preserve_guarded_hotpot = True
-        corridor_answer_preserve_confidence_gated = False
-    elif mode == "p3_answer_preserve_confidence_gated":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = False
-        corridor_answer_preserve = True
-        corridor_bridge_purity = False
-        corridor_path_preserve = False
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-        corridor_answer_preserve_guarded_hotpot = False
-        corridor_answer_preserve_confidence_gated = True
+    elif is_legacy_objective_mode(mode):
+        legacy_flags = apply_legacy_objective_flag_overrides(
+            mode,
+            {
+                "mode": mode,
+                "hybrid_anchor_recall": hybrid,
+                "bridge_candidate_induction": bridge_induction,
+                "role_aware_chunk_scoring": role_chunk,
+                "coverage_selection": coverage,
+                "corridor_compact_shaping": corridor_compact,
+                "corridor_answer_preserve_shaping": corridor_answer_preserve,
+                "corridor_bridge_purity_shaping": corridor_bridge_purity,
+                "corridor_path_preserve_shaping": corridor_path_preserve,
+                "corridor_path_preserve_compact_shaping": corridor_path_preserve_compact,
+                "corridor_path_preserve_guarded_shaping": corridor_path_preserve_guarded,
+                "corridor_path_preserve_compact_lite_shaping": corridor_path_preserve_compact_lite,
+                "corridor_answer_preserve_guarded_hotpot": corridor_answer_preserve_guarded_hotpot,
+                "corridor_answer_preserve_confidence_gated": corridor_answer_preserve_confidence_gated,
+            },
+        )
+        hybrid = bool(legacy_flags.get("hybrid_anchor_recall", hybrid))
+        bridge_induction = bool(legacy_flags.get("bridge_candidate_induction", bridge_induction))
+        role_chunk = bool(legacy_flags.get("role_aware_chunk_scoring", role_chunk))
+        coverage = bool(legacy_flags.get("coverage_selection", coverage))
+        corridor_compact = bool(legacy_flags.get("corridor_compact_shaping", corridor_compact))
+        corridor_answer_preserve = bool(legacy_flags.get("corridor_answer_preserve_shaping", corridor_answer_preserve))
+        corridor_bridge_purity = bool(legacy_flags.get("corridor_bridge_purity_shaping", corridor_bridge_purity))
+        corridor_path_preserve = bool(legacy_flags.get("corridor_path_preserve_shaping", corridor_path_preserve))
+        corridor_path_preserve_compact = bool(
+            legacy_flags.get("corridor_path_preserve_compact_shaping", corridor_path_preserve_compact)
+        )
+        corridor_path_preserve_guarded = bool(
+            legacy_flags.get("corridor_path_preserve_guarded_shaping", corridor_path_preserve_guarded)
+        )
+        corridor_path_preserve_compact_lite = bool(
+            legacy_flags.get("corridor_path_preserve_compact_lite_shaping", corridor_path_preserve_compact_lite)
+        )
+        corridor_answer_preserve_guarded_hotpot = bool(
+            legacy_flags.get("corridor_answer_preserve_guarded_hotpot", corridor_answer_preserve_guarded_hotpot)
+        )
+        corridor_answer_preserve_confidence_gated = bool(
+            legacy_flags.get("corridor_answer_preserve_confidence_gated", corridor_answer_preserve_confidence_gated)
+        )
 
     return {
         "mode": str(mode),
@@ -487,7 +289,19 @@ def _set_cfg_attr_if_changed(cfg, field_name, value, updates):
 
 def _apply_connector_objective_profile(cfg, objective_flags):
     flags = dict(objective_flags or {})
-    mode = str(flags.get("mode", "baseline") or "baseline").strip().lower()
+    requested_mode = normalize_objective_mode(str(flags.get("mode", "baseline") or "baseline").strip().lower())
+    flags["mode"] = str(requested_mode)
+    mode = str(requested_mode)
+    canonical_diag = {}
+    canonical_mode = is_canonical_copy_span_mode(requested_mode)
+    if canonical_mode:
+        canonical_diag = apply_canonical_copy_span_objective(
+            cfg,
+            dataset=getattr(cfg, "dataset", None),
+            mode=requested_mode,
+        )
+        mode = canonical_effective_reference_mode(getattr(cfg, "dataset", None), mode=requested_mode)
+
     updates = {}
     profile_applied = "none"
     flags["corridor_answer_preserve_guarded_hotpot"] = False
@@ -894,11 +708,43 @@ def _apply_connector_objective_profile(cfg, objective_flags):
         flags["corridor_bridge_purity_shaping"] = False
         flags["corridor_answer_preserve_confidence_gated"] = True
 
+    if canonical_mode:
+        canonical_diag = apply_canonical_copy_span_objective(
+            cfg,
+            dataset=getattr(cfg, "dataset", None),
+            mode=requested_mode,
+        )
+        flags["bridge_candidate_induction"] = bool(getattr(cfg, "bridge_candidate_induction_enabled", False))
+        flags["role_aware_chunk_scoring"] = bool(getattr(cfg, "role_aware_chunk_scoring_enabled", False))
+        flags["coverage_selection"] = bool(getattr(cfg, "coverage_selection_enabled", False))
+        flags["corridor_compact_shaping"] = bool(getattr(cfg, "corridor_compact_shaping_enabled", False))
+        flags["corridor_answer_preserve_shaping"] = bool(getattr(cfg, "corridor_answer_preserve_enabled", False))
+        flags["corridor_bridge_purity_shaping"] = bool(getattr(cfg, "corridor_bridge_purity_shaping_enabled", False))
+        flags["corridor_path_preserve_shaping"] = bool(getattr(cfg, "corridor_path_preserve_enabled", False))
+        flags["corridor_path_preserve_compact_shaping"] = bool(
+            getattr(cfg, "corridor_path_preserve_compact_enabled", False)
+        )
+        flags["corridor_path_preserve_guarded_shaping"] = bool(
+            getattr(cfg, "corridor_path_preserve_guarded_enabled", False)
+        )
+        flags["corridor_path_preserve_compact_lite_shaping"] = bool(
+            getattr(cfg, "corridor_path_preserve_compact_lite_enabled", False)
+        )
+        flags["corridor_answer_preserve_guarded_hotpot"] = bool(
+            getattr(cfg, "corridor_answer_preserve_guarded_hotpot_enabled", False)
+        )
+        flags["corridor_answer_preserve_confidence_gated"] = bool(
+            getattr(cfg, "corridor_answer_preserve_confidence_gated_enabled", False)
+        )
+        profile_applied = f"canonical_copy_span::{mode}"
+
     diag = {
-        "mode": mode,
+        "mode": requested_mode,
+        "effective_mode": mode,
         "profile_applied": profile_applied,
         "flags_after": dict(flags),
         "weight_updates": dict(updates),
+        "canonical": dict(canonical_diag) if canonical_mode else {},
     }
     return flags, diag
 
