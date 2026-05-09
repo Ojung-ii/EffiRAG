@@ -1,4 +1,6 @@
+import warnings
 from dataclasses import dataclass, fields
+from pathlib import Path
 from typing import Any, Dict
 
 from .utils import parse_bool
@@ -218,6 +220,19 @@ class RetrievalConfig:
     top1_correction_sentence_weight_query: float = 0.04
     top1_correction_sentence_weight_locality: float = 0.04
     top1_correction_sentence_weight_redundancy: float = 0.04
+    # Phase 5A diagnostic-only ablations (default off).
+    # Important: these flags must not change default canonical/champion behavior.
+    ablation_no_pair_semantic: bool = False
+    ablation_no_pair_bridge: bool = False
+    ablation_no_final_text_rerank: bool = False
+    score_component_trace_enabled: bool = False
+    score_component_trace_topn: int = 20
+    # Deferred Phase 5B/5C candidates (placeholders only).
+    ablation_no_local_semantic: bool = False
+    ablation_no_top1_correction: bool = False
+    ablation_no_run_pre_semantic: bool = False
+    ablation_no_run_semantic_coverage: bool = False
+    ablation_no_anchor_alignment_in_pair: bool = False
     # Stagewise retrieval-loss funnel diagnostics (anchor -> proposal -> phase1 -> final -> rendered).
     stagewise_loss_funnel_enabled: bool = True
     # Minimal downstream controls (default off): keep retrieval objective unchanged, only post-selection adjustment.
@@ -356,10 +371,51 @@ class RagConfig(RetrievalConfig):
     retrieval_only: bool = False
 
 
-def dataclass_from_dict(cls, values):
+def dataclass_from_dict(
+    cls,
+    values,
+    *,
+    strict_unknown_keys: bool = False,
+    warn_unknown_keys: bool = True,
+    ignored_unknown_keys=None,
+):
     valid = {f.name for f in fields(cls)}
+    ignored = {str(k) for k in (ignored_unknown_keys or set())}
+    unknown = sorted([str(k) for k in values.keys() if k not in valid and str(k) not in ignored])
+    if unknown:
+        msg = f"Unknown config keys for {cls.__name__}: {unknown}"
+        if strict_unknown_keys:
+            raise ValueError(msg)
+        if warn_unknown_keys:
+            warnings.warn(msg, RuntimeWarning)
     payload = {k: v for k, v in values.items() if k in valid}
     return cls(**payload)
+
+
+def audit_config_path_mode_consistency(
+    config_path: str | None,
+    retrieval_objective_mode: str | None,
+    *,
+    strict: bool = False,
+):
+    path = str(config_path or "").strip()
+    if not path:
+        return []
+    normalized = str(Path(path)).replace("\\", "/").lower()
+    mode = str(retrieval_objective_mode or "").strip().lower() or "baseline"
+    is_canonical_path = "/canonical/" in normalized or normalized.endswith("/canonical")
+    if not is_canonical_path:
+        return []
+    if mode != "baseline":
+        return []
+    msg = (
+        "Config path suggests canonical profile but retrieval_objective_mode is baseline: "
+        f"path={path}, mode={mode}"
+    )
+    if strict:
+        raise ValueError(msg)
+    warnings.warn(msg, RuntimeWarning)
+    return [msg]
 
 
 def apply_cli_overrides(config_dict, args_namespace):
@@ -392,6 +448,24 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["sentence_rerank_enabled"] = parse_bool(merged["sentence_rerank_enabled"])
     if "top1_correction_enabled" in merged:
         merged["top1_correction_enabled"] = parse_bool(merged["top1_correction_enabled"])
+    if "ablation_no_pair_semantic" in merged:
+        merged["ablation_no_pair_semantic"] = parse_bool(merged["ablation_no_pair_semantic"])
+    if "ablation_no_pair_bridge" in merged:
+        merged["ablation_no_pair_bridge"] = parse_bool(merged["ablation_no_pair_bridge"])
+    if "ablation_no_final_text_rerank" in merged:
+        merged["ablation_no_final_text_rerank"] = parse_bool(merged["ablation_no_final_text_rerank"])
+    if "score_component_trace_enabled" in merged:
+        merged["score_component_trace_enabled"] = parse_bool(merged["score_component_trace_enabled"])
+    if "ablation_no_local_semantic" in merged:
+        merged["ablation_no_local_semantic"] = parse_bool(merged["ablation_no_local_semantic"])
+    if "ablation_no_top1_correction" in merged:
+        merged["ablation_no_top1_correction"] = parse_bool(merged["ablation_no_top1_correction"])
+    if "ablation_no_run_pre_semantic" in merged:
+        merged["ablation_no_run_pre_semantic"] = parse_bool(merged["ablation_no_run_pre_semantic"])
+    if "ablation_no_run_semantic_coverage" in merged:
+        merged["ablation_no_run_semantic_coverage"] = parse_bool(merged["ablation_no_run_semantic_coverage"])
+    if "ablation_no_anchor_alignment_in_pair" in merged:
+        merged["ablation_no_anchor_alignment_in_pair"] = parse_bool(merged["ablation_no_anchor_alignment_in_pair"])
     if "run_light_rerank_enabled" in merged:
         merged["run_light_rerank_enabled"] = parse_bool(merged["run_light_rerank_enabled"])
     if "stagewise_loss_funnel_enabled" in merged:

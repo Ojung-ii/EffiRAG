@@ -3,6 +3,7 @@ import os
 import random
 import time
 import hashlib
+import weakref
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
 from math import sqrt
@@ -47,7 +48,8 @@ except Exception:  # pragma: no cover
 
 _GLOBAL_INDEX_MEMO = {}
 _GLOBAL_SEMANTIC_MEMO = {}
-_PPR_GRAPH_STRUCT_MEMO = {}
+_PPR_GRAPH_STRUCT_MEMO = weakref.WeakKeyDictionary()
+_PPR_GRAPH_STRUCT_MEMO_FALLBACK = {}
 _PPR_PARALLEL_STRUCT = None
 _QUERY_EMBED_MEMO = {}
 
@@ -862,10 +864,21 @@ def _get_global_graph(cfg):
 
 
 def _get_graph_struct(g):
-    key = id(g)
-    cached = _PPR_GRAPH_STRUCT_MEMO.get(key)
+    try:
+        cached = _PPR_GRAPH_STRUCT_MEMO.get(g)
+    except TypeError:
+        cached = None
     if cached is not None:
         return cached
+
+    # Fallback path for environments where graph objects cannot be weak-keyed.
+    fallback_key = id(g)
+    fallback_cached = _PPR_GRAPH_STRUCT_MEMO_FALLBACK.get(fallback_key)
+    if fallback_cached is not None:
+        ref, struct = fallback_cached
+        if ref() is g:
+            return struct
+        _PPR_GRAPH_STRUCT_MEMO_FALLBACK.pop(fallback_key, None)
 
     nodes = list(g.nodes)
     node_to_idx = {node: idx for idx, node in enumerate(nodes)}
@@ -885,7 +898,10 @@ def _get_graph_struct(g):
         "dangling": dangling,
         "n": len(nodes),
     }
-    _PPR_GRAPH_STRUCT_MEMO[key] = struct
+    try:
+        _PPR_GRAPH_STRUCT_MEMO[g] = struct
+    except TypeError:
+        _PPR_GRAPH_STRUCT_MEMO_FALLBACK[fallback_key] = (weakref.ref(g), struct)
     return struct
 
 
@@ -2406,6 +2422,10 @@ def _seed_hybrid_scores(
     bridge_bonus_map=None,
     chunk_grounding_bonus_map=None,
 ):
+    # Candidate-level seed scoring.
+    # This stage ranks individual seed candidates (node-wise utility).
+    # In canonical_copy_span, optional candidate-level bridge/grounding boosts
+    # are pruned and excluded from the score blend.
     graph_raw = {node: float(agg_scores.get(node, 0.0)) for node in candidates}
     graph_norm = _normalize_map(graph_raw)
 
@@ -2477,6 +2497,11 @@ def _seed_selection_objective_weights(
     cfg,
     tau,
 ):
+    # Seed-set objective scoring.
+    # This stage scores a candidate *set* for compact multi-hop coverage.
+    # Unlike optional candidate-level boosts in _seed_hybrid_scores, these
+    # objective terms (bridge/grounding/anchor-coverage) are retained as part
+    # of seed-set selection behavior in canonical retrieval.
     base = {node: float(seed_score_map.get(node, 0.0)) for node in candidates}
     bridge_w = max(0.0, float(getattr(cfg, "seed_objective_bridge_weight", 0.20)))
     ground_w = max(0.0, float(getattr(cfg, "seed_objective_grounding_weight", 0.15)))
@@ -4206,10 +4231,41 @@ def _lazy_union_candidates_for_run(
     return merged[:topk]
 
 
+def _weighted_sum_active_components(components, weights, disabled_keys=None):
+    disabled = {str(k) for k in (disabled_keys or set())}
+    ordered_keys = [str(k) for k in weights.keys()]
+    original_weight_sum = sum(float(weights[k]) for k in ordered_keys)
+    active_keys = [k for k in ordered_keys if k not in disabled]
+    if not active_keys:
+        raise ValueError("All score components are disabled; cannot compute weighted sum.")
+    active_weight_sum = sum(float(weights[k]) for k in active_keys)
+    if active_weight_sum <= 0.0:
+        raise ValueError("Active score component weight sum must be positive.")
+
+    scale = float(original_weight_sum) / float(active_weight_sum)
+    score = 0.0
+    effective_weights = {}
+    for key in active_keys:
+        eff_w = float(weights[key]) * float(scale)
+        effective_weights[key] = float(eff_w)
+        score += float(eff_w) * float(components.get(key, 0.0))
+    return float(score), effective_weights
+
+
 def _phase2_pair_shortlist(shortlisted_runs, anchors, g, query_sim_map, support_sim_map, cfg):
     topb = max(1, int(getattr(cfg, "pair_shortlist_topb", 6)))
     cap = max(2, int(getattr(cfg, "tau", 4)) + 1)
     pair_scores = {}
+    trace_enabled = bool(getattr(cfg, "score_component_trace_enabled", False))
+    ablate_pair_semantic = bool(getattr(cfg, "ablation_no_pair_semantic", False))
+    ablate_pair_bridge = bool(getattr(cfg, "ablation_no_pair_bridge", False))
+    pair_component_weights = {
+        "anchor_align": 0.30,
+        "seed_strength": 0.25,
+        "semantic_rel": 0.20,
+        "dist_score": 0.15,
+        "bridge_potential": 0.10,
+    }
 
     for run in shortlisted_runs:
         run_id = int(run.get("run_id", 0))
@@ -4239,13 +4295,35 @@ def _phase2_pair_shortlist(shortlisted_runs, anchors, g, query_sim_map, support_
                         bridge_hits += 1
                 bridge_potential = float(bridge_hits) / float(max(1, len(anchors) - 1))
 
-                score = (
-                    0.30 * float(anchor_align)
-                    + 0.25 * float(seed_strength)
-                    + 0.20 * float(semantic_rel)
-                    + 0.15 * float(dist_score)
-                    + 0.10 * float(bridge_potential)
-                )
+                components = {
+                    "anchor_align": float(anchor_align),
+                    "seed_strength": float(seed_strength),
+                    "semantic_rel": float(semantic_rel),
+                    "dist_score": float(dist_score),
+                    "bridge_potential": float(bridge_potential),
+                }
+                if not (ablate_pair_semantic or ablate_pair_bridge):
+                    # Keep the default path formula exactly as-is for behavior preservation.
+                    score = (
+                        0.30 * float(anchor_align)
+                        + 0.25 * float(seed_strength)
+                        + 0.20 * float(semantic_rel)
+                        + 0.15 * float(dist_score)
+                        + 0.10 * float(bridge_potential)
+                    )
+                    effective_weights = None
+                    disabled = set()
+                else:
+                    disabled = set()
+                    if ablate_pair_semantic:
+                        disabled.add("semantic_rel")
+                    if ablate_pair_bridge:
+                        disabled.add("bridge_potential")
+                    score, effective_weights = _weighted_sum_active_components(
+                        components=components,
+                        weights=pair_component_weights,
+                        disabled_keys=disabled,
+                    )
                 pair = (anchor, seed)
                 prev = pair_scores.get(pair)
                 payload = {
@@ -4259,11 +4337,83 @@ def _phase2_pair_shortlist(shortlisted_runs, anchors, g, query_sim_map, support_
                     "semantic_relevance": float(semantic_rel),
                     "bridge_potential": float(bridge_potential),
                 }
+                if trace_enabled:
+                    payload["pair_score_components"] = dict(components)
+                    payload["pair_score_effective_weights"] = (
+                        dict(effective_weights)
+                        if effective_weights is not None
+                        else dict(pair_component_weights)
+                    )
+                    payload["pair_score_disabled_components"] = sorted([str(x) for x in disabled])
                 if prev is None or float(payload["pair_proxy_score"]) > float(prev["pair_proxy_score"]):
                     pair_scores[pair] = payload
 
     ranked = sorted(pair_scores.values(), key=lambda x: x["pair_proxy_score"], reverse=True)
     return ranked[:topb]
+
+
+def _apply_final_text_rerank(
+    *,
+    question,
+    selected_sentence_ids,
+    selected_sentences,
+    selected_sentence_score_map,
+    cfg,
+):
+    sentence_rerank_enabled = bool(getattr(cfg, "sentence_rerank_enabled", True))
+    ablation_no_final_text_rerank = bool(getattr(cfg, "ablation_no_final_text_rerank", False))
+    embedding_diag = {
+        "enabled": bool(getattr(cfg, "embedding_enabled", False) and sentence_rerank_enabled),
+        "sentence_rerank_enabled": bool(sentence_rerank_enabled),
+        "applied": False,
+        "error": "",
+        "model_name": str(getattr(cfg, "embedding_model_name", "") or ""),
+        "weight": float(getattr(cfg, "embedding_weight", 0.35)),
+        "rerank_topn": int(getattr(cfg, "embedding_rerank_topn", 80)),
+        "batch_size": int(getattr(cfg, "embedding_batch_size", 16)),
+        "max_length": int(getattr(cfg, "embedding_max_length", 192)),
+        "max_chars": int(getattr(cfg, "embedding_text_max_chars", 600)),
+        "head_size": 0,
+    }
+    sentence_rerank_semantic_calls = 0
+    sentence_rerank_ms = 0.0
+
+    if ablation_no_final_text_rerank:
+        embedding_diag["enabled"] = False
+        embedding_diag["error"] = "ablation_no_final_text_rerank"
+    elif embedding_diag["enabled"] and selected_sentence_ids:
+        sentence_rerank_start = time.perf_counter()
+        sentence_rerank_semantic_calls += 1
+        rerank = rerank_sentences_by_embedding(
+            question=question,
+            sentence_ids=selected_sentence_ids,
+            sentence_texts=selected_sentences,
+            base_score_map=selected_sentence_score_map,
+            model_name=embedding_diag["model_name"],
+            weight=embedding_diag["weight"],
+            rerank_topn=embedding_diag["rerank_topn"],
+            batch_size=embedding_diag["batch_size"],
+            max_length=embedding_diag["max_length"],
+            max_chars=embedding_diag["max_chars"],
+        )
+        selected_sentence_ids = list(rerank.get("ranked_sentence_ids", selected_sentence_ids))
+        selected_sentences = list(rerank.get("ranked_sentence_texts", selected_sentences))
+        embedding_diag["applied"] = bool(rerank.get("applied", False))
+        embedding_diag["error"] = str(rerank.get("error", "") or "")
+        embedding_diag["head_size"] = int(rerank.get("rerank_topn", 0))
+        embedding_diag["similarity_by_sentence_id"] = rerank.get("similarity_by_sentence_id", {})
+        embedding_diag["fused_score_by_sentence_id"] = rerank.get("fused_score_by_sentence_id", {})
+        sentence_rerank_ms = float((time.perf_counter() - sentence_rerank_start) * 1000.0)
+    elif not bool(sentence_rerank_enabled):
+        embedding_diag["error"] = "sentence_rerank_disabled_by_config"
+
+    return (
+        list(selected_sentence_ids),
+        list(selected_sentences),
+        embedding_diag,
+        int(sentence_rerank_semantic_calls),
+        float(sentence_rerank_ms),
+    )
 
 
 def _phase2_refine_pair_bounded_local(g, pair_item, run_by_id, query_sim_map, support_sim_map, cfg):
@@ -5765,39 +5915,41 @@ def run_graphrag_core(
     original_ppr_parallel_workers = int(getattr(cfg, "ppr_parallel_workers", 1))
     if not phase1_parallel_enabled:
         setattr(cfg, "ppr_parallel_workers", 1)
-    for _ in tqdm(
-        range(n_runs),
-        total=n_runs,
-        desc="Phase1 stochastic PPR",
-        leave=False,
-        disable=not show_inner_progress,
-    ):
-        run_seed = int(rng.random() * 10**9)
-        if ppr_engine == "power":
-            h = _stochastic_perturb_graph(diffusion_graph, rng, float(getattr(cfg, "edge_drop_prob", 0.1)))
-            run_map = _compute_ppr_batch(
-                g=h,
-                sources=phase1_anchors,
-                cfg=cfg,
-                engine="power",
-                run_seed=run_seed,
-                show_progress=show_inner_progress,
-                desc="Phase1 Anchor PPR",
-            )
-        else:
-            run_map = _compute_ppr_batch(
-                g=diffusion_graph,
-                sources=phase1_anchors,
-                cfg=cfg,
-                engine="mc",
-                run_seed=run_seed,
-                show_progress=show_inner_progress,
-                desc="Phase1 Anchor PPR",
-            )
-        for anchor in phase1_anchors:
-            per_anchor_runs[anchor].append(run_map.get(anchor, {}))
-    if not phase1_parallel_enabled:
-        setattr(cfg, "ppr_parallel_workers", original_ppr_parallel_workers)
+    try:
+        for _ in tqdm(
+            range(n_runs),
+            total=n_runs,
+            desc="Phase1 stochastic PPR",
+            leave=False,
+            disable=not show_inner_progress,
+        ):
+            run_seed = int(rng.random() * 10**9)
+            if ppr_engine == "power":
+                h = _stochastic_perturb_graph(diffusion_graph, rng, float(getattr(cfg, "edge_drop_prob", 0.1)))
+                run_map = _compute_ppr_batch(
+                    g=h,
+                    sources=phase1_anchors,
+                    cfg=cfg,
+                    engine="power",
+                    run_seed=run_seed,
+                    show_progress=show_inner_progress,
+                    desc="Phase1 Anchor PPR",
+                )
+            else:
+                run_map = _compute_ppr_batch(
+                    g=diffusion_graph,
+                    sources=phase1_anchors,
+                    cfg=cfg,
+                    engine="mc",
+                    run_seed=run_seed,
+                    show_progress=show_inner_progress,
+                    desc="Phase1 Anchor PPR",
+                )
+            for anchor in phase1_anchors:
+                per_anchor_runs[anchor].append(run_map.get(anchor, {}))
+    finally:
+        if not phase1_parallel_enabled:
+            setattr(cfg, "ppr_parallel_workers", original_ppr_parallel_workers)
     stage_ms["phase1_ppr_ms"] = float((time.perf_counter() - phase1_start) * 1000.0)
     stage_ms["phase1_ppr_time_ms"] = float(stage_ms["phase1_ppr_ms"])
 
@@ -6466,45 +6618,22 @@ def run_graphrag_core(
     selected_text_map = {sid: text for sid, text in zip(selected_sentence_ids, selected_sentences) if sid and text}
 
     sentence_rerank_enabled = bool(getattr(cfg, "sentence_rerank_enabled", True))
-    embedding_diag = {
-        "enabled": bool(getattr(cfg, "embedding_enabled", False) and sentence_rerank_enabled),
-        "sentence_rerank_enabled": bool(sentence_rerank_enabled),
-        "applied": False,
-        "error": "",
-        "model_name": str(getattr(cfg, "embedding_model_name", "") or ""),
-        "weight": float(getattr(cfg, "embedding_weight", 0.35)),
-        "rerank_topn": int(getattr(cfg, "embedding_rerank_topn", 80)),
-        "batch_size": int(getattr(cfg, "embedding_batch_size", 16)),
-        "max_length": int(getattr(cfg, "embedding_max_length", 192)),
-        "max_chars": int(getattr(cfg, "embedding_text_max_chars", 600)),
-        "head_size": 0,
-    }
-    sentence_rerank_semantic_calls = 0
-    if embedding_diag["enabled"] and selected_sentence_ids:
-        sentence_rerank_start = time.perf_counter()
-        sentence_rerank_semantic_calls += 1
-        rerank = rerank_sentences_by_embedding(
-            question=sample.question,
-            sentence_ids=selected_sentence_ids,
-            sentence_texts=selected_sentences,
-            base_score_map=selected_sentence_score_map,
-            model_name=embedding_diag["model_name"],
-            weight=embedding_diag["weight"],
-            rerank_topn=embedding_diag["rerank_topn"],
-            batch_size=embedding_diag["batch_size"],
-            max_length=embedding_diag["max_length"],
-            max_chars=embedding_diag["max_chars"],
-        )
-        selected_sentence_ids = list(rerank.get("ranked_sentence_ids", selected_sentence_ids))
-        selected_sentences = list(rerank.get("ranked_sentence_texts", selected_sentences))
-        embedding_diag["applied"] = bool(rerank.get("applied", False))
-        embedding_diag["error"] = str(rerank.get("error", "") or "")
-        embedding_diag["head_size"] = int(rerank.get("rerank_topn", 0))
-        embedding_diag["similarity_by_sentence_id"] = rerank.get("similarity_by_sentence_id", {})
-        embedding_diag["fused_score_by_sentence_id"] = rerank.get("fused_score_by_sentence_id", {})
-        stage_ms["sentence_rerank_ms"] = float((time.perf_counter() - sentence_rerank_start) * 1000.0)
-    elif not bool(sentence_rerank_enabled):
-        embedding_diag["error"] = "sentence_rerank_disabled_by_config"
+    ablation_no_final_text_rerank = bool(getattr(cfg, "ablation_no_final_text_rerank", False))
+    trace_enabled = bool(getattr(cfg, "score_component_trace_enabled", False))
+    (
+        selected_sentence_ids,
+        selected_sentences,
+        embedding_diag,
+        sentence_rerank_semantic_calls,
+        sentence_rerank_ms,
+    ) = _apply_final_text_rerank(
+        question=sample.question,
+        selected_sentence_ids=selected_sentence_ids,
+        selected_sentences=selected_sentences,
+        selected_sentence_score_map=selected_sentence_score_map,
+        cfg=cfg,
+    )
+    stage_ms["sentence_rerank_ms"] = float(sentence_rerank_ms)
 
     filtered_corridors = _filter_corridor_payloads(corridor_payloads, selected_sentence_ids)
     corridor_count_before_trim = int(len(corridor_payloads))
@@ -6587,6 +6716,65 @@ def run_graphrag_core(
                     metadata={"topn": diag_topn, "full_scores": diag_full},
                 )
             )
+
+    score_component_trace = None
+    if trace_enabled:
+        trace_topn = max(1, int(getattr(cfg, "score_component_trace_topn", 20)))
+        pair_score_examples = []
+        for item in (pair_shortlist or [])[:trace_topn]:
+            pair_score_examples.append(
+                {
+                    "anchor": str(item.get("anchor", "")),
+                    "seed": str(item.get("seed", "")),
+                    "run_id": int(item.get("run_id", 0)),
+                    "pair_proxy_score": float(item.get("pair_proxy_score", 0.0) or 0.0),
+                    "pair_score_components": dict(item.get("pair_score_components", {}) or {}),
+                    "pair_score_effective_weights": dict(item.get("pair_score_effective_weights", {}) or {}),
+                    "pair_score_disabled_components": list(item.get("pair_score_disabled_components", []) or []),
+                }
+            )
+
+        if ablation_no_final_text_rerank:
+            final_text_rerank_trace = {
+                "enabled": False,
+                "reason": "ablation_no_final_text_rerank",
+            }
+        elif not bool(sentence_rerank_enabled):
+            final_text_rerank_trace = {
+                "enabled": False,
+                "reason": "sentence_rerank_disabled_by_config",
+            }
+        else:
+            final_text_rerank_trace = {
+                "enabled": bool(embedding_diag.get("enabled", False)),
+                "applied": bool(embedding_diag.get("applied", False)),
+                "error": str(embedding_diag.get("error", "") or ""),
+                "reuse_candidate_available": False,
+                "used_precomputed_embeddings": False,
+                "reuse_deferred_to": "future_efficiency_phase",
+            }
+
+        score_component_trace = {
+            "enabled": True,
+            "semantic_usage": {
+                "proposal": bool((semantic_diag or {}).get("enabled", False)),
+                "seed_score": abs(float(getattr(cfg, "seed_score_semantic_weight", 0.0))) > 0.0,
+                "run_pre_score": abs(float(getattr(cfg, "run_score_semantic_weight", 0.0))) > 0.0,
+                "run_full_score": abs(float(getattr(cfg, "run_score_semantic_weight", 0.0))) > 0.0,
+                "pair_score": not bool(getattr(cfg, "ablation_no_pair_semantic", False)),
+                "local_refinement": True,
+                "final_text_rerank": (
+                    (not ablation_no_final_text_rerank) and bool(embedding_diag.get("enabled", False))
+                ),
+            },
+            "ablation_flags": {
+                "ablation_no_pair_semantic": bool(getattr(cfg, "ablation_no_pair_semantic", False)),
+                "ablation_no_pair_bridge": bool(getattr(cfg, "ablation_no_pair_bridge", False)),
+                "ablation_no_final_text_rerank": bool(getattr(cfg, "ablation_no_final_text_rerank", False)),
+            },
+            "pair_score_examples": pair_score_examples,
+            "final_text_rerank": final_text_rerank_trace,
+        }
 
     latency_ms = (time.perf_counter() - start) * 1000.0
     return RetrievalResult(
@@ -6746,6 +6934,7 @@ def run_graphrag_core(
             ],
             "shortlisted_run_ids": [int(r.get("run_id", 0)) for r in shortlisted_runs],
             "embedding_rerank": embedding_diag,
+            **({"score_component_trace": score_component_trace} if score_component_trace is not None else {}),
             "stagewise_loss_funnel_enabled": bool(getattr(cfg, "stagewise_loss_funnel_enabled", True)),
             "final_top_slice_reorder_enabled": bool(getattr(cfg, "final_top_slice_reorder_enabled", False)),
             "final_top_slice_reorder_topk": int(getattr(cfg, "final_top_slice_reorder_topk", 4)),

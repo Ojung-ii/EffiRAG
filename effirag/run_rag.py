@@ -8,7 +8,7 @@ from pathlib import Path
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-from .config import RagConfig, apply_cli_overrides, dataclass_from_dict
+from .config import RagConfig, apply_cli_overrides, audit_config_path_mode_consistency, dataclass_from_dict
 from .eval_metrics import aggregate_run_eval_metrics, compute_query_eval_metrics
 from .eval.evaluator import QAEvaluator, extract_gold_answers
 from .efficiency import Timer, gpu_peak_mb, process_rss_mb, reset_gpu_peak
@@ -689,6 +689,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top1-correction-sentence-weight-query", type=float, default=None)
     parser.add_argument("--top1-correction-sentence-weight-locality", type=float, default=None)
     parser.add_argument("--top1-correction-sentence-weight-redundancy", type=float, default=None)
+    parser.add_argument("--ablation-no-pair-semantic", type=str, default=None)
+    parser.add_argument("--ablation-no-pair-bridge", type=str, default=None)
+    parser.add_argument("--ablation-no-final-text-rerank", type=str, default=None)
+    parser.add_argument("--score-component-trace-enabled", type=str, default=None)
+    parser.add_argument("--score-component-trace-topn", type=int, default=None)
+    # Deferred placeholders (Phase 5B/5C candidates).
+    parser.add_argument("--ablation-no-local-semantic", type=str, default=None)
+    parser.add_argument("--ablation-no-top1-correction", type=str, default=None)
+    parser.add_argument("--ablation-no-run-pre-semantic", type=str, default=None)
     parser.add_argument("--embedding-model-name", type=str, default=None)
     parser.add_argument("--embedding-weight", type=float, default=None)
     parser.add_argument("--embedding-rerank-topn", type=int, default=None)
@@ -1696,7 +1705,27 @@ def main() -> None:
 
     base_config = load_yaml(args.config) if args.config else {}
     merged = apply_cli_overrides(base_config, args)
-    cfg = dataclass_from_dict(RagConfig, merged)
+    strict_unknown_keys = str(os.environ.get("EFFIRAG_STRICT_UNKNOWN_CONFIG_KEYS", "false")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
+    strict_canonical_path_audit = str(
+        os.environ.get("EFFIRAG_STRICT_CANONICAL_PATH_AUDIT", "false")
+    ).strip().lower() in {"1", "true", "yes", "y", "on"}
+    audit_config_path_mode_consistency(
+        args.config,
+        merged.get("retrieval_objective_mode", base_config.get("retrieval_objective_mode", "baseline")),
+        strict=strict_canonical_path_audit,
+    )
+    cfg = dataclass_from_dict(
+        RagConfig,
+        merged,
+        strict_unknown_keys=strict_unknown_keys,
+        ignored_unknown_keys={"config"},
+    )
 
     precomputed_retrieval_path = str(getattr(cfg, "precomputed_retrieval_path", "") or "").strip() or None
     _, summary = execute_rag_experiment(cfg, precomputed_retrieval_path=precomputed_retrieval_path)
