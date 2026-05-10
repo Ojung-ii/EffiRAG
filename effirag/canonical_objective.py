@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
+from .canonical_scoring import CANONICAL_PRUNED_WEIGHT_FIELDS
+
 CANONICAL_COPY_SPAN_MODE = "canonical_copy_span"
 CANONICAL_NO_SEED_OPTIONAL_MODE = "canonical_no_seed_optional"
 CANONICAL_NO_RUN_OPTIONAL_MODE = "canonical_no_run_optional"
@@ -56,6 +58,16 @@ def _mode_options(mode: str | None) -> Dict[str, bool]:
 
 
 def canonical_effective_reference_mode(dataset: str | None, *, mode: str | None = None) -> str:
+    """
+    Resolve compatibility mode for canonical_copy_span.
+
+    Notes
+    -----
+    The canonical retrieval/scoring core is dataset-agnostic. This function
+    only exposes a compatibility adapter layer for dataset-specific guards
+    (currently hotpot guarded answer-preserve), so behavior remains consistent
+    with previously validated reference runs.
+    """
     ds = _normalize_dataset_name(dataset)
     opts = _mode_options(mode)
     if ds == "hotpotqa":
@@ -65,11 +77,18 @@ def canonical_effective_reference_mode(dataset: str | None, *, mode: str | None 
     return "baseline"
 
 
+def is_dataset_specific_guard_enabled(dataset: str | None, *, mode: str | None = None) -> bool:
+    ds = _normalize_dataset_name(dataset)
+    if ds != "hotpotqa":
+        return False
+    return canonical_effective_reference_mode(ds, mode=mode) == "p3_answer_preserve_guarded_hotpot"
+
+
 def _canonical_flags(dataset: str | None, *, mode: str | None = None) -> Dict[str, bool]:
     ds = _normalize_dataset_name(dataset)
     effective_mode = canonical_effective_reference_mode(ds, mode=mode)
     answer_preserve = effective_mode in {"p3_answer_preserve_base", "p3_answer_preserve_guarded_hotpot"}
-    guarded_hotpot = effective_mode == "p3_answer_preserve_guarded_hotpot"
+    guarded_hotpot = is_dataset_specific_guard_enabled(ds, mode=mode)
     bridge_induction = effective_mode in {"p3_answer_preserve_base", "p3_answer_preserve_guarded_hotpot"}
     return {
         "bridge_candidate_induction_enabled": bool(bridge_induction),
@@ -85,6 +104,23 @@ def _canonical_flags(dataset: str | None, *, mode: str | None = None) -> Dict[st
         "corridor_answer_preserve_guarded_hotpot_enabled": bool(guarded_hotpot),
         "corridor_answer_preserve_confidence_gated_enabled": False,
     }
+
+
+def _enforce_canonical_pruned_weights_zero(cfg) -> Dict[str, float]:
+    changed: Dict[str, float] = {}
+    for field in CANONICAL_PRUNED_WEIGHT_FIELDS:
+        if not hasattr(cfg, field):
+            continue
+        raw = getattr(cfg, field)
+        try:
+            current = float(raw)
+        except Exception:
+            current = 0.0
+        if abs(current) <= 0.0:
+            continue
+        changed[field] = float(current)
+        setattr(cfg, field, 0.0)
+    return changed
 
 
 def apply_canonical_copy_span_objective(cfg, *, dataset: str | None = None, mode: str | None = None):
@@ -109,6 +145,12 @@ def apply_canonical_copy_span_objective(cfg, *, dataset: str | None = None, mode
             setattr(cfg, key, bool(value))
 
     opts = _mode_options(mm)
+    pruned_weight_overrides: Dict[str, float] = {}
+
+    # Canonical mainline invariant: optional/pruned score terms never influence
+    # canonical_copy_span behavior, even if a config accidentally sets them.
+    if mm == CANONICAL_COPY_SPAN_MODE:
+        pruned_weight_overrides = _enforce_canonical_pruned_weights_zero(cfg)
 
     if opts["no_seed_optional"]:
         if hasattr(cfg, "seed_score_bridge_weight"):
@@ -140,4 +182,5 @@ def apply_canonical_copy_span_objective(cfg, *, dataset: str | None = None, mode
         "effective_reference_mode": canonical_effective_reference_mode(ds, mode=mm),
         "flags": dict(flags),
         "options": dict(opts),
+        "pruned_weight_overrides": dict(pruned_weight_overrides),
     }

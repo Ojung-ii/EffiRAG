@@ -46,6 +46,16 @@ The following are preserved:
    - `xi_locality`
    - legacy-only bridge boost / role-balance side heuristics
 
+## Seed Scoring Boundary Clarification
+1. `seed_score_*` terms:
+   - candidate-level scoring terms used to rank individual seed candidates
+2. `seed_objective_*` terms:
+   - seed-set objective terms used to select a compact and coverage-preserving seed set
+
+Phase-3.5 pruning removed optional candidate-level boosts from canonical scoring.
+It did **not** remove seed-set objective terms, because those terms belong to the
+set-selection objective rather than per-candidate heuristic boosts.
+
 ## Not Pruned In This Phase
 1. dataset-specific guarded answer preserve
 2. bridge candidate induction

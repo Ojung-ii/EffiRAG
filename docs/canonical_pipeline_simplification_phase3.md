@@ -51,3 +51,7 @@ Phase-3에서는 아래 구조를 도입했습니다.
 - Phase-3.5에서는 Stage-C(HotpotQA/2Wiki) 무변화 결과를 근거로 canonical mainline에서 no-op optional scoring 가지를 제거합니다.
 - 핵심 안전장치(dataset guard, bridge induction, redundancy, copy-span interface)는 유지합니다.
 - MuSiQue/PopQA 일반화 이슈는 별도 `Phase-4`로 분리합니다.
+
+## Phase-4 Note
+- Phase-4는 성능 튜닝이 아니라 correctness/invariant 정합성 정리 단계입니다.
+- PPR graph-struct cache 오염 가능성 제거, canonical pruned-weight 강제, config unknown-key/audit safety를 코드로 강제합니다.

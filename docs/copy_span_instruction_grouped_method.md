@@ -41,3 +41,7 @@
 ## Phase-3.5 Link
 - Phase-3.5는 grouped/canonical 인터페이스 위에서, canonical mainline 내부의 no-op optional scoring 분기를 실제 코드 경로에서 정리하는 단계입니다.
 - HotpotQA/2Wiki 기준 pruning parity를 우선 검증하고, MuSiQue/PopQA 일반화는 Phase-4로 분리합니다.
+
+## Phase-4 Link
+- Phase-4에서는 추가 성능 튜닝 없이 correctness/invariant 강화를 수행합니다.
+- 핵심: PPR cache 안전성, canonical pruned-weight 강제, config audit 안전성.

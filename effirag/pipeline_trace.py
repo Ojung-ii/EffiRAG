@@ -112,7 +112,7 @@ def _as_rag_config(cfg: Any) -> RagConfig:
         payload = dict(cfg)
     else:
         payload = {}
-    return dataclass_from_dict(RagConfig, payload)
+    return dataclass_from_dict(RagConfig, payload, warn_unknown_keys=False)
 
 
 def _maybe_apply_profile(

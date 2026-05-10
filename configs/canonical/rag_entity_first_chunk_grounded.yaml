@@ -1,3 +1,6 @@
+# Legacy baseline-compatible config.
+# Note: despite directory name, this file keeps retrieval_objective_mode=baseline
+# for backward-compatible entity-first chunk-grounded experiments.
 dataset: hotpotqa
 split: validation
 method: effirag

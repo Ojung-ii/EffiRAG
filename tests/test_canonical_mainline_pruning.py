@@ -28,7 +28,7 @@ def test_canonical_no_dataset_guard_is_not_merged_into_canonical_copy_span():
     assert cfg_drop_guard.corridor_answer_preserve_guarded_hotpot_enabled is False
 
 
-def test_trace_reports_pruned_weights_as_legacy_not_active_canonical():
+def test_trace_reports_pruned_weights_as_zero_not_active_canonical():
     cfg = apply_grouped_profile({}, dataset="hotpotqa", profile_name=COPY_SPAN_INSTRUCTION_GROUPED_V1)
     cfg["dataset"] = "hotpotqa"
     cfg["retrieval_objective_mode"] = CANONICAL_COPY_SPAN_MODE
@@ -44,10 +44,15 @@ def test_trace_reports_pruned_weights_as_legacy_not_active_canonical():
     assert "run_score_pair_coverage_weight" not in active
     assert "zeta_query" not in active
 
-    legacy_like = out.get("canonical_legacy_or_pruned_nonzero_weights", {})
-    assert math.isclose(float(legacy_like.get("seed_score_bridge_weight", 0.0)), 0.11, rel_tol=0.0, abs_tol=1e-12)
-    assert float(legacy_like.get("run_score_pair_coverage_weight", 0.0)) > 0.0
-    assert float(legacy_like.get("zeta_query", 0.0)) > 0.0
+    legacy_like = out.get("canonical_legacy_or_pruned_nonzero_weights", {}) or {}
+    assert "seed_score_bridge_weight" not in legacy_like
+    assert "run_score_pair_coverage_weight" not in legacy_like
+    assert "zeta_query" not in legacy_like
+
+    zeros = out.get("inactive_zero_weights", {})
+    assert math.isclose(float(zeros.get("seed_score_bridge_weight", 1.0)), 0.0, rel_tol=0.0, abs_tol=1e-12)
+    assert math.isclose(float(zeros.get("run_score_pair_coverage_weight", 1.0)), 0.0, rel_tol=0.0, abs_tol=1e-12)
+    assert math.isclose(float(zeros.get("zeta_query", 1.0)), 0.0, rel_tol=0.0, abs_tol=1e-12)
 
 
 def test_trace_canonical_active_core_weights_include_run_core_terms():

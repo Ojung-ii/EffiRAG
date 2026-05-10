@@ -6,6 +6,7 @@ from effirag.canonical_objective import (
     apply_canonical_copy_span_objective,
     canonical_effective_reference_mode,
 )
+from effirag.canonical_scoring import CANONICAL_PRUNED_WEIGHT_FIELDS
 from effirag.config import RagConfig, dataclass_from_dict
 from effirag.grouped_profiles import COPY_SPAN_INSTRUCTION_GROUPED_V1, apply_grouped_profile
 from effirag.retrieval import _apply_connector_objective_profile, _resolve_retrieval_objective_flags
@@ -28,7 +29,7 @@ KEY_FLAGS = [
 
 
 def _resolved_flags(cfg_dict):
-    cfg = dataclass_from_dict(RagConfig, cfg_dict)
+    cfg = dataclass_from_dict(RagConfig, cfg_dict, warn_unknown_keys=False)
     flags = _resolve_retrieval_objective_flags(cfg)
     flags, diag = _apply_connector_objective_profile(cfg=cfg, objective_flags=flags)
     return cfg, flags, diag
@@ -80,3 +81,35 @@ def test_legacy_objective_resolution_still_works_for_old_alias():
     flags, diag = _apply_connector_objective_profile(cfg=cfg, objective_flags=flags)
     assert diag["profile_applied"] == "run_bridge_aware"
     assert math.isclose(float(cfg.run_score_bridge_weight), 0.22, rel_tol=0.0, abs_tol=1e-12)
+
+
+def test_canonical_copy_span_enforces_pruned_weights_to_zero():
+    cfg = RagConfig()
+    cfg.retrieval_objective_mode = CANONICAL_COPY_SPAN_MODE
+    for idx, field in enumerate(CANONICAL_PRUNED_WEIGHT_FIELDS, start=1):
+        if hasattr(cfg, field):
+            setattr(cfg, field, float(idx))
+
+    diag = apply_canonical_copy_span_objective(cfg, dataset="hotpotqa", mode=CANONICAL_COPY_SPAN_MODE)
+
+    for field in CANONICAL_PRUNED_WEIGHT_FIELDS:
+        if hasattr(cfg, field):
+            assert math.isclose(float(getattr(cfg, field)), 0.0, rel_tol=0.0, abs_tol=1e-12)
+    overrides = dict(diag.get("pruned_weight_overrides", {}) or {})
+    assert isinstance(overrides, dict)
+    assert len(overrides) > 0
+
+
+def test_noncanonical_baseline_mode_does_not_force_pruned_zero():
+    cfg = RagConfig()
+    cfg.retrieval_objective_mode = "baseline"
+    if hasattr(cfg, "zeta_query"):
+        cfg.zeta_query = 0.77
+    if hasattr(cfg, "run_score_pair_coverage_weight"):
+        cfg.run_score_pair_coverage_weight = 0.66
+
+    _ = _resolve_retrieval_objective_flags(cfg)
+
+    # baseline path should not trigger canonical invariant enforcement.
+    assert math.isclose(float(cfg.zeta_query), 0.77, rel_tol=0.0, abs_tol=1e-12)
+    assert math.isclose(float(cfg.run_score_pair_coverage_weight), 0.66, rel_tol=0.0, abs_tol=1e-12)
