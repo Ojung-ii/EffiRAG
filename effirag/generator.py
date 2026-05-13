@@ -7,6 +7,7 @@ import time
 import urllib.error
 import urllib.request
 
+from .postprocess import apply_answer_realization_variant
 from .registry import register_generator
 from .types import GenerationResult, RenderedContext, Sample
 from .utils import content_tokens
@@ -150,6 +151,153 @@ def _prefers_text_generation(model_name: str) -> bool:
     lower = str(model_name or "").lower()
     causal_markers = ("qwen", "llama", "mistral", "deepseek", "phi", "gemma")
     return any(tag in lower for tag in causal_markers)
+
+
+def _lightweight_interface_instruction(rendered: RenderedContext) -> str:
+    meta = dict((getattr(rendered, "metadata", {}) or {}))
+    enabled = bool(meta.get("raw_focus_scaffold_light_enabled", False))
+    if not enabled:
+        return ""
+    text = str(meta.get("raw_focus_scaffold_light_text", "") or "").strip()
+    if not text:
+        text = "Use the earliest evidence chain that links entity, bridge, and answer."
+    return " ".join(text.split())
+
+
+def _generation_intervention_instruction(rendered: RenderedContext) -> str:
+    meta = dict((getattr(rendered, "metadata", {}) or {}))
+    enabled = bool(meta.get("generation_intervention_enabled", False))
+    if not enabled:
+        return ""
+    text = str(meta.get("generation_intervention_text", "") or "").strip()
+    return " ".join(text.split())
+
+
+def _resolve_prompt_variant(rendered: RenderedContext, cfg=None) -> str:
+    cfg_variant = str(getattr(cfg, "prompt_variant", "") or "").strip().lower() if cfg is not None else ""
+    if cfg_variant:
+        return cfg_variant
+    meta = dict((getattr(rendered, "metadata", {}) or {}))
+    rendered_variant = str(meta.get("prompt_variant", "") or "").strip().lower()
+    return rendered_variant or "default"
+
+
+def _resolve_qa_utilization_variant(rendered: RenderedContext) -> str:
+    meta = dict((getattr(rendered, "metadata", {}) or {}))
+    explicit = str(meta.get("qa_utilization_variant", "") or "").strip().lower()
+    if explicit in {
+        "answer_normalization_light",
+        "answer_surface_normalization",
+        "answer_verification_light",
+        "evidence_supported_verification",
+        "answer_type_aware_extraction",
+    }:
+        return explicit
+    flags = {str(x).strip().lower() for x in list(meta.get("strategy_flags", []) or []) if str(x).strip()}
+    if "qa_answer_surface_normalization" in flags:
+        return "answer_surface_normalization"
+    if "qa_answer_normalization_light" in flags:
+        return "answer_normalization_light"
+    if "qa_evidence_supported_verification" in flags:
+        return "evidence_supported_verification"
+    if "qa_answer_verification_light" in flags:
+        return "answer_verification_light"
+    if "qa_answer_type_aware_extraction" in flags:
+        return "answer_type_aware_extraction"
+    return ""
+
+
+def _apply_qa_utilization_postprocess(sample: Sample, rendered: RenderedContext, prediction: str):
+    variant = _resolve_qa_utilization_variant(rendered)
+    base = str(prediction or "").strip()
+    if not variant:
+        return base, {
+            "initial_prediction": base,
+            "final_prediction": base,
+            "qa_utilization_variant": "",
+            "qa_utilization_applied": False,
+            "qa_utilization_changed": False,
+            "qa_utilization_candidate_count": 0,
+            "evidence_supported_answer": False,
+            "answer_type": "",
+            "answer_type_match": False,
+        }
+    payload = apply_answer_realization_variant(
+        prediction=base,
+        question=str(getattr(sample, "question", "") or ""),
+        sentences=list(getattr(rendered, "sentences", []) or []),
+        variant=variant,
+    )
+    final = str(payload.get("final_prediction", base) or base).strip()
+    return final, payload
+
+
+def _build_qa_prompt(sample: Sample, rendered: RenderedContext, cfg=None) -> str:
+    prompt_variant = _resolve_prompt_variant(rendered=rendered, cfg=cfg)
+    if prompt_variant == "evidence_first":
+        parts = [
+            "You are a QA assistant.",
+            "Use only the provided evidence context.",
+            "Prefer facts explicitly supported by the evidence.",
+            "If multiple evidence blocks are provided, combine only the minimal facts needed.",
+            "Return only the final short answer span.",
+            "Do not output reasoning, explanations, or <think> tags.",
+            "If the question is yes/no, output exactly yes or no.",
+        ]
+    elif prompt_variant in {"light_separator_bridge_instruction", "bridge_instruction"}:
+        parts = [
+            "You are a QA assistant.",
+            "Use only the provided context.",
+            "Use source titles and evidence lines to resolve entity links.",
+            "When the answer is stated in the context, copy the shortest exact answer span.",
+            "Return only the final answer span.",
+            "Do not output reasoning, explanations, or <think> tags.",
+            "If the question is yes/no, output exactly yes or no.",
+        ]
+    elif prompt_variant in {"light_separator_copy_span_instruction", "copy_span_instruction"}:
+        parts = [
+            "You are a QA assistant.",
+            "Use only the provided context.",
+            "When the answer is stated in the context, copy the shortest exact answer span.",
+            "Return only the final answer span.",
+            "Do not output reasoning, explanations, or <think> tags.",
+            "If the question is yes/no, output exactly yes or no.",
+        ]
+    elif prompt_variant in {"light_separator_final_answer_oneshot", "final_answer_oneshot"}:
+        parts = [
+            "You are a QA assistant.",
+            "Use only the provided context.",
+            "Return only the final answer span.",
+            "Do not output reasoning, explanations, or <think> tags.",
+            "If the question is yes/no, output exactly yes or no.",
+            "",
+            "Example:",
+            "Question: When was Neville A. Stanton's employer founded?",
+            "Context:",
+            "- Neville A. Stanton: Neville A. Stanton is a British Professor at the University of Southampton.",
+            "- University of Southampton: The University of Southampton was founded in 1862.",
+            "Final answer: 1862",
+            "",
+        ]
+    else:
+        parts = [
+            "You are a QA assistant.",
+            "Use only the provided context.",
+            "Return only the final answer span.",
+            "Do not output reasoning, explanations, or <think> tags.",
+            "If the question is yes/no, output exactly yes or no.",
+        ]
+    intervention_instruction = _generation_intervention_instruction(rendered)
+    if intervention_instruction:
+        parts.append(intervention_instruction)
+    else:
+        light_instruction = _lightweight_interface_instruction(rendered)
+        if light_instruction:
+            parts.append(light_instruction)
+    parts.append(f"Question: {sample.question}")
+    parts.append(f"Context:\n{rendered.text}")
+    parts.append("Final answer:")
+    return "\n".join(parts)
 
 
 def _get_hf_pipeline(task: str, model_name: str):
@@ -311,18 +459,11 @@ def generate_oracle(sample: Sample, rendered: RenderedContext, model_name: str =
 def generate_hf(sample: Sample, rendered: RenderedContext, model_name: str = "", cfg=None) -> GenerationResult:
     start = time.perf_counter()
 
+    generation_meta = {}
     try:
         resolved_model = model_name or "google/flan-t5-small"
-        prompt = (
-            "You are a QA assistant.\n"
-            "Use only the provided context.\n"
-            "Return only the final answer span.\n"
-            "Do not output reasoning, explanations, or <think> tags.\n"
-            "If the question is yes/no, output exactly yes or no.\n"
-            f"Question: {sample.question}\n"
-            f"Context:\n{rendered.text}\n"
-            "Final answer:"
-        )
+        prompt_variant = _resolve_prompt_variant(rendered=rendered, cfg=cfg)
+        prompt = _build_qa_prompt(sample=sample, rendered=rendered, cfg=cfg)
         max_new_tokens = int(getattr(cfg, "llm_max_new_tokens", 64) if cfg is not None else 64)
         prefer_text_gen = _prefers_text_generation(resolved_model)
         if prefer_text_gen:
@@ -340,11 +481,30 @@ def generate_hf(sample: Sample, rendered: RenderedContext, model_name: str = "",
                 raw_text = out[0]["generated_text"].strip() if out else ""
 
         prediction = _postprocess_prediction(raw_text, sample.question)
+        prediction, post_meta = _apply_qa_utilization_postprocess(sample=sample, rendered=rendered, prediction=prediction)
+        generation_meta.update(dict(post_meta or {}))
+        generation_meta["prompt_variant"] = str(prompt_variant)
         text = raw_text
     except Exception as exc:
         fallback = generate_heuristic(sample, rendered, model_name=model_name)
         prediction = fallback.prediction
         text = f"HF generation failed: {exc}\nFallback(heuristic): {prediction}"
+        generation_meta = {
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "finish_reason": "fallback_heuristic",
+            "fallback_used": True,
+            "initial_prediction": str(prediction or ""),
+            "final_prediction": str(prediction or ""),
+            "qa_utilization_variant": "",
+            "qa_utilization_applied": False,
+            "qa_utilization_changed": False,
+            "qa_utilization_candidate_count": 0,
+            "evidence_supported_answer": False,
+            "answer_type": "",
+            "answer_type_match": False,
+            "prompt_variant": str(_resolve_prompt_variant(rendered=rendered, cfg=cfg)),
+        }
 
     latency_ms = (time.perf_counter() - start) * 1000.0
     return GenerationResult(
@@ -354,6 +514,7 @@ def generate_hf(sample: Sample, rendered: RenderedContext, model_name: str = "",
         prediction=prediction,
         raw_text=text,
         latency_ms=latency_ms,
+        metadata=generation_meta,
     )
 
 
@@ -368,16 +529,8 @@ def generate_openai_compat(sample: Sample, rendered: RenderedContext, model_name
         timeout_sec = float(getattr(cfg, "llm_timeout_sec", 120.0) if cfg is not None else 120.0)
         max_new_tokens = int(getattr(cfg, "llm_max_new_tokens", 64) if cfg is not None else 64)
 
-        prompt = (
-            "You are a QA assistant.\n"
-            "Use only the provided context.\n"
-            "Return only the final answer span.\n"
-            "Do not output reasoning, explanations, or <think> tags.\n"
-            "If the question is yes/no, output exactly yes or no.\n"
-            f"Question: {sample.question}\n"
-            f"Context:\n{rendered.text}\n"
-            "Final answer:"
-        )
+        prompt_variant = _resolve_prompt_variant(rendered=rendered, cfg=cfg)
+        prompt = _build_qa_prompt(sample=sample, rendered=rendered, cfg=cfg)
         messages = [{"role": "user", "content": prompt}]
         generation_meta = {}
 
@@ -417,6 +570,9 @@ def generate_openai_compat(sample: Sample, rendered: RenderedContext, model_name
                     timeout_sec=timeout_sec,
                 )
         prediction = _postprocess_prediction(raw_text, sample.question)
+        prediction, post_meta = _apply_qa_utilization_postprocess(sample=sample, rendered=rendered, prediction=prediction)
+        generation_meta.update(dict(post_meta or {}))
+        generation_meta["prompt_variant"] = str(prompt_variant)
         text = raw_text
     except Exception as exc:
         fallback = generate_heuristic(sample, rendered, model_name=model_name, cfg=cfg)
@@ -427,6 +583,16 @@ def generate_openai_compat(sample: Sample, rendered: RenderedContext, model_name
             "completion_tokens": 0,
             "finish_reason": "fallback_heuristic",
             "fallback_used": True,
+            "initial_prediction": str(prediction or ""),
+            "final_prediction": str(prediction or ""),
+            "qa_utilization_variant": "",
+            "qa_utilization_applied": False,
+            "qa_utilization_changed": False,
+            "qa_utilization_candidate_count": 0,
+            "evidence_supported_answer": False,
+            "answer_type": "",
+            "answer_type_match": False,
+            "prompt_variant": str(_resolve_prompt_variant(rendered=rendered, cfg=cfg)),
         }
 
     latency_ms = (time.perf_counter() - start) * 1000.0

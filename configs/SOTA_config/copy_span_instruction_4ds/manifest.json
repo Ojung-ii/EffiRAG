@@ -1,0 +1,567 @@
+{
+  "profile_name": "copy_span_instruction_4ds",
+  "updated_at_utc": "2026-05-13T11:35:10Z",
+  "contract": {
+    "prompt_variant": "light_separator_copy_span_instruction",
+    "order_strategy": "score+light_separator_render",
+    "added_instruction_semantics": "copy_span_only (via prompt_variant template)"
+  },
+  "datasets": {
+    "hotpotqa": {
+      "source": {
+        "config_json": "/home/ojungii/EffiRAG/outputs/prompt_interface_bridge_resolution_round/20260428_120903/runs/s2/light_separator_copy_span_instruction/rag/hotpotqa/20260428_031310_987698/logs/config_20260428_031310_987698.json",
+        "summary_json": "/home/ojungii/EffiRAG/outputs/prompt_interface_bridge_resolution_round/20260428_120903/runs/s2/light_separator_copy_span_instruction/rag/hotpotqa/20260428_031310_987698/rag_summary.json"
+      },
+      "expected_metrics_locked": {
+        "f1": 0.5547529301005572,
+        "em": 0.45,
+        "supporting_fact_recall": 0.808997619047619,
+        "supporting_fact_precision": 0.15219137777072392,
+        "supporting_fact_f1": 0.25131642319073466,
+        "prompt_tokens_avg": 490.703,
+        "retrieval_latency_ms": 340.59256724920124,
+        "total_latency_ms": 112.33945822389796,
+        "precomputed_retrieval_used": true
+      },
+      "retrieval_provenance": {
+        "locked_precomputed_query_results": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/hotpotqa/20260427_154913_799915/rag_query_results.jsonl",
+        "chain_depth": 2,
+        "chain": [
+          {
+            "hop": 1,
+            "run_dir": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/hotpotqa/20260427_154913_799915",
+            "query_results_jsonl": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/hotpotqa/20260427_154913_799915/rag_query_results.jsonl",
+            "summary_json": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/hotpotqa/20260427_154913_799915/rag_summary.json",
+            "config_json": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/hotpotqa/20260427_154913_799915/logs/config_20260427_154913_799915.json",
+            "query_exists": true,
+            "summary_exists": true,
+            "config_exists": true,
+            "precomputed_retrieval_used": true,
+            "retrieval_source_breakdown": {
+              "precomputed": 1000,
+              "on_the_fly": 0
+            },
+            "canonical_variant_name": "light_separator_render",
+            "prompt_variant": "default",
+            "retrieval_contract": {
+              "retrieval_objective_mode": "p3_answer_preserve_guarded_hotpot",
+              "semantic_topn_entity": 45,
+              "semantic_topn_chunk": 24,
+              "graph_reserve_topn": 24,
+              "sentence_rerank_enabled": true,
+              "final_top_slice_reorder_enabled": false,
+              "final_top_slice_reorder_topk": 4,
+              "answer_support_pinning_enabled": true,
+              "answer_support_pinning_min": 1,
+              "oracle_support_injection_enabled": false,
+              "max_context_sentences": 8,
+              "render_mode": "corridor_aware_flat",
+              "max_corridors_in_context": 3,
+              "order_strategy": "score+light_separator_render",
+              "canonical_variant_name": "light_separator_render",
+              "prompt_variant": "default"
+            },
+            "next_precomputed_retrieval_path": "/home/ojungii/EffiRAG/outputs/retrieval_metric_hotpot_2wiki_round_rerun_strict/20260422_231715/runs/s1/champion_config/rag/hotpotqa/20260422_141716_198196/rag_query_results.jsonl"
+          },
+          {
+            "hop": 2,
+            "run_dir": "/home/ojungii/EffiRAG/outputs/retrieval_metric_hotpot_2wiki_round_rerun_strict/20260422_231715/runs/s1/champion_config/rag/hotpotqa/20260422_141716_198196",
+            "query_results_jsonl": "/home/ojungii/EffiRAG/outputs/retrieval_metric_hotpot_2wiki_round_rerun_strict/20260422_231715/runs/s1/champion_config/rag/hotpotqa/20260422_141716_198196/rag_query_results.jsonl",
+            "summary_json": "/home/ojungii/EffiRAG/outputs/retrieval_metric_hotpot_2wiki_round_rerun_strict/20260422_231715/runs/s1/champion_config/rag/hotpotqa/20260422_141716_198196/rag_summary.json",
+            "config_json": "/home/ojungii/EffiRAG/outputs/retrieval_metric_hotpot_2wiki_round_rerun_strict/20260422_231715/runs/s1/champion_config/rag/hotpotqa/20260422_141716_198196/logs/config_20260422_141716_198196.json",
+            "query_exists": true,
+            "summary_exists": true,
+            "config_exists": true,
+            "precomputed_retrieval_used": false,
+            "retrieval_source_breakdown": {
+              "precomputed": 0,
+              "on_the_fly": 1000
+            },
+            "canonical_variant_name": "p3_answer_preserve_guarded_hotpot",
+            "prompt_variant": null,
+            "retrieval_contract": {
+              "retrieval_objective_mode": "p3_answer_preserve_guarded_hotpot",
+              "semantic_topn_entity": 45,
+              "semantic_topn_chunk": 24,
+              "graph_reserve_topn": 24,
+              "sentence_rerank_enabled": true,
+              "final_top_slice_reorder_enabled": false,
+              "final_top_slice_reorder_topk": 4,
+              "answer_support_pinning_enabled": true,
+              "answer_support_pinning_min": 1,
+              "oracle_support_injection_enabled": false,
+              "max_context_sentences": 8,
+              "render_mode": "corridor_aware_flat",
+              "max_corridors_in_context": 3,
+              "order_strategy": "score",
+              "canonical_variant_name": "p3_answer_preserve_guarded_hotpot"
+            },
+            "next_precomputed_retrieval_path": ""
+          }
+        ],
+        "terminal_on_the_fly_query_results": "/home/ojungii/EffiRAG/outputs/retrieval_metric_hotpot_2wiki_round_rerun_strict/20260422_231715/runs/s1/champion_config/rag/hotpotqa/20260422_141716_198196/rag_query_results.jsonl",
+        "terminal_retrieval_contract": {
+          "retrieval_objective_mode": "p3_answer_preserve_guarded_hotpot",
+          "semantic_topn_entity": 45,
+          "semantic_topn_chunk": 24,
+          "graph_reserve_topn": 24,
+          "sentence_rerank_enabled": true,
+          "final_top_slice_reorder_enabled": false,
+          "final_top_slice_reorder_topk": 4,
+          "answer_support_pinning_enabled": true,
+          "answer_support_pinning_min": 1,
+          "oracle_support_injection_enabled": false,
+          "max_context_sentences": 8,
+          "render_mode": "corridor_aware_flat",
+          "max_corridors_in_context": 3,
+          "order_strategy": "score",
+          "canonical_variant_name": "p3_answer_preserve_guarded_hotpot"
+        }
+      },
+      "qa_contract": {
+        "generator": "vllm",
+        "model_name": "Qwen/Qwen2.5-7B-Instruct",
+        "evaluator_mode": "hipporag2_parity",
+        "prompt_variant": "light_separator_copy_span_instruction",
+        "order_strategy": "score+light_separator_render",
+        "max_context_sentences": 8,
+        "render_mode": "corridor_aware_flat",
+        "max_corridors_in_context": 3,
+        "max_main_sentences_per_corridor": 2,
+        "max_support_per_corridor": 1,
+        "max_total_sentences": 8,
+        "delivery_mode": "sentence_compressed",
+        "max_chunk_packages": 4,
+        "max_excerpt_sentences_per_package": 3,
+        "chunk_grounding_enabled": false,
+        "chunk_grounding_mode": "sentence_backfill",
+        "chunk_excerpt_max_per_corridor": 1,
+        "chunk_excerpt_window_sentences_before": 1,
+        "chunk_excerpt_window_sentences_after": 1,
+        "chunk_excerpt_max_total_sentences": 4,
+        "chunk_excerpt_dedup_enabled": true,
+        "run_qa": true,
+        "retrieval_only": false,
+        "llm_timeout_sec": 120.0,
+        "llm_max_new_tokens": 64
+      },
+      "locked_precomputed": {
+        "config_yaml": "/home/ojungii/EffiRAG/configs/SOTA_config/copy_span_instruction_4ds/locked_precomputed/hotpotqa.yaml",
+        "precomputed_retrieval_path": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/hotpotqa/20260427_154913_799915/rag_query_results.jsonl",
+        "precomputed_retrieval_strict": "true",
+        "retrieval_objective_mode": "p3_answer_preserve_guarded_hotpot"
+      },
+      "on_the_fly": {
+        "config_yaml": "/home/ojungii/EffiRAG/configs/SOTA_config/copy_span_instruction_4ds/on_the_fly/hotpotqa.yaml",
+        "precomputed_retrieval_path": "",
+        "precomputed_retrieval_strict": "false",
+        "retrieval_objective_mode": "p3_answer_preserve_guarded_hotpot"
+      },
+      "qa_from_replayed_root": {
+        "config_yaml": "/home/ojungii/EffiRAG/configs/SOTA_config/copy_span_instruction_4ds/qa_from_replayed_root/hotpotqa.yaml",
+        "precomputed_retrieval_path": "__SET_TO_REPLAYED_ROOT_QUERY_RESULTS__",
+        "precomputed_retrieval_strict": "true"
+      }
+    },
+    "2wikimultihopqa": {
+      "source": {
+        "config_json": "/home/ojungii/EffiRAG/outputs/copy_span_instruction_grouped_round/20260508_154702/runs/stage_b_full/light_separator_copy_span_instruction/rag/2wikimultihopqa/20260508_065715_511649/logs/config_20260508_065715_511649.json",
+        "summary_json": "/home/ojungii/EffiRAG/outputs/copy_span_instruction_grouped_round/20260508_154702/runs/stage_b_full/light_separator_copy_span_instruction/rag/2wikimultihopqa/20260508_065715_511649/rag_summary.json"
+      },
+      "expected_metrics_locked": {
+        "f1": 0.43344116994116993,
+        "em": 0.375,
+        "supporting_fact_recall": 0.8523,
+        "supporting_fact_precision": 0.15405921575834516,
+        "supporting_fact_f1": 0.2533572978713995,
+        "prompt_tokens_avg": 443.914,
+        "retrieval_latency_ms": 358.04947444982827,
+        "total_latency_ms": 147.88074581159162,
+        "precomputed_retrieval_used": true
+      },
+      "retrieval_provenance": {
+        "locked_precomputed_query_results": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/2wikimultihopqa/20260427_155512_976566/rag_query_results.jsonl",
+        "chain_depth": 2,
+        "chain": [
+          {
+            "hop": 1,
+            "run_dir": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/2wikimultihopqa/20260427_155512_976566",
+            "query_results_jsonl": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/2wikimultihopqa/20260427_155512_976566/rag_query_results.jsonl",
+            "summary_json": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/2wikimultihopqa/20260427_155512_976566/rag_summary.json",
+            "config_json": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/2wikimultihopqa/20260427_155512_976566/logs/config_20260427_155512_976566.json",
+            "query_exists": true,
+            "summary_exists": true,
+            "config_exists": true,
+            "precomputed_retrieval_used": true,
+            "retrieval_source_breakdown": {
+              "precomputed": 1000,
+              "on_the_fly": 0
+            },
+            "canonical_variant_name": "light_separator_render",
+            "prompt_variant": "default",
+            "retrieval_contract": {
+              "retrieval_objective_mode": "baseline",
+              "semantic_topn_entity": 45,
+              "semantic_topn_chunk": 24,
+              "graph_reserve_topn": 24,
+              "sentence_rerank_enabled": true,
+              "final_top_slice_reorder_enabled": true,
+              "final_top_slice_reorder_topk": 3,
+              "answer_support_pinning_enabled": false,
+              "answer_support_pinning_min": 1,
+              "oracle_support_injection_enabled": false,
+              "max_context_sentences": 8,
+              "render_mode": "corridor_aware_flat",
+              "max_corridors_in_context": 3,
+              "order_strategy": "score+light_separator_render",
+              "canonical_variant_name": "light_separator_render",
+              "prompt_variant": "default"
+            },
+            "next_precomputed_retrieval_path": "/home/ojungii/EffiRAG/outputs/retrieval_metric_hotpot_2wiki_round_rerun_strict/20260422_231715/runs/s1/champion_config/rag/2wikimultihopqa/20260422_160333_832473/rag_query_results.jsonl"
+          },
+          {
+            "hop": 2,
+            "run_dir": "/home/ojungii/EffiRAG/outputs/retrieval_metric_hotpot_2wiki_round_rerun_strict/20260422_231715/runs/s1/champion_config/rag/2wikimultihopqa/20260422_160333_832473",
+            "query_results_jsonl": "/home/ojungii/EffiRAG/outputs/retrieval_metric_hotpot_2wiki_round_rerun_strict/20260422_231715/runs/s1/champion_config/rag/2wikimultihopqa/20260422_160333_832473/rag_query_results.jsonl",
+            "summary_json": "/home/ojungii/EffiRAG/outputs/retrieval_metric_hotpot_2wiki_round_rerun_strict/20260422_231715/runs/s1/champion_config/rag/2wikimultihopqa/20260422_160333_832473/rag_summary.json",
+            "config_json": "/home/ojungii/EffiRAG/outputs/retrieval_metric_hotpot_2wiki_round_rerun_strict/20260422_231715/runs/s1/champion_config/rag/2wikimultihopqa/20260422_160333_832473/logs/config_20260422_160333_832473.json",
+            "query_exists": true,
+            "summary_exists": true,
+            "config_exists": true,
+            "precomputed_retrieval_used": false,
+            "retrieval_source_breakdown": {
+              "precomputed": 0,
+              "on_the_fly": 1000
+            },
+            "canonical_variant_name": "baseline_mid",
+            "prompt_variant": null,
+            "retrieval_contract": {
+              "retrieval_objective_mode": "baseline",
+              "semantic_topn_entity": 45,
+              "semantic_topn_chunk": 24,
+              "graph_reserve_topn": 24,
+              "sentence_rerank_enabled": true,
+              "final_top_slice_reorder_enabled": true,
+              "final_top_slice_reorder_topk": 3,
+              "answer_support_pinning_enabled": false,
+              "answer_support_pinning_min": 1,
+              "oracle_support_injection_enabled": false,
+              "max_context_sentences": 8,
+              "render_mode": "corridor_aware_flat",
+              "max_corridors_in_context": 3,
+              "order_strategy": "score",
+              "canonical_variant_name": "baseline_mid"
+            },
+            "next_precomputed_retrieval_path": ""
+          }
+        ],
+        "terminal_on_the_fly_query_results": "/home/ojungii/EffiRAG/outputs/retrieval_metric_hotpot_2wiki_round_rerun_strict/20260422_231715/runs/s1/champion_config/rag/2wikimultihopqa/20260422_160333_832473/rag_query_results.jsonl",
+        "terminal_retrieval_contract": {
+          "retrieval_objective_mode": "baseline",
+          "semantic_topn_entity": 45,
+          "semantic_topn_chunk": 24,
+          "graph_reserve_topn": 24,
+          "sentence_rerank_enabled": true,
+          "final_top_slice_reorder_enabled": true,
+          "final_top_slice_reorder_topk": 3,
+          "answer_support_pinning_enabled": false,
+          "answer_support_pinning_min": 1,
+          "oracle_support_injection_enabled": false,
+          "max_context_sentences": 8,
+          "render_mode": "corridor_aware_flat",
+          "max_corridors_in_context": 3,
+          "order_strategy": "score",
+          "canonical_variant_name": "baseline_mid"
+        }
+      },
+      "qa_contract": {
+        "generator": "vllm",
+        "model_name": "Qwen/Qwen2.5-7B-Instruct",
+        "evaluator_mode": "hipporag2_parity",
+        "prompt_variant": "light_separator_copy_span_instruction",
+        "order_strategy": "score+light_separator_render",
+        "max_context_sentences": 8,
+        "render_mode": "corridor_aware_flat",
+        "max_corridors_in_context": 3,
+        "max_main_sentences_per_corridor": 2,
+        "max_support_per_corridor": 1,
+        "max_total_sentences": 8,
+        "delivery_mode": "sentence_compressed",
+        "max_chunk_packages": 4,
+        "max_excerpt_sentences_per_package": 3,
+        "chunk_grounding_enabled": false,
+        "chunk_grounding_mode": "sentence_backfill",
+        "chunk_excerpt_max_per_corridor": 1,
+        "chunk_excerpt_window_sentences_before": 1,
+        "chunk_excerpt_window_sentences_after": 1,
+        "chunk_excerpt_max_total_sentences": 4,
+        "chunk_excerpt_dedup_enabled": true,
+        "run_qa": true,
+        "retrieval_only": false,
+        "llm_timeout_sec": 120.0,
+        "llm_max_new_tokens": 64
+      },
+      "locked_precomputed": {
+        "config_yaml": "/home/ojungii/EffiRAG/configs/SOTA_config/copy_span_instruction_4ds/locked_precomputed/2wikimultihopqa.yaml",
+        "precomputed_retrieval_path": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/2wikimultihopqa/20260427_155512_976566/rag_query_results.jsonl",
+        "precomputed_retrieval_strict": "true",
+        "retrieval_objective_mode": "baseline"
+      },
+      "on_the_fly": {
+        "config_yaml": "/home/ojungii/EffiRAG/configs/SOTA_config/copy_span_instruction_4ds/on_the_fly/2wikimultihopqa.yaml",
+        "precomputed_retrieval_path": "",
+        "precomputed_retrieval_strict": "false",
+        "retrieval_objective_mode": "baseline"
+      },
+      "qa_from_replayed_root": {
+        "config_yaml": "/home/ojungii/EffiRAG/configs/SOTA_config/copy_span_instruction_4ds/qa_from_replayed_root/2wikimultihopqa.yaml",
+        "precomputed_retrieval_path": "__SET_TO_REPLAYED_ROOT_QUERY_RESULTS__",
+        "precomputed_retrieval_strict": "true"
+      }
+    },
+    "musique": {
+      "source": {
+        "config_json": "/home/ojungii/EffiRAG/outputs/prompt_interface_bridge_resolution_round/20260501_000216/runs/s0/light_separator_copy_span_instruction/rag/musique/20260430_150219_480752/logs/config_20260430_150219_480752.json",
+        "summary_json": "/home/ojungii/EffiRAG/outputs/prompt_interface_bridge_resolution_round/20260501_000216/runs/s0/light_separator_copy_span_instruction/rag/musique/20260430_150219_480752/rag_summary.json"
+      },
+      "expected_metrics_locked": {
+        "f1": 0.07768369408369408,
+        "em": 0.04,
+        "supporting_fact_recall": 0.2742062234994332,
+        "supporting_fact_precision": 0.07474606138961933,
+        "supporting_fact_f1": 0.10865460170587517,
+        "prompt_tokens_avg": 897.491,
+        "retrieval_latency_ms": 2160.8811358958483,
+        "total_latency_ms": 145.34811441710917,
+        "precomputed_retrieval_used": true
+      },
+      "retrieval_provenance": {
+        "locked_precomputed_query_results": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/musique/20260427_163530_342927/rag_query_results.jsonl",
+        "chain_depth": 1,
+        "chain": [
+          {
+            "hop": 1,
+            "run_dir": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/musique/20260427_163530_342927",
+            "query_results_jsonl": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/musique/20260427_163530_342927/rag_query_results.jsonl",
+            "summary_json": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/musique/20260427_163530_342927/rag_summary.json",
+            "config_json": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/musique/20260427_163530_342927/logs/config_20260427_163530_342927.json",
+            "query_exists": true,
+            "summary_exists": true,
+            "config_exists": true,
+            "precomputed_retrieval_used": false,
+            "retrieval_source_breakdown": {
+              "precomputed": 0,
+              "on_the_fly": 1000
+            },
+            "canonical_variant_name": "light_separator_render",
+            "prompt_variant": "default",
+            "retrieval_contract": {
+              "retrieval_objective_mode": "baseline",
+              "semantic_topn_entity": 30,
+              "semantic_topn_chunk": 15,
+              "graph_reserve_topn": 15,
+              "sentence_rerank_enabled": true,
+              "final_top_slice_reorder_enabled": false,
+              "final_top_slice_reorder_topk": 4,
+              "answer_support_pinning_enabled": false,
+              "answer_support_pinning_min": 1,
+              "oracle_support_injection_enabled": false,
+              "max_context_sentences": 8,
+              "render_mode": "corridor_aware_flat",
+              "max_corridors_in_context": 3,
+              "order_strategy": "score+light_separator_render",
+              "canonical_variant_name": "light_separator_render",
+              "prompt_variant": "default"
+            },
+            "next_precomputed_retrieval_path": ""
+          }
+        ],
+        "terminal_on_the_fly_query_results": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/musique/20260427_163530_342927/rag_query_results.jsonl",
+        "terminal_retrieval_contract": {
+          "retrieval_objective_mode": "baseline",
+          "semantic_topn_entity": 30,
+          "semantic_topn_chunk": 15,
+          "graph_reserve_topn": 15,
+          "sentence_rerank_enabled": true,
+          "final_top_slice_reorder_enabled": false,
+          "final_top_slice_reorder_topk": 4,
+          "answer_support_pinning_enabled": false,
+          "answer_support_pinning_min": 1,
+          "oracle_support_injection_enabled": false,
+          "max_context_sentences": 8,
+          "render_mode": "corridor_aware_flat",
+          "max_corridors_in_context": 3,
+          "order_strategy": "score+light_separator_render",
+          "canonical_variant_name": "light_separator_render",
+          "prompt_variant": "default"
+        }
+      },
+      "qa_contract": {
+        "generator": "vllm",
+        "model_name": "Qwen/Qwen2.5-7B-Instruct",
+        "evaluator_mode": "hipporag2_parity",
+        "prompt_variant": "light_separator_copy_span_instruction",
+        "order_strategy": "score+light_separator_render",
+        "max_context_sentences": 8,
+        "render_mode": "corridor_aware_flat",
+        "max_corridors_in_context": 3,
+        "max_main_sentences_per_corridor": 2,
+        "max_support_per_corridor": 1,
+        "max_total_sentences": 8,
+        "delivery_mode": "sentence_compressed",
+        "max_chunk_packages": 4,
+        "max_excerpt_sentences_per_package": 3,
+        "chunk_grounding_enabled": false,
+        "chunk_grounding_mode": "sentence_backfill",
+        "chunk_excerpt_max_per_corridor": 1,
+        "chunk_excerpt_window_sentences_before": 1,
+        "chunk_excerpt_window_sentences_after": 1,
+        "chunk_excerpt_max_total_sentences": 4,
+        "chunk_excerpt_dedup_enabled": true,
+        "run_qa": true,
+        "retrieval_only": false,
+        "llm_timeout_sec": 120.0,
+        "llm_max_new_tokens": 64
+      },
+      "locked_precomputed": {
+        "config_yaml": "/home/ojungii/EffiRAG/configs/SOTA_config/copy_span_instruction_4ds/locked_precomputed/musique.yaml",
+        "precomputed_retrieval_path": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/musique/20260427_163530_342927/rag_query_results.jsonl",
+        "precomputed_retrieval_strict": "true",
+        "retrieval_objective_mode": "baseline"
+      },
+      "on_the_fly": {
+        "config_yaml": "/home/ojungii/EffiRAG/configs/SOTA_config/copy_span_instruction_4ds/on_the_fly/musique.yaml",
+        "precomputed_retrieval_path": "",
+        "precomputed_retrieval_strict": "false",
+        "retrieval_objective_mode": "baseline"
+      },
+      "qa_from_replayed_root": {
+        "config_yaml": "/home/ojungii/EffiRAG/configs/SOTA_config/copy_span_instruction_4ds/qa_from_replayed_root/musique.yaml",
+        "precomputed_retrieval_path": "__SET_TO_REPLAYED_ROOT_QUERY_RESULTS__",
+        "precomputed_retrieval_strict": "true"
+      }
+    },
+    "popqa": {
+      "source": {
+        "config_json": "/home/ojungii/EffiRAG/outputs/prompt_interface_bridge_resolution_round/20260501_000216/runs/s0/light_separator_copy_span_instruction/rag/popqa/20260430_150458_889780/logs/config_20260430_150458_889780.json",
+        "summary_json": "/home/ojungii/EffiRAG/outputs/prompt_interface_bridge_resolution_round/20260501_000216/runs/s0/light_separator_copy_span_instruction/rag/popqa/20260430_150458_889780/rag_summary.json"
+      },
+      "expected_metrics_locked": {
+        "f1": 0.3054324897324897,
+        "em": 0.18,
+        "supporting_fact_recall": 0.22432186208464572,
+        "supporting_fact_precision": 0.08750697649057791,
+        "supporting_fact_f1": 0.11663604857828883,
+        "prompt_tokens_avg": 935.786,
+        "retrieval_latency_ms": 1742.930889760144,
+        "total_latency_ms": 207.4989741278696,
+        "precomputed_retrieval_used": true
+      },
+      "retrieval_provenance": {
+        "locked_precomputed_query_results": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/popqa/20260427_174536_484236/rag_query_results.jsonl",
+        "chain_depth": 1,
+        "chain": [
+          {
+            "hop": 1,
+            "run_dir": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/popqa/20260427_174536_484236",
+            "query_results_jsonl": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/popqa/20260427_174536_484236/rag_query_results.jsonl",
+            "summary_json": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/popqa/20260427_174536_484236/rag_summary.json",
+            "config_json": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/popqa/20260427_174536_484236/logs/config_20260427_174536_484236.json",
+            "query_exists": true,
+            "summary_exists": true,
+            "config_exists": true,
+            "precomputed_retrieval_used": false,
+            "retrieval_source_breakdown": {
+              "precomputed": 0,
+              "on_the_fly": 1000
+            },
+            "canonical_variant_name": "light_separator_render",
+            "prompt_variant": "default",
+            "retrieval_contract": {
+              "retrieval_objective_mode": "baseline",
+              "semantic_topn_entity": 30,
+              "semantic_topn_chunk": 15,
+              "graph_reserve_topn": 15,
+              "sentence_rerank_enabled": true,
+              "final_top_slice_reorder_enabled": false,
+              "final_top_slice_reorder_topk": 4,
+              "answer_support_pinning_enabled": false,
+              "answer_support_pinning_min": 1,
+              "oracle_support_injection_enabled": false,
+              "max_context_sentences": 8,
+              "render_mode": "corridor_aware_flat",
+              "max_corridors_in_context": 3,
+              "order_strategy": "score+light_separator_render",
+              "canonical_variant_name": "light_separator_render",
+              "prompt_variant": "default"
+            },
+            "next_precomputed_retrieval_path": ""
+          }
+        ],
+        "terminal_on_the_fly_query_results": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/popqa/20260427_174536_484236/rag_query_results.jsonl",
+        "terminal_retrieval_contract": {
+          "retrieval_objective_mode": "baseline",
+          "semantic_topn_entity": 30,
+          "semantic_topn_chunk": 15,
+          "graph_reserve_topn": 15,
+          "sentence_rerank_enabled": true,
+          "final_top_slice_reorder_enabled": false,
+          "final_top_slice_reorder_topk": 4,
+          "answer_support_pinning_enabled": false,
+          "answer_support_pinning_min": 1,
+          "oracle_support_injection_enabled": false,
+          "max_context_sentences": 8,
+          "render_mode": "corridor_aware_flat",
+          "max_corridors_in_context": 3,
+          "order_strategy": "score+light_separator_render",
+          "canonical_variant_name": "light_separator_render",
+          "prompt_variant": "default"
+        }
+      },
+      "qa_contract": {
+        "generator": "vllm",
+        "model_name": "Qwen/Qwen2.5-7B-Instruct",
+        "evaluator_mode": "hipporag2_parity",
+        "prompt_variant": "light_separator_copy_span_instruction",
+        "order_strategy": "score+light_separator_render",
+        "max_context_sentences": 8,
+        "render_mode": "corridor_aware_flat",
+        "max_corridors_in_context": 3,
+        "max_main_sentences_per_corridor": 2,
+        "max_support_per_corridor": 1,
+        "max_total_sentences": 8,
+        "delivery_mode": "sentence_compressed",
+        "max_chunk_packages": 4,
+        "max_excerpt_sentences_per_package": 3,
+        "chunk_grounding_enabled": false,
+        "chunk_grounding_mode": "sentence_backfill",
+        "chunk_excerpt_max_per_corridor": 1,
+        "chunk_excerpt_window_sentences_before": 1,
+        "chunk_excerpt_window_sentences_after": 1,
+        "chunk_excerpt_max_total_sentences": 4,
+        "chunk_excerpt_dedup_enabled": true,
+        "run_qa": true,
+        "retrieval_only": false,
+        "llm_timeout_sec": 120.0,
+        "llm_max_new_tokens": 64
+      },
+      "locked_precomputed": {
+        "config_yaml": "/home/ojungii/EffiRAG/configs/SOTA_config/copy_span_instruction_4ds/locked_precomputed/popqa.yaml",
+        "precomputed_retrieval_path": "/home/ojungii/EffiRAG/outputs/light_separator_lockin_round/20260428_004715/runs/s1/light_separator_render/rag/popqa/20260427_174536_484236/rag_query_results.jsonl",
+        "precomputed_retrieval_strict": "true",
+        "retrieval_objective_mode": "baseline"
+      },
+      "on_the_fly": {
+        "config_yaml": "/home/ojungii/EffiRAG/configs/SOTA_config/copy_span_instruction_4ds/on_the_fly/popqa.yaml",
+        "precomputed_retrieval_path": "",
+        "precomputed_retrieval_strict": "false",
+        "retrieval_objective_mode": "baseline"
+      },
+      "qa_from_replayed_root": {
+        "config_yaml": "/home/ojungii/EffiRAG/configs/SOTA_config/copy_span_instruction_4ds/qa_from_replayed_root/popqa.yaml",
+        "precomputed_retrieval_path": "__SET_TO_REPLAYED_ROOT_QUERY_RESULTS__",
+        "precomputed_retrieval_strict": "true"
+      }
+    }
+  }
+}

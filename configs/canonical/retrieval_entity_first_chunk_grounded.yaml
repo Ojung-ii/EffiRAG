@@ -1,3 +1,6 @@
+# Legacy baseline-compatible config.
+# Note: despite directory name, this file keeps retrieval_objective_mode=baseline
+# for backward-compatible entity-first chunk-grounded experiments.
 dataset: hotpotqa
 split: validation
 method: effirag
@@ -29,11 +32,11 @@ openie_max_new_tokens: 256
 
 embedding_enabled: true
 embedding_model_name: nvidia/NV-Embed-v2
-embedding_text_max_chars: 900
+embedding_text_max_chars: 800
 embedding_weight: 0.35
 embedding_rerank_topn: 80
 embedding_batch_size: 16
-embedding_max_length: 320
+embedding_max_length: 256
 semantic_topn_entity: 30
 semantic_topn_chunk: 15
 graph_reserve_topn: 15

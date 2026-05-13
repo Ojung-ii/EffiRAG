@@ -1,8 +1,14 @@
 import argparse
+import os
 from dataclasses import replace
 from pathlib import Path
 
-from .config import RetrievalConfig, apply_cli_overrides, dataclass_from_dict
+from .config import (
+    RetrievalConfig,
+    apply_cli_overrides,
+    audit_config_path_mode_consistency,
+    dataclass_from_dict,
+)
 from .run_retrieval import execute_retrieval_experiment
 from .utils import append_jsonl, load_yaml, markdown_table, timestamp_for_filename, timestamp_iso_utc, write_json
 
@@ -189,7 +195,27 @@ def main() -> None:
 
     base_config = load_yaml(args.config) if args.config else {}
     merged = apply_cli_overrides(base_config, args)
-    cfg = dataclass_from_dict(RetrievalConfig, merged)
+    strict_unknown_keys = str(os.environ.get("EFFIRAG_STRICT_UNKNOWN_CONFIG_KEYS", "false")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
+    strict_canonical_path_audit = str(
+        os.environ.get("EFFIRAG_STRICT_CANONICAL_PATH_AUDIT", "false")
+    ).strip().lower() in {"1", "true", "yes", "y", "on"}
+    audit_config_path_mode_consistency(
+        args.config,
+        merged.get("retrieval_objective_mode", base_config.get("retrieval_objective_mode", "baseline")),
+        strict=strict_canonical_path_audit,
+    )
+    cfg = dataclass_from_dict(
+        RetrievalConfig,
+        merged,
+        strict_unknown_keys=strict_unknown_keys,
+        ignored_unknown_keys={"config"},
+    )
 
     summaries = execute_ablation(cfg)
     print("Ablation run complete")

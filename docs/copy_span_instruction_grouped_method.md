@@ -1,0 +1,47 @@
+# Copy-Span Instruction Grouped Method
+
+## Background
+- 이전 Phase-2 grouped 실험은 `champion_reconfirm`를 기준으로 수행되었습니다.
+- SOTA reference reconciliation 이후, 더 강한 copy-span 인터페이스 기준은 `light_separator_copy_span_instruction`으로 확인되었습니다.
+
+## Important Framing
+- 기존 Phase-2 결과는 **무효가 아니라**, `champion_reconfirm` 프로토콜 하에서 유효합니다.
+- 다만 그 결과만으로는 strongest copy-span 결과에 대한 단순화 보존을 주장하기에 불충분합니다.
+
+## Retargeted Scope
+이 브랜치(`experiment/copy-span-grouped-from-copy-instruction`)는 grouped 설계를 유지한 채, 기준 레퍼런스를 아래로 재타깃합니다.
+
+- method_name: `copy-span`
+- reference_profile: `light_separator_copy_span_instruction`
+- reference_label: `copy-span/light_separator_copy_span_instruction`
+- previous_reference_profile: `champion_reconfirm`
+- retarget_reason: `generation_interface_sota`
+
+## Interface Contract (Must Preserve)
+- `order_strategy=score+light_separator_render`
+- `prompt_variant=light_separator_copy_span_instruction`
+- `added_instruction=copy_span_only`
+
+## Retargeted Profiles
+- `copy_span_instruction_grouped_v0`
+- `copy_span_instruction_grouped_v1`
+- `copy_span_instruction_minimal_v1`
+- `copy_span_instruction_no_dataset_toggle` (explicit ablation)
+
+`copy_span_instruction_grouped_v0`는 레퍼런스와의 **대수적 동치(parity)** 확인용이며, 성능 개선용이 아닙니다.
+
+## Acceptance
+- 먼저 v0 parity(가중치/Recall/sample alignment)를 통과해야 합니다.
+- v1/minimal 평가는 v0 parity 통과 후에만 해석합니다.
+
+## Phase-3 Link
+- `copy_span_instruction_grouped_v1`는 Phase-2의 behavior-preserving grouped profile입니다.
+- Phase-3에서는 `canonical_copy_span` objective path를 도입해, 계수 그룹화가 아니라 **실제 구현 경로 단순화**를 목표로 합니다.
+
+## Phase-3.5 Link
+- Phase-3.5는 grouped/canonical 인터페이스 위에서, canonical mainline 내부의 no-op optional scoring 분기를 실제 코드 경로에서 정리하는 단계입니다.
+- HotpotQA/2Wiki 기준 pruning parity를 우선 검증하고, MuSiQue/PopQA 일반화는 Phase-4로 분리합니다.
+
+## Phase-4 Link
+- Phase-4에서는 추가 성능 튜닝 없이 correctness/invariant 강화를 수행합니다.
+- 핵심: PPR cache 안전성, canonical pruned-weight 강제, config audit 안전성.

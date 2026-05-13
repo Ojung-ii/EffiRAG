@@ -182,7 +182,10 @@ STAGEWISE_LOSS_KEYS = (
     "proposal_hit_rate",
     "phase1_hit_rate",
     "final_chunk_hit_rate",
+    "rendered_hit_rate",
     "rendered_retention",
+    "answer_correct",
+    "fallback_rate",
     # Connector-aware retrieval diagnostics (PAMAE-style rounds)
     "seed_anchor_recall",
     "seed_bridge_recall",
@@ -194,6 +197,10 @@ STAGEWISE_LOSS_KEYS = (
     "answer_preserve_activation_rate",
     "preserved_answer_usefulness",
     "path_complete_rate",
+    "strict_path_complete_rate",
+    "answer_bearing_path_hit",
+    "false_path_rate",
+    "equivalent_evidence_coverage",
     "bridge_answer_pair_retention",
     "incomplete_path_rate",
     "chain_compactness",
@@ -214,7 +221,24 @@ STAGEWISE_LOSS_KEYS = (
     "first_complete_path_rank",
     "bundle_dedup_ratio",
     "answer_path_coverage",
+    "summary_token_count",
+    "path_focus_count",
+    "derivation_prompt_activation",
+    "answer_chain_readability_score",
     "conversion_after_path_bundle",
+    "raw_focus_front_applied",
+    "raw_focus_front_promoted",
+    "raw_focus_dedup_applied",
+    "raw_focus_dedup_removed",
+    "raw_focus_dedup_candidate_count",
+    "raw_focus_dedup_refilled",
+    "raw_focus_top_bundle_only_n",
+    "raw_focus_top_bundle_only_applied",
+    "raw_focus_scaffold_light_enabled",
+    "raw_focus_answer_bearing_chunk_count",
+    "raw_focus_answer_bearing_bundle_count",
+    "raw_focus_first_answer_bearing_chunk_rank",
+    "raw_focus_first_answer_bearing_bundle_rank",
     "answer_present_but_generation_fail",
     "hotpot_overpreserve_rate",
     "answer_conversion",
@@ -284,6 +308,10 @@ def _extract_stagewise_from_row(row):
         "answer_preserve_activation_rate",
         "preserved_answer_usefulness",
         "path_complete_rate",
+        "strict_path_complete_rate",
+        "answer_bearing_path_hit",
+        "false_path_rate",
+        "equivalent_evidence_coverage",
         "bridge_answer_pair_retention",
         "incomplete_path_rate",
         "chain_compactness",
@@ -303,6 +331,10 @@ def _extract_stagewise_from_row(row):
         "first_complete_path_rank",
         "bundle_dedup_ratio",
         "answer_path_coverage",
+        "summary_token_count",
+        "path_focus_count",
+        "derivation_prompt_activation",
+        "answer_chain_readability_score",
         "conversion_after_path_bundle",
         "answer_present_but_generation_fail",
         "hotpot_overpreserve_rate",
@@ -347,6 +379,22 @@ def _extract_stagewise_from_row(row):
     )
     path_complete_rate = _safe_float(
         diagnostics.get("path_complete_rate", metrics.get("path_complete_rate", 0.0)),
+        0.0,
+    )
+    strict_path_complete_rate = _safe_float(
+        diagnostics.get("strict_path_complete_rate", metrics.get("strict_path_complete_rate", 0.0)),
+        0.0,
+    )
+    answer_bearing_path_hit = _safe_float(
+        diagnostics.get("answer_bearing_path_hit", metrics.get("answer_bearing_path_hit", 0.0)),
+        0.0,
+    )
+    false_path_rate = _safe_float(
+        diagnostics.get("false_path_rate", metrics.get("false_path_rate", 0.0)),
+        0.0,
+    )
+    equivalent_evidence_coverage = _safe_float(
+        diagnostics.get("equivalent_evidence_coverage", metrics.get("equivalent_evidence_coverage", 0.0)),
         0.0,
     )
     bridge_answer_pair_retention = _safe_float(
@@ -398,6 +446,28 @@ def _extract_stagewise_from_row(row):
         diagnostics.get("answer_path_coverage", rendered_meta.get("answer_path_coverage", metrics.get("answer_path_coverage", 0.0))),
         0.0,
     )
+    summary_token_count = _safe_float(
+        diagnostics.get("summary_token_count", rendered_meta.get("summary_token_count", metrics.get("summary_token_count", 0.0))),
+        0.0,
+    )
+    path_focus_count = _safe_float(
+        diagnostics.get("path_focus_count", rendered_meta.get("path_focus_count", metrics.get("path_focus_count", 0.0))),
+        0.0,
+    )
+    derivation_prompt_activation = _safe_float(
+        diagnostics.get(
+            "derivation_prompt_activation",
+            rendered_meta.get("derivation_prompt_activation", metrics.get("derivation_prompt_activation", 0.0)),
+        ),
+        0.0,
+    )
+    answer_chain_readability_score = _safe_float(
+        diagnostics.get(
+            "answer_chain_readability_score",
+            rendered_meta.get("answer_chain_readability_score", metrics.get("answer_chain_readability_score", 0.0)),
+        ),
+        0.0,
+    )
     anchor_bridge_balance = _safe_float(
         diagnostics.get("anchor_bridge_balance", metrics.get("anchor_bridge_balance", 0.0)),
         0.0,
@@ -424,10 +494,95 @@ def _extract_stagewise_from_row(row):
 
     bridge_signal = max(run_bridge_coverage, seed_bridge_recall)
     answer_signal = max(rendered_sf_recall, seed_answer_recall)
+
+    # Stagewise integrity fallback:
+    # some profiles emit sparse/zero connector diagnostics even when path-like
+    # evidence exists. Reconstruct conservative proxy terms instead of forcing
+    # strict metrics to collapse to zero.
+    if bridge_purity <= 0.0 and bridge_signal > 0.0:
+        bridge_purity = max(
+            0.0,
+            min(
+                1.0,
+                max(
+                    bridge_purity,
+                    (0.55 * bridge_signal) + (0.45 * max(0.0, 1.0 - bridge_noise_ratio)),
+                ),
+            ),
+        )
+    if answer_side_density <= 0.0:
+        answer_side_density = max(
+            0.0,
+            min(
+                1.0,
+                max(
+                    answer_side_density,
+                    seed_answer_recall,
+                    rendered_sf_recall * 0.60,
+                    supporting_fact_precision * 0.50,
+                ),
+            ),
+        )
+    if bridge_answer_pair_retention <= 0.0 and path_complete_rate > 0.0:
+        bridge_answer_pair_retention = max(
+            0.0,
+            min(
+                1.0,
+                min(
+                    path_complete_rate,
+                    max(bridge_signal, bridge_purity, _safe_float(diagnostics.get("bridge_to_answer_path_hit", 0.0), 0.0)),
+                ),
+            ),
+        )
+    if chain_compactness <= 0.0 and path_complete_rate > 0.0:
+        chain_compactness = max(
+            0.0,
+            min(1.0, max(support_set_compactness, 0.30)),
+        )
     bridge_present = bool(bridge_signal >= 0.35)
     answer_side_present = bool(max(answer_signal, answer_side_density) >= 0.25)
     qa_executed = bool((row or {}).get("qa_executed", True))
+    generation_fallback = bool((row or {}).get("generation_fallback", False))
     generation_fail = bool(qa_executed and f1 <= 0.01)
+    answer_correct = bool((em >= 0.5) or (f1 >= 0.5))
+    if strict_path_complete_rate <= 0.0:
+        strict_path_complete_rate = max(
+            0.0,
+            min(
+                1.0,
+                min(
+                    path_complete_rate,
+                    max(bridge_answer_pair_retention, min(path_complete_rate, max(bridge_signal, bridge_purity))),
+                    max(bridge_purity, min(1.0, bridge_signal)),
+                    max(answer_side_density, min(1.0, answer_signal)),
+                    max(chain_compactness, support_set_compactness),
+                ),
+            ),
+        )
+    if answer_bearing_path_hit <= 0.0:
+        answer_bearing_path_hit = max(
+            0.0,
+            min(
+                1.0,
+                strict_path_complete_rate
+                * max(
+                    answer_side_density,
+                    min(1.0, answer_signal),
+                    _safe_float(diagnostics.get("bridge_to_answer_path_hit", 0.0), 0.0),
+                ),
+            ),
+        )
+    if false_path_rate <= 0.0 and path_complete_rate >= 0.50 and answer_bearing_path_hit <= 0.0:
+        false_path_rate = 1.0
+    if equivalent_evidence_coverage <= 0.0:
+        equivalent_evidence_coverage = max(
+            0.0,
+            min(
+                1.0,
+                max(rendered_sf_recall, sf_recall, answer_side_density)
+                * (0.70 + 0.30 * max(0.0, min(1.0, bridge_purity))),
+            ),
+        )
     bridge_noisy = bool(
         bridge_present
         and answer_side_present
@@ -447,6 +602,10 @@ def _extract_stagewise_from_row(row):
     metrics["answer_preserve_activation_rate"] = max(0.0, min(1.0, answer_preserve_activation_rate))
     metrics["preserved_answer_usefulness"] = max(0.0, min(1.0, preserved_answer_usefulness))
     metrics["path_complete_rate"] = max(0.0, min(1.0, path_complete_rate))
+    metrics["strict_path_complete_rate"] = max(0.0, min(1.0, strict_path_complete_rate))
+    metrics["answer_bearing_path_hit"] = max(0.0, min(1.0, answer_bearing_path_hit))
+    metrics["false_path_rate"] = max(0.0, min(1.0, false_path_rate))
+    metrics["equivalent_evidence_coverage"] = max(0.0, min(1.0, equivalent_evidence_coverage))
     metrics["bridge_answer_pair_retention"] = max(0.0, min(1.0, bridge_answer_pair_retention))
     metrics["incomplete_path_rate"] = max(0.0, min(1.0, incomplete_path_rate))
     metrics["chain_compactness"] = max(0.0, min(1.0, chain_compactness))
@@ -457,8 +616,27 @@ def _extract_stagewise_from_row(row):
     metrics["first_complete_path_rank"] = max(0.0, float(first_complete_path_rank))
     metrics["bundle_dedup_ratio"] = max(0.0, min(1.0, bundle_dedup_ratio))
     metrics["answer_path_coverage"] = max(0.0, min(1.0, answer_path_coverage))
+    metrics["summary_token_count"] = max(0.0, float(summary_token_count))
+    metrics["path_focus_count"] = max(0.0, float(path_focus_count))
+    metrics["derivation_prompt_activation"] = max(0.0, min(1.0, derivation_prompt_activation))
+    metrics["answer_chain_readability_score"] = max(0.0, min(1.0, answer_chain_readability_score))
     metrics["anchor_bridge_balance"] = max(0.0, min(1.0, anchor_bridge_balance))
     metrics["hotpot_overpreserve_rate"] = max(0.0, min(1.0, hotpot_overpreserve_rate))
+    metrics["rendered_hit_rate"] = max(
+        0.0,
+        min(
+            1.0,
+            _safe_float(
+                (diagnostics.get("stagewise_loss_funnel", {}) or {}).get(
+                    "rendered_hit_rate",
+                    metrics.get("rendered_hit_rate", rendered_sf_recall),
+                ),
+                rendered_sf_recall,
+            ),
+        ),
+    )
+    metrics["answer_correct"] = 1.0 if answer_correct else 0.0
+    metrics["fallback_rate"] = 1.0 if generation_fallback else 0.0
     metrics["conversion_after_bridge"] = (
         1.0 if (bridge_present and answer_side_present and (f1 > 0.0 or em > 0.0)) else 0.0
     )

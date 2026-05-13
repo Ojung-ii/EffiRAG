@@ -1,3 +1,6 @@
+# Legacy baseline-compatible config.
+# Note: despite directory name, this file keeps retrieval_objective_mode=baseline
+# for backward-compatible entity-first chunk-grounded experiments.
 dataset: hotpotqa
 split: validation
 method: effirag
@@ -27,11 +30,11 @@ openie_max_new_tokens: 256
 embedding_enabled: true
 sentence_rerank_enabled: true
 embedding_model_name: nvidia/NV-Embed-v2
-embedding_text_max_chars: 900
+embedding_text_max_chars: 800
 embedding_weight: 0.35
 embedding_rerank_topn: 80
 embedding_batch_size: 16
-embedding_max_length: 320
+embedding_max_length: 256
 semantic_topn_entity: 30
 semantic_topn_chunk: 15
 graph_reserve_topn: 15
@@ -183,7 +186,18 @@ eta_connector: 0.20
 lambda_redundancy: 0.25
 reserve_top_corridor: false
 # score | retrieval | corridor_rank | query_bridge_answer
-# path_bundle mode flags: path_bundle_ordered + path_bundle_dedup + path_bundle_compactlite
+# path_bundle mode flags:
+# - path_bundle_ordered
+# - path_bundle_chain_summary
+# - path_bundle_derivation_prompt
+# - path_bundle_top1_focus (or path_bundle_top2_focus)
+# - path_bundle_dedup
+# - path_bundle_compactlite
+# corridor_aware_flat generation-side minimal intervention flags:
+# - gen_quote_then_answer_light
+# - gen_grounded_answer_light
+# - gen_evidence_focus_light
+# - gen_light_ab_chain / gen_light_ab_wording
 order_strategy: score
 # Minimal downstream options (Set F): use config-level toggles.
 # - final_top_slice_reorder_enabled: true

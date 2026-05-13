@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from effirag.config import RetrievalConfig
 from effirag.run_retrieval import execute_retrieval_experiment
@@ -36,5 +37,6 @@ def test_retrieval_pipeline_execution(tmp_path):
 
     assert len(rows) == 1
     assert summary["n_samples"] == 1.0
-    assert (out_dir / "retrieval_query_results.jsonl").exists()
-    assert (out_dir / "retrieval_summary.json").exists()
+    resolved_out_dir = Path(summary["output_dir"])
+    assert (resolved_out_dir / "retrieval_query_results.jsonl").exists()
+    assert (resolved_out_dir / "retrieval_summary.json").exists()

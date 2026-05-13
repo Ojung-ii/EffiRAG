@@ -8,7 +8,8 @@ from pathlib import Path
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-from .config import RagConfig, apply_cli_overrides, dataclass_from_dict
+from .config import RagConfig, apply_cli_overrides, audit_config_path_mode_consistency, dataclass_from_dict
+from .eval_metrics import aggregate_run_eval_metrics, compute_query_eval_metrics
 from .eval.evaluator import QAEvaluator, extract_gold_answers
 from .efficiency import Timer, gpu_peak_mb, process_rss_mb, reset_gpu_peak
 from .metrics import (
@@ -688,6 +689,15 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top1-correction-sentence-weight-query", type=float, default=None)
     parser.add_argument("--top1-correction-sentence-weight-locality", type=float, default=None)
     parser.add_argument("--top1-correction-sentence-weight-redundancy", type=float, default=None)
+    parser.add_argument("--ablation-no-pair-semantic", type=str, default=None)
+    parser.add_argument("--ablation-no-pair-bridge", type=str, default=None)
+    parser.add_argument("--ablation-no-final-text-rerank", type=str, default=None)
+    parser.add_argument("--score-component-trace-enabled", type=str, default=None)
+    parser.add_argument("--score-component-trace-topn", type=int, default=None)
+    # Deferred placeholders (Phase 5B/5C candidates).
+    parser.add_argument("--ablation-no-local-semantic", type=str, default=None)
+    parser.add_argument("--ablation-no-top1-correction", type=str, default=None)
+    parser.add_argument("--ablation-no-run-pre-semantic", type=str, default=None)
     parser.add_argument("--embedding-model-name", type=str, default=None)
     parser.add_argument("--embedding-weight", type=float, default=None)
     parser.add_argument("--embedding-rerank-topn", type=int, default=None)
@@ -790,7 +800,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--llm-timeout-sec", type=float, default=None)
     parser.add_argument("--llm-max-new-tokens", type=int, default=None)
     parser.add_argument("--max-context-sentences", type=int, default=None)
-    parser.add_argument("--render-mode", type=str, default=None, choices=["flat", "corridor", "corridor_aware_flat"])
+    parser.add_argument("--render-mode", type=str, default=None, choices=["flat", "corridor", "corridor_aware_flat", "path_bundle"])
     parser.add_argument("--max-corridors-in-context", type=int, default=None)
     parser.add_argument("--max-main-sentences-per-corridor", type=int, default=None)
     parser.add_argument("--max-support-per-corridor", type=int, default=None)
@@ -823,7 +833,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--top-corridors", type=int, default=None)
     parser.add_argument("--max-sentences", type=int, default=None)
     parser.add_argument("--reserve-top-corridor", type=str, default=None)
-    parser.add_argument("--order-strategy", type=str, default=None, choices=["score", "retrieval", "corridor_rank"])
+    parser.add_argument("--order-strategy", type=str, default=None)
+    parser.add_argument("--prompt-variant", type=str, default=None, choices=["default", "evidence_first"])
+    parser.add_argument("--precomputed-retrieval-path", type=str, default=None)
+    parser.add_argument("--precomputed-retrieval-strict", type=str, default=None)
     parser.add_argument("--measure-gpu-peak", type=str, default=None)
     parser.add_argument("--measure-cpu-ram", type=str, default=None)
     parser.add_argument("--profile-stages", type=str, default=None)
@@ -871,6 +884,8 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
     run_qa_enabled = bool(getattr(cfg, "run_qa", True)) and (not bool(getattr(cfg, "retrieval_only", False)))
     qa_evaluator = QAEvaluator(mode=str(getattr(cfg, "evaluator_mode", "legacy")))
     retrieval_cache = {}
+    precomputed_retrieval_strict = bool(getattr(cfg, "precomputed_retrieval_strict", False))
+    missing_precomputed_sample_ids = []
     if precomputed_retrieval_path:
         retrieval_cache = _load_precomputed_retrieval(precomputed_retrieval_path)
 
@@ -925,9 +940,16 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
 
             cpu_peak = process_rss_mb() if cfg.measure_cpu_ram else 0.0
 
-            retrieval = retrieval_cache.get(sample.qid)
+            sample_id_key = str(sample.qid)
+            retrieval = retrieval_cache.get(sample_id_key)
             retrieval_source = "precomputed"
             if retrieval is None:
+                if precomputed_retrieval_path and precomputed_retrieval_strict:
+                    missing_precomputed_sample_ids.append(str(sample_id_key))
+                    raise KeyError(
+                        f"Missing precomputed retrieval for sample_id={sample_id_key} "
+                        f"(strict mode enabled, source={precomputed_retrieval_path})"
+                    )
                 retrieval = method_fn(sample, cfg)
                 retrieval_source = "on_the_fly"
             retrieval_source_counts[retrieval_source] = retrieval_source_counts.get(retrieval_source, 0) + 1
@@ -1000,6 +1022,9 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     reserve_top_corridor=cfg.reserve_top_corridor,
                     order_strategy=cfg.order_strategy,
                 )
+                meta = dict((rendered.metadata or {}))
+                meta["prompt_variant"] = str(getattr(cfg, "prompt_variant", "default") or "default")
+                rendered.metadata = meta
             finally:
                 render_ms = float((time.perf_counter() - render_start) * 1000.0)
             retrieval_bar.update(1)
@@ -1011,6 +1036,14 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             em = 0.0
             f1 = 0.0
             generation_call_ms = 0.0
+            initial_em = 0.0
+            initial_f1 = 0.0
+            qa_utilization_variant = ""
+            qa_utilization_applied = False
+            qa_utilization_changed = False
+            qa_surface_exact_correction = 0
+            evidence_supported_answer = False
+            answer_type_match = False
             gold_answers = extract_gold_answers(sample) or [str(sample.answer or "")]
             if run_qa_enabled:
                 generation_start = time.perf_counter()
@@ -1032,6 +1065,27 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             prompt_tokens = _safe_int(generation_meta.get("prompt_tokens", 0) or 0, default=0)
             completion_tokens = _safe_int(generation_meta.get("completion_tokens", 0) or 0, default=0)
             finish_reason = str(generation_meta.get("finish_reason", "") or "")
+            prompt_variant = str(generation_meta.get("prompt_variant", getattr(cfg, "prompt_variant", "default")) or "default")
+            qa_utilization_variant = str(generation_meta.get("qa_utilization_variant", "") or "")
+            qa_utilization_applied = bool(generation_meta.get("qa_utilization_applied", False))
+            qa_utilization_changed = bool(generation_meta.get("qa_utilization_changed", False))
+            evidence_supported_answer = bool(generation_meta.get("evidence_supported_answer", False))
+            answer_type_match = bool(generation_meta.get("answer_type_match", False))
+            initial_prediction = str(generation_meta.get("initial_prediction", "") or "")
+            if run_qa_enabled and initial_prediction:
+                init_eval = qa_evaluator.evaluate(initial_prediction, sample)
+                initial_em = float(init_eval.em)
+                initial_f1 = float(init_eval.f1)
+            qa_surface_exact_correction = (
+                1
+                if (
+                    run_qa_enabled
+                    and bool(qa_utilization_changed)
+                    and float(initial_em) < 1.0
+                    and float(em) >= 1.0
+                )
+                else 0
+            )
             rendered_sentence_count = int(len(rendered.sentence_ids))
             truncated_sentence_count = int(rendered.truncated_sentence_count)
             truncated_corridor_count = int(rendered.truncated_corridor_count)
@@ -1083,6 +1137,29 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                 "em": em,
                 "f1": f1,
             }
+            metrics.update(
+                compute_query_eval_metrics(
+                    sample=sample,
+                    retrieval=retrieval,
+                    rendered=rendered,
+                    prediction=(generation.prediction if generation else ""),
+                    em=em,
+                    f1=f1,
+                    qa_executed=bool(generation is not None),
+                    generation_diagnostics={
+                        "evidence_supported_answer": bool(evidence_supported_answer),
+                        "answer_type_match": bool(answer_type_match),
+                        "qa_utilization_applied": bool(qa_utilization_applied),
+                        "qa_utilization_variant": str(qa_utilization_variant),
+                        "qa_utilization_changed": bool(qa_utilization_changed),
+                    },
+                    rendered_match=rendered_match,
+                    supporting_fact_recall=recall,
+                    supporting_fact_precision=precision,
+                    rendered_supporting_fact_recall=rendered_recall,
+                    rendered_supporting_fact_precision=rendered_precision,
+                )
+            )
             latency_breakdown = dict(
                 ((retrieval.diagnostics or {}).get("latency_breakdown_ms", {}) or {})
             )
@@ -1112,6 +1189,8 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                 "rendering": {
                     "render_mode": rendered.render_mode,
                     "render_mode_requested": render_mode_requested or "(auto)",
+                    "render_variant": str((rendered_meta.get("render_variant", rendered.render_mode) or rendered.render_mode)),
+                    "prompt_variant": str(prompt_variant),
                     "truncated_corridors": rendered.truncated_corridor_count,
                     "truncated_sentences": rendered.truncated_sentence_count,
                     "chunk_grounding_enabled": bool(rendered_meta.get("chunk_grounding_enabled", False)),
@@ -1128,6 +1207,15 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     "prompt_tokens": prompt_tokens,
                     "completion_tokens": completion_tokens,
                     "finish_reason": finish_reason,
+                    "prompt_variant": str(prompt_variant),
+                    "initial_em": float(initial_em),
+                    "initial_f1": float(initial_f1),
+                    "qa_utilization_variant": str(qa_utilization_variant),
+                    "qa_utilization_applied": bool(qa_utilization_applied),
+                    "qa_utilization_changed": bool(qa_utilization_changed),
+                    "exact_match_surface_correction": int(qa_surface_exact_correction),
+                    "evidence_supported_answer": bool(evidence_supported_answer),
+                    "answer_type_match": bool(answer_type_match),
                     "rendered_sentence_count": rendered_sentence_count,
                     "truncated_sentence_count": truncated_sentence_count,
                     "truncated_corridor_count": truncated_corridor_count,
@@ -1175,7 +1263,9 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         "render_mode_requested": render_mode_requested or "(auto)",
         "render_mode_resolved": resolved_render_mode,
         "precomputed_retrieval_used": bool(precomputed_retrieval_path),
+        "precomputed_retrieval_strict": bool(precomputed_retrieval_strict),
         "retrieval_source_breakdown": retrieval_source_counts,
+        "missing_precomputed_sample_ids": list(missing_precomputed_sample_ids),
         "fallback_count": int(fallback_count),
         "fallback_rate": mean_or_zero(
             [1.0 if r.get("generation_fallback", False) else 0.0 for r in rows if r.get("qa_executed", False)]
@@ -1431,12 +1521,92 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         vals = [float((r["metrics"].get("recall_at_k", {}) or {}).get(key, 0.0)) for r in rows]
         agg = mean_or_zero(vals)
         recall_at_k_summary[key] = agg
+        summary[f"recall_at_{key}"] = agg
+        summary[f"R@{key}"] = agg
         summary[f"supporting_fact_recall_at_{key}"] = agg
     summary["supporting_fact_recall_at_k"] = recall_at_k_summary
+    summary.update(aggregate_run_eval_metrics(rows))
+    summary["retrieval_ms"] = float(summary.get("retrieval_latency_ms", summary.get("retrieval_ms", 0.0)))
+    summary["total_ms"] = float(summary.get("total_latency_ms", summary.get("total_ms", 0.0)))
+    if "generation_ms" not in summary:
+        summary["generation_ms"] = float(summary.get("generation_latency_ms", 0.0))
 
     if run_qa_enabled:
         summary["generation_latency_ms"] = mean_or_zero([r["efficiency"]["generation_latency_ms"] for r in rows])
         summary["generation_ms"] = mean_or_zero([r["efficiency"].get("generation_ms", 0.0) for r in rows])
+        gdiag_rows = [dict((r.get("generation_diagnostics", {}) or {})) for r in rows]
+        summary["exact_match_surface_correction_rate"] = mean_or_zero(
+            [float(g.get("exact_match_surface_correction", 0.0)) for g in gdiag_rows]
+        )
+        summary["evidence_supported_answer_rate"] = mean_or_zero(
+            [1.0 if bool(g.get("evidence_supported_answer", False)) else 0.0 for g in gdiag_rows]
+        )
+        summary["answer_type_match_rate"] = mean_or_zero(
+            [1.0 if bool(g.get("answer_type_match", False)) else 0.0 for g in gdiag_rows]
+        )
+        summary["qa_utilization_activation_rate"] = mean_or_zero(
+            [1.0 if bool(g.get("qa_utilization_applied", False)) else 0.0 for g in gdiag_rows]
+        )
+        summary["qa_utilization_changed_rate"] = mean_or_zero(
+            [1.0 if bool(g.get("qa_utilization_changed", False)) else 0.0 for g in gdiag_rows]
+        )
+        variant_counts = {}
+        for row in rows:
+            vname = str((row.get("generation_diagnostics", {}) or {}).get("qa_utilization_variant", "") or "")
+            if not vname:
+                continue
+            variant_counts[vname] = int(variant_counts.get(vname, 0) + 1)
+        summary["qa_utilization_variant_counts"] = variant_counts
+
+        def _variant_name(gd):
+            return str((gd or {}).get("qa_utilization_variant", "") or "").strip().lower()
+
+        def _variant_stats(names):
+            keys = {str(x).strip().lower() for x in list(names or []) if str(x).strip()}
+            idx = [i for i, gd in enumerate(gdiag_rows) if _variant_name(gd) in keys]
+            act = [i for i in idx if bool(gdiag_rows[i].get("qa_utilization_applied", False))]
+            changed = [i for i in act if bool(gdiag_rows[i].get("qa_utilization_changed", False))]
+            helped = 0
+            hurt = 0
+            for i in act:
+                init_f1 = _safe_float(gdiag_rows[i].get("initial_f1", 0.0), 0.0)
+                final_f1 = _safe_float(((rows[i].get("metrics", {}) or {}).get("f1", 0.0)), 0.0)
+                if final_f1 > init_f1 + 1.0e-9:
+                    helped += 1
+                elif final_f1 + 1.0e-9 < init_f1:
+                    hurt += 1
+            return {
+                "activation_rate": float(len(act) / len(rows)) if rows else 0.0,
+                "changed_rate": float(len(changed) / len(rows)) if rows else 0.0,
+                "helped_count": int(helped),
+                "hurt_count": int(hurt),
+            }
+
+        norm_stats = _variant_stats(["answer_normalization_light", "answer_surface_normalization"])
+        ext_stats = _variant_stats(["answer_type_aware_extraction"])
+        ver_stats = _variant_stats(["answer_verification_light", "evidence_supported_verification"])
+        summary["normalization_activation_rate"] = float(norm_stats["activation_rate"])
+        summary["normalization_changed_rate"] = float(norm_stats["changed_rate"])
+        summary["normalization_helped_count"] = int(norm_stats["helped_count"])
+        summary["normalization_hurt_count"] = int(norm_stats["hurt_count"])
+        summary["extraction_activation_rate"] = float(ext_stats["activation_rate"])
+        summary["extraction_changed_rate"] = float(ext_stats["changed_rate"])
+        summary["extraction_helped_count"] = int(ext_stats["helped_count"])
+        summary["extraction_hurt_count"] = int(ext_stats["hurt_count"])
+        summary["verification_activation_rate"] = float(ver_stats["activation_rate"])
+        summary["verification_changed_rate"] = float(ver_stats["changed_rate"])
+        summary["verification_helped_count"] = int(ver_stats["helped_count"])
+        summary["verification_hurt_count"] = int(ver_stats["hurt_count"])
+
+        summary["highlight_activation_rate"] = mean_or_zero(
+            [
+                1.0
+                if bool(((r.get("rendered", {}) or {}).get("metadata", {}) or {}).get("answer_cue_highlight_applied", False))
+                else 0.0
+                for r in rows
+            ]
+        )
+
         finish_reason_counts = {}
         for row in rows:
             reason = str((row.get("generation_diagnostics", {}) or {}).get("finish_reason", "") or "")
@@ -1535,9 +1705,30 @@ def main() -> None:
 
     base_config = load_yaml(args.config) if args.config else {}
     merged = apply_cli_overrides(base_config, args)
-    cfg = dataclass_from_dict(RagConfig, merged)
+    strict_unknown_keys = str(os.environ.get("EFFIRAG_STRICT_UNKNOWN_CONFIG_KEYS", "false")).strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "y",
+        "on",
+    }
+    strict_canonical_path_audit = str(
+        os.environ.get("EFFIRAG_STRICT_CANONICAL_PATH_AUDIT", "false")
+    ).strip().lower() in {"1", "true", "yes", "y", "on"}
+    audit_config_path_mode_consistency(
+        args.config,
+        merged.get("retrieval_objective_mode", base_config.get("retrieval_objective_mode", "baseline")),
+        strict=strict_canonical_path_audit,
+    )
+    cfg = dataclass_from_dict(
+        RagConfig,
+        merged,
+        strict_unknown_keys=strict_unknown_keys,
+        ignored_unknown_keys={"config"},
+    )
 
-    _, summary = execute_rag_experiment(cfg)
+    precomputed_retrieval_path = str(getattr(cfg, "precomputed_retrieval_path", "") or "").strip() or None
+    _, summary = execute_rag_experiment(cfg, precomputed_retrieval_path=precomputed_retrieval_path)
 
     print("RAG run complete")
     print(f"Output dir: {summary.get('output_dir', '')}")
@@ -1550,7 +1741,10 @@ def main() -> None:
                 "sf_recall",
                 "Recall@1",
                 "Recall@5",
+                "Recall@10",
                 "Recall@20",
+                "Recall@30",
+                "Recall@50",
                 "rendered_sf_recall",
                 "EM",
                 "F1",
@@ -1570,7 +1764,10 @@ def main() -> None:
                     "%.4f" % summary["supporting_fact_recall"],
                     "%.4f" % summary.get("supporting_fact_recall_at_1", 0.0),
                     "%.4f" % summary.get("supporting_fact_recall_at_5", 0.0),
+                    "%.4f" % summary.get("supporting_fact_recall_at_10", 0.0),
                     "%.4f" % summary.get("supporting_fact_recall_at_20", 0.0),
+                    "%.4f" % summary.get("supporting_fact_recall_at_30", 0.0),
+                    "%.4f" % summary.get("supporting_fact_recall_at_50", 0.0),
                     "%.4f" % summary.get("rendered_supporting_fact_recall", 0.0),
                     "%.4f" % summary["em"],
                     "%.4f" % summary["f1"],

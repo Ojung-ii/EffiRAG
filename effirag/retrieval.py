@@ -3,6 +3,7 @@ import os
 import random
 import time
 import hashlib
+import weakref
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
 from math import sqrt
@@ -14,10 +15,26 @@ import networkx as nx
 import numpy as np
 
 from .anchors import select_lexical_anchors
+from .canonical_objective import (
+    apply_canonical_copy_span_objective,
+    canonical_effective_reference_mode,
+    is_canonical_copy_span_mode,
+)
+from .canonical_scoring import (
+    canonical_run_score,
+    canonical_run_surrogate_loss,
+    canonical_run_weight_bundle,
+    canonical_seed_score_map,
+)
 from .config import RetrievalConfig
 from .embedding import cosine_similarity, encode_texts, rerank_sentences_by_embedding, topk_cosine_similarity
 from .global_index import load_or_build_global_index, load_semantic_index
 from .graph import build_document_entity_graph
+from .legacy_objectives import (
+    apply_legacy_objective_flag_overrides,
+    is_legacy_objective_mode,
+    normalize_objective_mode,
+)
 from .metrics import supporting_fact_match_details
 from .registry import register_method
 from .types import AnchorResult, RetrievalResult
@@ -31,7 +48,8 @@ except Exception:  # pragma: no cover
 
 _GLOBAL_INDEX_MEMO = {}
 _GLOBAL_SEMANTIC_MEMO = {}
-_PPR_GRAPH_STRUCT_MEMO = {}
+_PPR_GRAPH_STRUCT_MEMO = weakref.WeakKeyDictionary()
+_PPR_GRAPH_STRUCT_MEMO_FALLBACK = {}
 _PPR_PARALLEL_STRUCT = None
 _QUERY_EMBED_MEMO = {}
 
@@ -161,97 +179,14 @@ def _apply_shared_budget_profile_once(cfg):
 
 def _resolve_retrieval_objective_mode(cfg):
     mode = str(getattr(cfg, "retrieval_objective_mode", "baseline") or "baseline").strip().lower()
-    aliases = {
-        "off": "baseline",
-        "default": "baseline",
-        "r1": "hybrid_anchor_recall",
-        "r2": "bridge_candidate_induction",
-        "r3": "role_aware_chunk_scoring",
-        "r4": "coverage_selection",
-        # Connector-lite refinement aliases
-        "r2_bridge": "r2_bridge_only",
-        "r2_bridge_only": "r2_bridge_only",
-        "r2_connector_core": "r2_connector_core",
-        "r2+r3_anchor_light": "r2_plus_r3_anchor_light",
-        "r2_plus_r3_anchor_light": "r2_plus_r3_anchor_light",
-        "r2+r3_answer_light": "r2_plus_r3_answer_light",
-        "r2_plus_r3_answer_light": "r2_plus_r3_answer_light",
-        "r2_path": "r2_plus_path_preserve",
-        "r2_plus_path_preserve": "r2_plus_path_preserve",
-        "r2_path_compact": "r2_plus_path_preserve_compact",
-        "r2_plus_path_preserve_compact": "r2_plus_path_preserve_compact",
-        "r2_path_guarded": "r2_plus_path_preserve_guarded",
-        "r2_plus_path_preserve_guarded": "r2_plus_path_preserve_guarded",
-        "r2_path_compact_lite": "r2_plus_path_preserve_compact_lite",
-        "r2_plus_path_preserve_compact_lite": "r2_plus_path_preserve_compact_lite",
-        "full": "bridge_coverage_full",
-        "bridge_coverage": "bridge_coverage_full",
-        # PAMAE-style bounded-budget connector rounds
-        "p1": "seed_quality_analysis",
-        "p2_bridge": "run_objective_bridge_aware",
-        "p2_role": "run_objective_role_balanced",
-        "p3_corridor": "corridor_role_constrained",
-        "p3_combo": "bridge_aware_run_plus_role_constrained_corridor",
-        # PAMAE seed-run-corridor refinement variants
-        "pamae_seed_run_core": "seed_run_connector_core",
-        "seed_run_connector_core": "seed_run_connector_core",
-        "p2_corridor_compact": "seed_run_connector_core_corridor_compact",
-        "seed_run_connector_core_corridor_compact": "seed_run_connector_core_corridor_compact",
-        "p3_corridor_answer_preserve": "seed_run_connector_core_corridor_answer_preserve",
-        "seed_run_connector_core_corridor_answer_preserve": "seed_run_connector_core_corridor_answer_preserve",
-        "p4_corridor_bridge_purity": "seed_run_connector_core_corridor_bridge_purity",
-        "seed_run_connector_core_corridor_bridge_purity": "seed_run_connector_core_corridor_bridge_purity",
-        "p5_compact_answer_preserve": "seed_run_connector_core_corridor_compact_answer_preserve",
-        "seed_run_connector_core_corridor_compact_answer_preserve": "seed_run_connector_core_corridor_compact_answer_preserve",
-        # Guarded answer-preserve refinement round
-        "p3_base": "p3_answer_preserve_base",
-        "p3_answer_preserve_base": "p3_answer_preserve_base",
-        "p3_guarded_hotpot": "p3_answer_preserve_guarded_hotpot",
-        "p3_answer_preserve_guarded_hotpot": "p3_answer_preserve_guarded_hotpot",
-        "p3_confidence_gated": "p3_answer_preserve_confidence_gated",
-        "p3_answer_preserve_confidence_gated": "p3_answer_preserve_confidence_gated",
-    }
-    mode = aliases.get(mode, mode)
-    valid = {
-        "baseline",
-        "hybrid_anchor_recall",
-        "bridge_candidate_induction",
-        "role_aware_chunk_scoring",
-        "coverage_selection",
-        "bridge_coverage_full",
-        # Connector-lite refinement modes
-        "r2_bridge_only",
-        "r2_connector_core",
-        "r2_plus_r3_anchor_light",
-        "r2_plus_r3_answer_light",
-        "r2_plus_path_preserve",
-        "r2_plus_path_preserve_compact",
-        "r2_plus_path_preserve_guarded",
-        "r2_plus_path_preserve_compact_lite",
-        # PAMAE-style bounded-budget connector rounds
-        "seed_quality_analysis",
-        "run_objective_bridge_aware",
-        "run_objective_role_balanced",
-        "corridor_role_constrained",
-        "bridge_aware_run_plus_role_constrained_corridor",
-        # PAMAE seed-run-corridor refinement variants
-        "seed_run_connector_core",
-        "seed_run_connector_core_corridor_compact",
-        "seed_run_connector_core_corridor_answer_preserve",
-        "seed_run_connector_core_corridor_bridge_purity",
-        "seed_run_connector_core_corridor_compact_answer_preserve",
-        # Guarded answer-preserve refinement round
-        "p3_answer_preserve_base",
-        "p3_answer_preserve_guarded_hotpot",
-        "p3_answer_preserve_confidence_gated",
-    }
-    if mode not in valid:
-        mode = "baseline"
-    return mode
+    return normalize_objective_mode(mode)
 
 
 def _resolve_retrieval_objective_flags(cfg):
     mode = _resolve_retrieval_objective_mode(cfg)
+    if is_canonical_copy_span_mode(mode):
+        apply_canonical_copy_span_objective(cfg, dataset=getattr(cfg, "dataset", None), mode=mode)
+
     hybrid = bool(getattr(cfg, "hybrid_anchor_recall_enabled", False))
     bridge_induction = bool(getattr(cfg, "bridge_candidate_induction_enabled", False))
     role_chunk = bool(getattr(cfg, "role_aware_chunk_scoring_enabled", False))
@@ -283,174 +218,49 @@ def _resolve_retrieval_objective_flags(cfg):
         bridge_induction = True
         role_chunk = True
         coverage = True
-    elif mode in {"r2_bridge_only", "r2_connector_core"}:
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_path_preserve = False
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-    elif mode in {"r2_plus_r3_anchor_light", "r2_plus_r3_answer_light"}:
-        bridge_induction = True
-        role_chunk = True
-        coverage = False
-        corridor_path_preserve = False
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-    elif mode == "r2_plus_path_preserve":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = False
-        corridor_answer_preserve = False
-        corridor_bridge_purity = False
-        corridor_path_preserve = True
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-        corridor_answer_preserve_guarded_hotpot = False
-        corridor_answer_preserve_confidence_gated = False
-    elif mode == "r2_plus_path_preserve_compact":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = True
-        corridor_answer_preserve = False
-        corridor_bridge_purity = False
-        corridor_path_preserve = True
-        corridor_path_preserve_compact = True
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-        corridor_answer_preserve_guarded_hotpot = False
-        corridor_answer_preserve_confidence_gated = False
-    elif mode == "r2_plus_path_preserve_guarded":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = False
-        corridor_answer_preserve = False
-        corridor_bridge_purity = False
-        corridor_path_preserve = True
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = True
-        corridor_path_preserve_compact_lite = False
-        corridor_answer_preserve_guarded_hotpot = False
-        corridor_answer_preserve_confidence_gated = False
-    elif mode == "r2_plus_path_preserve_compact_lite":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = True
-        corridor_answer_preserve = False
-        corridor_bridge_purity = False
-        corridor_path_preserve = True
-        corridor_path_preserve_compact = True
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = True
-        corridor_answer_preserve_guarded_hotpot = False
-        corridor_answer_preserve_confidence_gated = False
-    elif mode == "corridor_role_constrained":
-        coverage = True
-    elif mode == "bridge_aware_run_plus_role_constrained_corridor":
-        coverage = True
-    elif mode == "seed_run_connector_core":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = False
-        corridor_answer_preserve = False
-        corridor_bridge_purity = False
-        corridor_path_preserve = False
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-    elif mode == "seed_run_connector_core_corridor_compact":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = True
-        corridor_answer_preserve = False
-        corridor_bridge_purity = False
-        corridor_path_preserve = False
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-    elif mode == "seed_run_connector_core_corridor_answer_preserve":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = False
-        corridor_answer_preserve = True
-        corridor_bridge_purity = False
-        corridor_path_preserve = False
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-    elif mode == "seed_run_connector_core_corridor_bridge_purity":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = False
-        corridor_answer_preserve = False
-        corridor_bridge_purity = True
-        corridor_path_preserve = False
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-    elif mode == "seed_run_connector_core_corridor_compact_answer_preserve":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = True
-        corridor_answer_preserve = True
-        corridor_bridge_purity = False
-        corridor_path_preserve = False
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-        corridor_answer_preserve_guarded_hotpot = False
-        corridor_answer_preserve_confidence_gated = False
-    elif mode == "p3_answer_preserve_base":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = False
-        corridor_answer_preserve = True
-        corridor_bridge_purity = False
-        corridor_path_preserve = False
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-        corridor_answer_preserve_guarded_hotpot = False
-        corridor_answer_preserve_confidence_gated = False
-    elif mode == "p3_answer_preserve_guarded_hotpot":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = False
-        corridor_answer_preserve = True
-        corridor_bridge_purity = False
-        corridor_path_preserve = False
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-        corridor_answer_preserve_guarded_hotpot = True
-        corridor_answer_preserve_confidence_gated = False
-    elif mode == "p3_answer_preserve_confidence_gated":
-        bridge_induction = True
-        role_chunk = False
-        coverage = False
-        corridor_compact = False
-        corridor_answer_preserve = True
-        corridor_bridge_purity = False
-        corridor_path_preserve = False
-        corridor_path_preserve_compact = False
-        corridor_path_preserve_guarded = False
-        corridor_path_preserve_compact_lite = False
-        corridor_answer_preserve_guarded_hotpot = False
-        corridor_answer_preserve_confidence_gated = True
+    elif is_legacy_objective_mode(mode):
+        legacy_flags = apply_legacy_objective_flag_overrides(
+            mode,
+            {
+                "mode": mode,
+                "hybrid_anchor_recall": hybrid,
+                "bridge_candidate_induction": bridge_induction,
+                "role_aware_chunk_scoring": role_chunk,
+                "coverage_selection": coverage,
+                "corridor_compact_shaping": corridor_compact,
+                "corridor_answer_preserve_shaping": corridor_answer_preserve,
+                "corridor_bridge_purity_shaping": corridor_bridge_purity,
+                "corridor_path_preserve_shaping": corridor_path_preserve,
+                "corridor_path_preserve_compact_shaping": corridor_path_preserve_compact,
+                "corridor_path_preserve_guarded_shaping": corridor_path_preserve_guarded,
+                "corridor_path_preserve_compact_lite_shaping": corridor_path_preserve_compact_lite,
+                "corridor_answer_preserve_guarded_hotpot": corridor_answer_preserve_guarded_hotpot,
+                "corridor_answer_preserve_confidence_gated": corridor_answer_preserve_confidence_gated,
+            },
+        )
+        hybrid = bool(legacy_flags.get("hybrid_anchor_recall", hybrid))
+        bridge_induction = bool(legacy_flags.get("bridge_candidate_induction", bridge_induction))
+        role_chunk = bool(legacy_flags.get("role_aware_chunk_scoring", role_chunk))
+        coverage = bool(legacy_flags.get("coverage_selection", coverage))
+        corridor_compact = bool(legacy_flags.get("corridor_compact_shaping", corridor_compact))
+        corridor_answer_preserve = bool(legacy_flags.get("corridor_answer_preserve_shaping", corridor_answer_preserve))
+        corridor_bridge_purity = bool(legacy_flags.get("corridor_bridge_purity_shaping", corridor_bridge_purity))
+        corridor_path_preserve = bool(legacy_flags.get("corridor_path_preserve_shaping", corridor_path_preserve))
+        corridor_path_preserve_compact = bool(
+            legacy_flags.get("corridor_path_preserve_compact_shaping", corridor_path_preserve_compact)
+        )
+        corridor_path_preserve_guarded = bool(
+            legacy_flags.get("corridor_path_preserve_guarded_shaping", corridor_path_preserve_guarded)
+        )
+        corridor_path_preserve_compact_lite = bool(
+            legacy_flags.get("corridor_path_preserve_compact_lite_shaping", corridor_path_preserve_compact_lite)
+        )
+        corridor_answer_preserve_guarded_hotpot = bool(
+            legacy_flags.get("corridor_answer_preserve_guarded_hotpot", corridor_answer_preserve_guarded_hotpot)
+        )
+        corridor_answer_preserve_confidence_gated = bool(
+            legacy_flags.get("corridor_answer_preserve_confidence_gated", corridor_answer_preserve_confidence_gated)
+        )
 
     return {
         "mode": str(mode),
@@ -487,7 +297,19 @@ def _set_cfg_attr_if_changed(cfg, field_name, value, updates):
 
 def _apply_connector_objective_profile(cfg, objective_flags):
     flags = dict(objective_flags or {})
-    mode = str(flags.get("mode", "baseline") or "baseline").strip().lower()
+    requested_mode = normalize_objective_mode(str(flags.get("mode", "baseline") or "baseline").strip().lower())
+    flags["mode"] = str(requested_mode)
+    mode = str(requested_mode)
+    canonical_diag = {}
+    canonical_mode = is_canonical_copy_span_mode(requested_mode)
+    if canonical_mode:
+        canonical_diag = apply_canonical_copy_span_objective(
+            cfg,
+            dataset=getattr(cfg, "dataset", None),
+            mode=requested_mode,
+        )
+        mode = canonical_effective_reference_mode(getattr(cfg, "dataset", None), mode=requested_mode)
+
     updates = {}
     profile_applied = "none"
     flags["corridor_answer_preserve_guarded_hotpot"] = False
@@ -894,11 +716,43 @@ def _apply_connector_objective_profile(cfg, objective_flags):
         flags["corridor_bridge_purity_shaping"] = False
         flags["corridor_answer_preserve_confidence_gated"] = True
 
+    if canonical_mode:
+        canonical_diag = apply_canonical_copy_span_objective(
+            cfg,
+            dataset=getattr(cfg, "dataset", None),
+            mode=requested_mode,
+        )
+        flags["bridge_candidate_induction"] = bool(getattr(cfg, "bridge_candidate_induction_enabled", False))
+        flags["role_aware_chunk_scoring"] = bool(getattr(cfg, "role_aware_chunk_scoring_enabled", False))
+        flags["coverage_selection"] = bool(getattr(cfg, "coverage_selection_enabled", False))
+        flags["corridor_compact_shaping"] = bool(getattr(cfg, "corridor_compact_shaping_enabled", False))
+        flags["corridor_answer_preserve_shaping"] = bool(getattr(cfg, "corridor_answer_preserve_enabled", False))
+        flags["corridor_bridge_purity_shaping"] = bool(getattr(cfg, "corridor_bridge_purity_shaping_enabled", False))
+        flags["corridor_path_preserve_shaping"] = bool(getattr(cfg, "corridor_path_preserve_enabled", False))
+        flags["corridor_path_preserve_compact_shaping"] = bool(
+            getattr(cfg, "corridor_path_preserve_compact_enabled", False)
+        )
+        flags["corridor_path_preserve_guarded_shaping"] = bool(
+            getattr(cfg, "corridor_path_preserve_guarded_enabled", False)
+        )
+        flags["corridor_path_preserve_compact_lite_shaping"] = bool(
+            getattr(cfg, "corridor_path_preserve_compact_lite_enabled", False)
+        )
+        flags["corridor_answer_preserve_guarded_hotpot"] = bool(
+            getattr(cfg, "corridor_answer_preserve_guarded_hotpot_enabled", False)
+        )
+        flags["corridor_answer_preserve_confidence_gated"] = bool(
+            getattr(cfg, "corridor_answer_preserve_confidence_gated_enabled", False)
+        )
+        profile_applied = f"canonical_copy_span::{mode}"
+
     diag = {
-        "mode": mode,
+        "mode": requested_mode,
+        "effective_mode": mode,
         "profile_applied": profile_applied,
         "flags_after": dict(flags),
         "weight_updates": dict(updates),
+        "canonical": dict(canonical_diag) if canonical_mode else {},
     }
     return flags, diag
 
@@ -1010,10 +864,21 @@ def _get_global_graph(cfg):
 
 
 def _get_graph_struct(g):
-    key = id(g)
-    cached = _PPR_GRAPH_STRUCT_MEMO.get(key)
+    try:
+        cached = _PPR_GRAPH_STRUCT_MEMO.get(g)
+    except TypeError:
+        cached = None
     if cached is not None:
         return cached
+
+    # Fallback path for environments where graph objects cannot be weak-keyed.
+    fallback_key = id(g)
+    fallback_cached = _PPR_GRAPH_STRUCT_MEMO_FALLBACK.get(fallback_key)
+    if fallback_cached is not None:
+        ref, struct = fallback_cached
+        if ref() is g:
+            return struct
+        _PPR_GRAPH_STRUCT_MEMO_FALLBACK.pop(fallback_key, None)
 
     nodes = list(g.nodes)
     node_to_idx = {node: idx for idx, node in enumerate(nodes)}
@@ -1033,7 +898,10 @@ def _get_graph_struct(g):
         "dangling": dangling,
         "n": len(nodes),
     }
-    _PPR_GRAPH_STRUCT_MEMO[key] = struct
+    try:
+        _PPR_GRAPH_STRUCT_MEMO[g] = struct
+    except TypeError:
+        _PPR_GRAPH_STRUCT_MEMO_FALLBACK[fallback_key] = (weakref.ref(g), struct)
     return struct
 
 
@@ -2554,6 +2422,10 @@ def _seed_hybrid_scores(
     bridge_bonus_map=None,
     chunk_grounding_bonus_map=None,
 ):
+    # Candidate-level seed scoring.
+    # This stage ranks individual seed candidates (node-wise utility).
+    # In canonical_copy_span, optional candidate-level bridge/grounding boosts
+    # are pruned and excluded from the score blend.
     graph_raw = {node: float(agg_scores.get(node, 0.0)) for node in candidates}
     graph_norm = _normalize_map(graph_raw)
 
@@ -2573,6 +2445,16 @@ def _seed_hybrid_scores(
         node: max(0.0, min(1.0, float((chunk_grounding_bonus_map or {}).get(node, 0.0)))) for node in candidates
     }
     grounding_norm = _normalize_map(grounding_raw)
+
+    if is_canonical_copy_span_mode(str(getattr(cfg, "retrieval_objective_mode", "") or "").strip().lower()):
+        score = canonical_seed_score_map(
+            candidates=candidates,
+            graph_norm=graph_norm,
+            semantic_norm=semantic_norm,
+            anchor_norm=anchor_norm,
+            cfg=cfg,
+        )
+        return score, graph_norm, semantic_norm, anchor_norm, bridge_norm, grounding_norm
 
     w_sem = max(0.0, float(getattr(cfg, "seed_score_semantic_weight", 0.30)))
     w_graph = max(0.0, float(getattr(cfg, "seed_score_graph_weight", 0.50)))
@@ -2615,6 +2497,11 @@ def _seed_selection_objective_weights(
     cfg,
     tau,
 ):
+    # Seed-set objective scoring.
+    # This stage scores a candidate *set* for compact multi-hop coverage.
+    # Unlike optional candidate-level boosts in _seed_hybrid_scores, these
+    # objective terms (bridge/grounding/anchor-coverage) are retained as part
+    # of seed-set selection behavior in canonical retrieval.
     base = {node: float(seed_score_map.get(node, 0.0)) for node in candidates}
     bridge_w = max(0.0, float(getattr(cfg, "seed_objective_bridge_weight", 0.20)))
     ground_w = max(0.0, float(getattr(cfg, "seed_objective_grounding_weight", 0.15)))
@@ -2991,7 +2878,12 @@ def _compute_connector_retrieval_metrics(
     incomplete_path_items = []
     chain_compactness_items = []
     path_preserve_activation_items = []
+    strict_path_complete_items = []
+    answer_bearing_path_items = []
+    equivalent_evidence_coverage_items = []
     role_share_items = []
+    legacy_path_complete_weight = 0.0
+    false_path_weight = 0.0
     ranked_corridors = sorted(
         list(filtered_corridors or []),
         key=lambda c: float(c.get("corridor_score", 0.0)),
@@ -3027,6 +2919,42 @@ def _compute_connector_retrieval_metrics(
         incomplete_path_val = float(comp.get("incomplete_path_indicator", 0.0) or 0.0)
         chain_compactness_val = float(comp.get("chain_compactness", compactness_val) or compactness_val)
         path_preserve_activation_val = 1.0 if bool(comp.get("path_preserve_applied", False)) else 0.0
+        strict_path_complete_val = 0.0
+        if float(path_complete_val) > 0.0:
+            strict_path_complete_val = float(
+                max(
+                    0.0,
+                    min(
+                        float(path_complete_val),
+                        float(bridge_answer_pair_val),
+                        float(bridge_purity_val),
+                        float(answer_side_density_val),
+                        float(chain_compactness_val),
+                    ),
+                )
+            )
+        answer_bearing_path_val = (
+            1.0
+            if (
+                float(strict_path_complete_val) >= 0.45
+                and float(answer_score) >= 0.40
+                and float(answer_side_density_val) >= 0.40
+            )
+            else 0.0
+        )
+        false_path_val = 1.0 if (float(path_complete_val) >= 0.50 and float(answer_bearing_path_val) <= 0.0) else 0.0
+        equivalent_evidence_coverage_val = float(
+            max(
+                0.0,
+                min(
+                    1.0,
+                    max(float(answer_score), float(answer_side_density_val))
+                    * (0.70 + 0.30 * max(0.0, min(1.0, float(bridge_purity_val)))),
+                ),
+            )
+        )
+        if float(path_complete_val) < 0.20:
+            equivalent_evidence_coverage_val = float(max(0.0, min(1.0, 0.85 * equivalent_evidence_coverage_val)))
         role_total = max(1.0e-8, float(anchor_score) + float(bridge_score) + float(answer_score))
         role_share_items.append(
             (
@@ -3048,6 +2976,12 @@ def _compute_connector_retrieval_metrics(
         incomplete_path_items.append((max(0.0, min(1.0, incomplete_path_val)), weight))
         chain_compactness_items.append((max(0.0, min(1.0, chain_compactness_val)), weight))
         path_preserve_activation_items.append((float(path_preserve_activation_val), weight))
+        strict_path_complete_items.append((max(0.0, min(1.0, strict_path_complete_val)), weight))
+        answer_bearing_path_items.append((max(0.0, min(1.0, answer_bearing_path_val)), weight))
+        equivalent_evidence_coverage_items.append((max(0.0, min(1.0, equivalent_evidence_coverage_val)), weight))
+        if float(path_complete_val) >= 0.50:
+            legacy_path_complete_weight += float(max(0.0, weight))
+            false_path_weight += float(max(0.0, weight) * max(0.0, min(1.0, false_path_val)))
 
     corridor_role_coverage = float((max_anchor + max_bridge + max_answer) / 3.0)
     bridge_purity = max(0.0, min(1.0, _weighted_avg(bridge_purity_items, max_bridge)))
@@ -3061,6 +2995,14 @@ def _compute_connector_retrieval_metrics(
     incomplete_path_rate = max(0.0, min(1.0, _weighted_avg(incomplete_path_items, 0.0)))
     chain_compactness = max(0.0, min(1.0, _weighted_avg(chain_compactness_items, support_set_compactness)))
     path_preserve_activation_rate = max(0.0, min(1.0, _weighted_avg(path_preserve_activation_items, 0.0)))
+    strict_path_complete_rate = max(0.0, min(1.0, _weighted_avg(strict_path_complete_items, 0.0)))
+    answer_bearing_path_hit = max(0.0, min(1.0, _weighted_avg(answer_bearing_path_items, 0.0)))
+    equivalent_evidence_coverage = max(
+        0.0,
+        min(1.0, _weighted_avg(equivalent_evidence_coverage_items, max(answer_side_density, path_complete_rate))),
+    )
+    false_path_rate = float(_safe_ratio(false_path_weight, legacy_path_complete_weight))
+    false_path_rate = max(0.0, min(1.0, false_path_rate))
     role_weight_sum = float(sum(max(0.0, w) for _, _, _, w in role_share_items))
     if role_weight_sum <= 0.0:
         anchor_share = bridge_share = answer_share = 1.0 / 3.0
@@ -3129,6 +3071,10 @@ def _compute_connector_retrieval_metrics(
         "answer_preserve_activation_rate": float(answer_preserve_activation_rate),
         "preserved_answer_usefulness": float(preserved_answer_usefulness),
         "path_complete_rate": float(path_complete_rate),
+        "strict_path_complete_rate": float(strict_path_complete_rate),
+        "answer_bearing_path_hit": float(answer_bearing_path_hit),
+        "false_path_rate": float(false_path_rate),
+        "equivalent_evidence_coverage": float(equivalent_evidence_coverage),
         "bridge_answer_pair_retention": float(bridge_answer_pair_retention),
         "incomplete_path_rate": float(incomplete_path_rate),
         "chain_compactness": float(chain_compactness),
@@ -4285,10 +4231,41 @@ def _lazy_union_candidates_for_run(
     return merged[:topk]
 
 
+def _weighted_sum_active_components(components, weights, disabled_keys=None):
+    disabled = {str(k) for k in (disabled_keys or set())}
+    ordered_keys = [str(k) for k in weights.keys()]
+    original_weight_sum = sum(float(weights[k]) for k in ordered_keys)
+    active_keys = [k for k in ordered_keys if k not in disabled]
+    if not active_keys:
+        raise ValueError("All score components are disabled; cannot compute weighted sum.")
+    active_weight_sum = sum(float(weights[k]) for k in active_keys)
+    if active_weight_sum <= 0.0:
+        raise ValueError("Active score component weight sum must be positive.")
+
+    scale = float(original_weight_sum) / float(active_weight_sum)
+    score = 0.0
+    effective_weights = {}
+    for key in active_keys:
+        eff_w = float(weights[key]) * float(scale)
+        effective_weights[key] = float(eff_w)
+        score += float(eff_w) * float(components.get(key, 0.0))
+    return float(score), effective_weights
+
+
 def _phase2_pair_shortlist(shortlisted_runs, anchors, g, query_sim_map, support_sim_map, cfg):
     topb = max(1, int(getattr(cfg, "pair_shortlist_topb", 6)))
     cap = max(2, int(getattr(cfg, "tau", 4)) + 1)
     pair_scores = {}
+    trace_enabled = bool(getattr(cfg, "score_component_trace_enabled", False))
+    ablate_pair_semantic = bool(getattr(cfg, "ablation_no_pair_semantic", False))
+    ablate_pair_bridge = bool(getattr(cfg, "ablation_no_pair_bridge", False))
+    pair_component_weights = {
+        "anchor_align": 0.30,
+        "seed_strength": 0.25,
+        "semantic_rel": 0.20,
+        "dist_score": 0.15,
+        "bridge_potential": 0.10,
+    }
 
     for run in shortlisted_runs:
         run_id = int(run.get("run_id", 0))
@@ -4318,13 +4295,35 @@ def _phase2_pair_shortlist(shortlisted_runs, anchors, g, query_sim_map, support_
                         bridge_hits += 1
                 bridge_potential = float(bridge_hits) / float(max(1, len(anchors) - 1))
 
-                score = (
-                    0.30 * float(anchor_align)
-                    + 0.25 * float(seed_strength)
-                    + 0.20 * float(semantic_rel)
-                    + 0.15 * float(dist_score)
-                    + 0.10 * float(bridge_potential)
-                )
+                components = {
+                    "anchor_align": float(anchor_align),
+                    "seed_strength": float(seed_strength),
+                    "semantic_rel": float(semantic_rel),
+                    "dist_score": float(dist_score),
+                    "bridge_potential": float(bridge_potential),
+                }
+                if not (ablate_pair_semantic or ablate_pair_bridge):
+                    # Keep the default path formula exactly as-is for behavior preservation.
+                    score = (
+                        0.30 * float(anchor_align)
+                        + 0.25 * float(seed_strength)
+                        + 0.20 * float(semantic_rel)
+                        + 0.15 * float(dist_score)
+                        + 0.10 * float(bridge_potential)
+                    )
+                    effective_weights = None
+                    disabled = set()
+                else:
+                    disabled = set()
+                    if ablate_pair_semantic:
+                        disabled.add("semantic_rel")
+                    if ablate_pair_bridge:
+                        disabled.add("bridge_potential")
+                    score, effective_weights = _weighted_sum_active_components(
+                        components=components,
+                        weights=pair_component_weights,
+                        disabled_keys=disabled,
+                    )
                 pair = (anchor, seed)
                 prev = pair_scores.get(pair)
                 payload = {
@@ -4338,11 +4337,83 @@ def _phase2_pair_shortlist(shortlisted_runs, anchors, g, query_sim_map, support_
                     "semantic_relevance": float(semantic_rel),
                     "bridge_potential": float(bridge_potential),
                 }
+                if trace_enabled:
+                    payload["pair_score_components"] = dict(components)
+                    payload["pair_score_effective_weights"] = (
+                        dict(effective_weights)
+                        if effective_weights is not None
+                        else dict(pair_component_weights)
+                    )
+                    payload["pair_score_disabled_components"] = sorted([str(x) for x in disabled])
                 if prev is None or float(payload["pair_proxy_score"]) > float(prev["pair_proxy_score"]):
                     pair_scores[pair] = payload
 
     ranked = sorted(pair_scores.values(), key=lambda x: x["pair_proxy_score"], reverse=True)
     return ranked[:topb]
+
+
+def _apply_final_text_rerank(
+    *,
+    question,
+    selected_sentence_ids,
+    selected_sentences,
+    selected_sentence_score_map,
+    cfg,
+):
+    sentence_rerank_enabled = bool(getattr(cfg, "sentence_rerank_enabled", True))
+    ablation_no_final_text_rerank = bool(getattr(cfg, "ablation_no_final_text_rerank", False))
+    embedding_diag = {
+        "enabled": bool(getattr(cfg, "embedding_enabled", False) and sentence_rerank_enabled),
+        "sentence_rerank_enabled": bool(sentence_rerank_enabled),
+        "applied": False,
+        "error": "",
+        "model_name": str(getattr(cfg, "embedding_model_name", "") or ""),
+        "weight": float(getattr(cfg, "embedding_weight", 0.35)),
+        "rerank_topn": int(getattr(cfg, "embedding_rerank_topn", 80)),
+        "batch_size": int(getattr(cfg, "embedding_batch_size", 16)),
+        "max_length": int(getattr(cfg, "embedding_max_length", 192)),
+        "max_chars": int(getattr(cfg, "embedding_text_max_chars", 600)),
+        "head_size": 0,
+    }
+    sentence_rerank_semantic_calls = 0
+    sentence_rerank_ms = 0.0
+
+    if ablation_no_final_text_rerank:
+        embedding_diag["enabled"] = False
+        embedding_diag["error"] = "ablation_no_final_text_rerank"
+    elif embedding_diag["enabled"] and selected_sentence_ids:
+        sentence_rerank_start = time.perf_counter()
+        sentence_rerank_semantic_calls += 1
+        rerank = rerank_sentences_by_embedding(
+            question=question,
+            sentence_ids=selected_sentence_ids,
+            sentence_texts=selected_sentences,
+            base_score_map=selected_sentence_score_map,
+            model_name=embedding_diag["model_name"],
+            weight=embedding_diag["weight"],
+            rerank_topn=embedding_diag["rerank_topn"],
+            batch_size=embedding_diag["batch_size"],
+            max_length=embedding_diag["max_length"],
+            max_chars=embedding_diag["max_chars"],
+        )
+        selected_sentence_ids = list(rerank.get("ranked_sentence_ids", selected_sentence_ids))
+        selected_sentences = list(rerank.get("ranked_sentence_texts", selected_sentences))
+        embedding_diag["applied"] = bool(rerank.get("applied", False))
+        embedding_diag["error"] = str(rerank.get("error", "") or "")
+        embedding_diag["head_size"] = int(rerank.get("rerank_topn", 0))
+        embedding_diag["similarity_by_sentence_id"] = rerank.get("similarity_by_sentence_id", {})
+        embedding_diag["fused_score_by_sentence_id"] = rerank.get("fused_score_by_sentence_id", {})
+        sentence_rerank_ms = float((time.perf_counter() - sentence_rerank_start) * 1000.0)
+    elif not bool(sentence_rerank_enabled):
+        embedding_diag["error"] = "sentence_rerank_disabled_by_config"
+
+    return (
+        list(selected_sentence_ids),
+        list(selected_sentences),
+        embedding_diag,
+        int(sentence_rerank_semantic_calls),
+        float(sentence_rerank_ms),
+    )
 
 
 def _phase2_refine_pair_bounded_local(g, pair_item, run_by_id, query_sim_map, support_sim_map, cfg):
@@ -5844,39 +5915,41 @@ def run_graphrag_core(
     original_ppr_parallel_workers = int(getattr(cfg, "ppr_parallel_workers", 1))
     if not phase1_parallel_enabled:
         setattr(cfg, "ppr_parallel_workers", 1)
-    for _ in tqdm(
-        range(n_runs),
-        total=n_runs,
-        desc="Phase1 stochastic PPR",
-        leave=False,
-        disable=not show_inner_progress,
-    ):
-        run_seed = int(rng.random() * 10**9)
-        if ppr_engine == "power":
-            h = _stochastic_perturb_graph(diffusion_graph, rng, float(getattr(cfg, "edge_drop_prob", 0.1)))
-            run_map = _compute_ppr_batch(
-                g=h,
-                sources=phase1_anchors,
-                cfg=cfg,
-                engine="power",
-                run_seed=run_seed,
-                show_progress=show_inner_progress,
-                desc="Phase1 Anchor PPR",
-            )
-        else:
-            run_map = _compute_ppr_batch(
-                g=diffusion_graph,
-                sources=phase1_anchors,
-                cfg=cfg,
-                engine="mc",
-                run_seed=run_seed,
-                show_progress=show_inner_progress,
-                desc="Phase1 Anchor PPR",
-            )
-        for anchor in phase1_anchors:
-            per_anchor_runs[anchor].append(run_map.get(anchor, {}))
-    if not phase1_parallel_enabled:
-        setattr(cfg, "ppr_parallel_workers", original_ppr_parallel_workers)
+    try:
+        for _ in tqdm(
+            range(n_runs),
+            total=n_runs,
+            desc="Phase1 stochastic PPR",
+            leave=False,
+            disable=not show_inner_progress,
+        ):
+            run_seed = int(rng.random() * 10**9)
+            if ppr_engine == "power":
+                h = _stochastic_perturb_graph(diffusion_graph, rng, float(getattr(cfg, "edge_drop_prob", 0.1)))
+                run_map = _compute_ppr_batch(
+                    g=h,
+                    sources=phase1_anchors,
+                    cfg=cfg,
+                    engine="power",
+                    run_seed=run_seed,
+                    show_progress=show_inner_progress,
+                    desc="Phase1 Anchor PPR",
+                )
+            else:
+                run_map = _compute_ppr_batch(
+                    g=diffusion_graph,
+                    sources=phase1_anchors,
+                    cfg=cfg,
+                    engine="mc",
+                    run_seed=run_seed,
+                    show_progress=show_inner_progress,
+                    desc="Phase1 Anchor PPR",
+                )
+            for anchor in phase1_anchors:
+                per_anchor_runs[anchor].append(run_map.get(anchor, {}))
+    finally:
+        if not phase1_parallel_enabled:
+            setattr(cfg, "ppr_parallel_workers", original_ppr_parallel_workers)
     stage_ms["phase1_ppr_ms"] = float((time.perf_counter() - phase1_start) * 1000.0)
     stage_ms["phase1_ppr_time_ms"] = float(stage_ms["phase1_ppr_ms"])
 
@@ -6192,39 +6265,54 @@ def run_graphrag_core(
         if not surrogate_focus_nodes:
             surrogate_focus_nodes = list(surrogate_universe)
 
-        w_sem = max(0.0, float(getattr(cfg, "run_score_semantic_weight", 0.30)))
-        w_anchor = max(0.0, float(getattr(cfg, "run_score_anchor_weight", 0.20)))
-        w_struct = max(0.0, float(getattr(cfg, "run_score_structure_weight", 0.25)))
-        w_bridge = max(0.0, float(getattr(cfg, "run_score_bridge_weight", 0.15)))
-        w_redundancy = max(0.0, float(getattr(cfg, "run_score_redundancy_weight", 0.10)))
-        w_pair_cov = max(0.0, float(getattr(cfg, "run_score_pair_coverage_weight", 0.0)))
-        w_bridge_complete = max(0.0, float(getattr(cfg, "run_score_bridge_completeness_weight", 0.0)))
-        w_grounding = max(0.0, float(getattr(cfg, "run_score_entity_chunk_grounding_weight", 0.0)))
-        w_anchor_disp = max(0.0, float(getattr(cfg, "run_score_anchor_dispersion_penalty", 0.0)))
-        total = (
-            w_sem
-            + w_anchor
-            + w_struct
-            + w_bridge
-            + w_redundancy
-            + w_pair_cov
-            + w_bridge_complete
-            + w_grounding
-            + w_anchor_disp
+        canonical_mode = is_canonical_copy_span_mode(
+            str(getattr(cfg, "retrieval_objective_mode", "") or "").strip().lower()
         )
-        if total <= 0.0:
-            w_sem, w_anchor, w_struct, w_bridge, w_redundancy = 0.30, 0.20, 0.25, 0.15, 0.10
-            w_pair_cov, w_bridge_complete, w_grounding, w_anchor_disp = 0.0, 0.0, 0.0, 0.0
-            total = 1.0
-        w_sem /= total
-        w_anchor /= total
-        w_struct /= total
-        w_bridge /= total
-        w_redundancy /= total
-        w_pair_cov /= total
-        w_bridge_complete /= total
-        w_grounding /= total
-        w_anchor_disp /= total
+        if canonical_mode:
+            run_weights = canonical_run_weight_bundle(cfg)
+            w_sem = float(run_weights["semantic"])
+            w_anchor = float(run_weights["anchor"])
+            w_struct = float(run_weights["structure"])
+            w_bridge = float(run_weights["bridge"])
+            w_redundancy = float(run_weights["redundancy"])
+            w_pair_cov = 0.0
+            w_bridge_complete = 0.0
+            w_grounding = 0.0
+            w_anchor_disp = 0.0
+        else:
+            w_sem = max(0.0, float(getattr(cfg, "run_score_semantic_weight", 0.30)))
+            w_anchor = max(0.0, float(getattr(cfg, "run_score_anchor_weight", 0.20)))
+            w_struct = max(0.0, float(getattr(cfg, "run_score_structure_weight", 0.25)))
+            w_bridge = max(0.0, float(getattr(cfg, "run_score_bridge_weight", 0.15)))
+            w_redundancy = max(0.0, float(getattr(cfg, "run_score_redundancy_weight", 0.10)))
+            w_pair_cov = max(0.0, float(getattr(cfg, "run_score_pair_coverage_weight", 0.0)))
+            w_bridge_complete = max(0.0, float(getattr(cfg, "run_score_bridge_completeness_weight", 0.0)))
+            w_grounding = max(0.0, float(getattr(cfg, "run_score_entity_chunk_grounding_weight", 0.0)))
+            w_anchor_disp = max(0.0, float(getattr(cfg, "run_score_anchor_dispersion_penalty", 0.0)))
+            total = (
+                w_sem
+                + w_anchor
+                + w_struct
+                + w_bridge
+                + w_redundancy
+                + w_pair_cov
+                + w_bridge_complete
+                + w_grounding
+                + w_anchor_disp
+            )
+            if total <= 0.0:
+                w_sem, w_anchor, w_struct, w_bridge, w_redundancy = 0.30, 0.20, 0.25, 0.15, 0.10
+                w_pair_cov, w_bridge_complete, w_grounding, w_anchor_disp = 0.0, 0.0, 0.0, 0.0
+                total = 1.0
+            w_sem /= total
+            w_anchor /= total
+            w_struct /= total
+            w_bridge /= total
+            w_redundancy /= total
+            w_pair_cov /= total
+            w_bridge_complete /= total
+            w_grounding /= total
+            w_anchor_disp /= total
 
         best = None
         best_score = float("-inf")
@@ -6269,66 +6357,90 @@ def run_graphrag_core(
                 )
             redundancy = float(redundancy_cache[seeds_key])
 
-            if seeds_key not in pair_cov_cache:
-                pair_cov_cache[seeds_key] = _run_pair_coverage_score(
-                    anchors=anchors,
-                    seeds=run.get("seeds", set()),
-                    anchor_distance_maps=anchor_distance_maps,
-                    tau=int(getattr(cfg, "tau", 4)),
-                )
-            pair_coverage = float(pair_cov_cache[seeds_key])
+            pair_coverage = 0.0
+            bridge_completeness = 0.0
+            grounding_score = 0.0
+            anchor_dispersion = 0.0
+            if not canonical_mode:
+                if seeds_key not in pair_cov_cache:
+                    pair_cov_cache[seeds_key] = _run_pair_coverage_score(
+                        anchors=anchors,
+                        seeds=run.get("seeds", set()),
+                        anchor_distance_maps=anchor_distance_maps,
+                        tau=int(getattr(cfg, "tau", 4)),
+                    )
+                pair_coverage = float(pair_cov_cache[seeds_key])
 
-            bridge_complete_key = tuple(run_nodes)
-            if bridge_complete_key not in bridge_complete_cache:
-                bridge_complete_cache[bridge_complete_key] = _run_bridge_path_completeness(
-                    anchors=anchors,
-                    run_nodes=run_nodes,
-                    anchor_distance_maps=anchor_distance_maps,
-                    tau=int(getattr(cfg, "tau", 4)),
-                )
-            bridge_completeness = float(bridge_complete_cache[bridge_complete_key])
+                bridge_complete_key = tuple(run_nodes)
+                if bridge_complete_key not in bridge_complete_cache:
+                    bridge_complete_cache[bridge_complete_key] = _run_bridge_path_completeness(
+                        anchors=anchors,
+                        run_nodes=run_nodes,
+                        anchor_distance_maps=anchor_distance_maps,
+                        tau=int(getattr(cfg, "tau", 4)),
+                    )
+                bridge_completeness = float(bridge_complete_cache[bridge_complete_key])
 
-            grounding_key = (seeds_key, bridge_complete_key)
-            if grounding_key not in grounding_cache:
-                grounding_cache[grounding_key] = _run_entity_chunk_grounding_score(
-                    seeds=run.get("seeds", set()),
-                    run_nodes=run_nodes,
-                    semantic_state=semantic_state,
-                )
-            grounding_score = float(grounding_cache[grounding_key])
+                grounding_key = (seeds_key, bridge_complete_key)
+                if grounding_key not in grounding_cache:
+                    grounding_cache[grounding_key] = _run_entity_chunk_grounding_score(
+                        seeds=run.get("seeds", set()),
+                        run_nodes=run_nodes,
+                        semantic_state=semantic_state,
+                    )
+                grounding_score = float(grounding_cache[grounding_key])
 
-            if seeds_key not in anchor_disp_cache:
-                anchor_disp_cache[seeds_key] = _run_anchor_dispersion_penalty(
-                    anchors=anchors,
-                    seeds=run.get("seeds", set()),
-                    anchor_distance_maps=anchor_distance_maps,
-                    tau=int(getattr(cfg, "tau", 4)),
-                )
-            anchor_dispersion = float(anchor_disp_cache[seeds_key])
+                if seeds_key not in anchor_disp_cache:
+                    anchor_disp_cache[seeds_key] = _run_anchor_dispersion_penalty(
+                        anchors=anchors,
+                        seeds=run.get("seeds", set()),
+                        anchor_distance_maps=anchor_distance_maps,
+                        tau=int(getattr(cfg, "tau", 4)),
+                    )
+                anchor_dispersion = float(anchor_disp_cache[seeds_key])
 
-            run_score = (
-                w_sem * semantic_cov
-                + w_anchor * anchor_align
-                + w_struct * structural_conn
-                + w_bridge * bridge
-                + w_pair_cov * pair_coverage
-                + w_bridge_complete * bridge_completeness
-                + w_grounding * grounding_score
-                - w_anchor_disp * anchor_dispersion
-                - w_redundancy * redundancy
-            )
-            surrogate_loss = (
-                w_sem * (1.0 - semantic_cov)
-                + w_anchor * (1.0 - anchor_align)
-                + w_struct * (1.0 - structural_conn)
-                + w_bridge * (1.0 - bridge)
-                + w_pair_cov * (1.0 - pair_coverage)
-                + w_bridge_complete * (1.0 - bridge_completeness)
-                + w_grounding * (1.0 - grounding_score)
-                + w_anchor_disp * anchor_dispersion
-                + w_redundancy * redundancy
-                + 0.25 * dispersion_penalty
-            )
+            if canonical_mode:
+                run_score = canonical_run_score(
+                    semantic=semantic_cov,
+                    anchor=anchor_align,
+                    structure=structural_conn,
+                    bridge=bridge,
+                    redundancy=redundancy,
+                    cfg=cfg,
+                )
+                surrogate_loss = canonical_run_surrogate_loss(
+                    semantic=semantic_cov,
+                    anchor=anchor_align,
+                    structure=structural_conn,
+                    bridge=bridge,
+                    redundancy=redundancy,
+                    cfg=cfg,
+                    dispersion_penalty=dispersion_penalty,
+                )
+            else:
+                run_score = (
+                    w_sem * semantic_cov
+                    + w_anchor * anchor_align
+                    + w_struct * structural_conn
+                    + w_bridge * bridge
+                    + w_pair_cov * pair_coverage
+                    + w_bridge_complete * bridge_completeness
+                    + w_grounding * grounding_score
+                    - w_anchor_disp * anchor_dispersion
+                    - w_redundancy * redundancy
+                )
+                surrogate_loss = (
+                    w_sem * (1.0 - semantic_cov)
+                    + w_anchor * (1.0 - anchor_align)
+                    + w_struct * (1.0 - structural_conn)
+                    + w_bridge * (1.0 - bridge)
+                    + w_pair_cov * (1.0 - pair_coverage)
+                    + w_bridge_complete * (1.0 - bridge_completeness)
+                    + w_grounding * (1.0 - grounding_score)
+                    + w_anchor_disp * anchor_dispersion
+                    + w_redundancy * redundancy
+                    + 0.25 * dispersion_penalty
+                )
             run["run_score_components"] = {
                 "semantic_coverage": float(semantic_cov),
                 "anchor_alignment": float(anchor_align),
@@ -6343,6 +6455,7 @@ def run_graphrag_core(
                 "cheap_pre_score": float(run.get("cheap_pre_score", 0.0)),
                 "cheap_pre_components": dict(run.get("cheap_pre_components", {}) or {}),
                 "full_eval_selected": True,
+                "canonical_core_scoring": bool(canonical_mode),
             }
             run["hybrid_run_score"] = float(run_score)
             run["surrogate_loss"] = float(surrogate_loss)
@@ -6505,45 +6618,22 @@ def run_graphrag_core(
     selected_text_map = {sid: text for sid, text in zip(selected_sentence_ids, selected_sentences) if sid and text}
 
     sentence_rerank_enabled = bool(getattr(cfg, "sentence_rerank_enabled", True))
-    embedding_diag = {
-        "enabled": bool(getattr(cfg, "embedding_enabled", False) and sentence_rerank_enabled),
-        "sentence_rerank_enabled": bool(sentence_rerank_enabled),
-        "applied": False,
-        "error": "",
-        "model_name": str(getattr(cfg, "embedding_model_name", "") or ""),
-        "weight": float(getattr(cfg, "embedding_weight", 0.35)),
-        "rerank_topn": int(getattr(cfg, "embedding_rerank_topn", 80)),
-        "batch_size": int(getattr(cfg, "embedding_batch_size", 16)),
-        "max_length": int(getattr(cfg, "embedding_max_length", 192)),
-        "max_chars": int(getattr(cfg, "embedding_text_max_chars", 600)),
-        "head_size": 0,
-    }
-    sentence_rerank_semantic_calls = 0
-    if embedding_diag["enabled"] and selected_sentence_ids:
-        sentence_rerank_start = time.perf_counter()
-        sentence_rerank_semantic_calls += 1
-        rerank = rerank_sentences_by_embedding(
-            question=sample.question,
-            sentence_ids=selected_sentence_ids,
-            sentence_texts=selected_sentences,
-            base_score_map=selected_sentence_score_map,
-            model_name=embedding_diag["model_name"],
-            weight=embedding_diag["weight"],
-            rerank_topn=embedding_diag["rerank_topn"],
-            batch_size=embedding_diag["batch_size"],
-            max_length=embedding_diag["max_length"],
-            max_chars=embedding_diag["max_chars"],
-        )
-        selected_sentence_ids = list(rerank.get("ranked_sentence_ids", selected_sentence_ids))
-        selected_sentences = list(rerank.get("ranked_sentence_texts", selected_sentences))
-        embedding_diag["applied"] = bool(rerank.get("applied", False))
-        embedding_diag["error"] = str(rerank.get("error", "") or "")
-        embedding_diag["head_size"] = int(rerank.get("rerank_topn", 0))
-        embedding_diag["similarity_by_sentence_id"] = rerank.get("similarity_by_sentence_id", {})
-        embedding_diag["fused_score_by_sentence_id"] = rerank.get("fused_score_by_sentence_id", {})
-        stage_ms["sentence_rerank_ms"] = float((time.perf_counter() - sentence_rerank_start) * 1000.0)
-    elif not bool(sentence_rerank_enabled):
-        embedding_diag["error"] = "sentence_rerank_disabled_by_config"
+    ablation_no_final_text_rerank = bool(getattr(cfg, "ablation_no_final_text_rerank", False))
+    trace_enabled = bool(getattr(cfg, "score_component_trace_enabled", False))
+    (
+        selected_sentence_ids,
+        selected_sentences,
+        embedding_diag,
+        sentence_rerank_semantic_calls,
+        sentence_rerank_ms,
+    ) = _apply_final_text_rerank(
+        question=sample.question,
+        selected_sentence_ids=selected_sentence_ids,
+        selected_sentences=selected_sentences,
+        selected_sentence_score_map=selected_sentence_score_map,
+        cfg=cfg,
+    )
+    stage_ms["sentence_rerank_ms"] = float(sentence_rerank_ms)
 
     filtered_corridors = _filter_corridor_payloads(corridor_payloads, selected_sentence_ids)
     corridor_count_before_trim = int(len(corridor_payloads))
@@ -6627,6 +6717,65 @@ def run_graphrag_core(
                 )
             )
 
+    score_component_trace = None
+    if trace_enabled:
+        trace_topn = max(1, int(getattr(cfg, "score_component_trace_topn", 20)))
+        pair_score_examples = []
+        for item in (pair_shortlist or [])[:trace_topn]:
+            pair_score_examples.append(
+                {
+                    "anchor": str(item.get("anchor", "")),
+                    "seed": str(item.get("seed", "")),
+                    "run_id": int(item.get("run_id", 0)),
+                    "pair_proxy_score": float(item.get("pair_proxy_score", 0.0) or 0.0),
+                    "pair_score_components": dict(item.get("pair_score_components", {}) or {}),
+                    "pair_score_effective_weights": dict(item.get("pair_score_effective_weights", {}) or {}),
+                    "pair_score_disabled_components": list(item.get("pair_score_disabled_components", []) or []),
+                }
+            )
+
+        if ablation_no_final_text_rerank:
+            final_text_rerank_trace = {
+                "enabled": False,
+                "reason": "ablation_no_final_text_rerank",
+            }
+        elif not bool(sentence_rerank_enabled):
+            final_text_rerank_trace = {
+                "enabled": False,
+                "reason": "sentence_rerank_disabled_by_config",
+            }
+        else:
+            final_text_rerank_trace = {
+                "enabled": bool(embedding_diag.get("enabled", False)),
+                "applied": bool(embedding_diag.get("applied", False)),
+                "error": str(embedding_diag.get("error", "") or ""),
+                "reuse_candidate_available": False,
+                "used_precomputed_embeddings": False,
+                "reuse_deferred_to": "future_efficiency_phase",
+            }
+
+        score_component_trace = {
+            "enabled": True,
+            "semantic_usage": {
+                "proposal": bool((semantic_diag or {}).get("enabled", False)),
+                "seed_score": abs(float(getattr(cfg, "seed_score_semantic_weight", 0.0))) > 0.0,
+                "run_pre_score": abs(float(getattr(cfg, "run_score_semantic_weight", 0.0))) > 0.0,
+                "run_full_score": abs(float(getattr(cfg, "run_score_semantic_weight", 0.0))) > 0.0,
+                "pair_score": not bool(getattr(cfg, "ablation_no_pair_semantic", False)),
+                "local_refinement": True,
+                "final_text_rerank": (
+                    (not ablation_no_final_text_rerank) and bool(embedding_diag.get("enabled", False))
+                ),
+            },
+            "ablation_flags": {
+                "ablation_no_pair_semantic": bool(getattr(cfg, "ablation_no_pair_semantic", False)),
+                "ablation_no_pair_bridge": bool(getattr(cfg, "ablation_no_pair_bridge", False)),
+                "ablation_no_final_text_rerank": bool(getattr(cfg, "ablation_no_final_text_rerank", False)),
+            },
+            "pair_score_examples": pair_score_examples,
+            "final_text_rerank": final_text_rerank_trace,
+        }
+
     latency_ms = (time.perf_counter() - start) * 1000.0
     return RetrievalResult(
         sample_id=sample.qid,
@@ -6683,6 +6832,10 @@ def run_graphrag_core(
             "answer_preserve_activation_rate": float((connector_metrics or {}).get("answer_preserve_activation_rate", 0.0)),
             "preserved_answer_usefulness": float((connector_metrics or {}).get("preserved_answer_usefulness", 0.0)),
             "path_complete_rate": float((connector_metrics or {}).get("path_complete_rate", 0.0)),
+            "strict_path_complete_rate": float((connector_metrics or {}).get("strict_path_complete_rate", 0.0)),
+            "answer_bearing_path_hit": float((connector_metrics or {}).get("answer_bearing_path_hit", 0.0)),
+            "false_path_rate": float((connector_metrics or {}).get("false_path_rate", 0.0)),
+            "equivalent_evidence_coverage": float((connector_metrics or {}).get("equivalent_evidence_coverage", 0.0)),
             "bridge_answer_pair_retention": float((connector_metrics or {}).get("bridge_answer_pair_retention", 0.0)),
             "incomplete_path_rate": float((connector_metrics or {}).get("incomplete_path_rate", 0.0)),
             "chain_compactness": float((connector_metrics or {}).get("chain_compactness", 0.0)),
@@ -6781,6 +6934,7 @@ def run_graphrag_core(
             ],
             "shortlisted_run_ids": [int(r.get("run_id", 0)) for r in shortlisted_runs],
             "embedding_rerank": embedding_diag,
+            **({"score_component_trace": score_component_trace} if score_component_trace is not None else {}),
             "stagewise_loss_funnel_enabled": bool(getattr(cfg, "stagewise_loss_funnel_enabled", True)),
             "final_top_slice_reorder_enabled": bool(getattr(cfg, "final_top_slice_reorder_enabled", False)),
             "final_top_slice_reorder_topk": int(getattr(cfg, "final_top_slice_reorder_topk", 4)),
