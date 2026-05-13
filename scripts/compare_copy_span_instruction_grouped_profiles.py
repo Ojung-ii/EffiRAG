@@ -48,6 +48,13 @@ def _safe_float(v: Any) -> Optional[float]:
         return None
 
 
+def _safe_div(numer: float, denom: float, default: float = 0.0) -> float:
+    d = float(denom)
+    if abs(d) <= 1e-12:
+        return float(default)
+    return float(numer) / d
+
+
 def _parse_csv(raw: str) -> List[str]:
     out: List[str] = []
     for tok in str(raw or "").split(","):
@@ -164,6 +171,61 @@ def _extract_metric(summary: Mapping[str, Any], key: str) -> Any:
     return summary.get(key)
 
 
+def _derive_timing_fields(summary: Mapping[str, Any]) -> Dict[str, Any]:
+    retrieval_ms = _safe_float(summary.get("retrieval_ms"))
+    if retrieval_ms is None:
+        retrieval_ms = _safe_float(summary.get("retrieval_latency_ms")) or 0.0
+    generation_ms = _safe_float(summary.get("generation_ms"))
+    if generation_ms is None:
+        generation_ms = _safe_float(summary.get("generation_latency_ms")) or 0.0
+    total_ms = _safe_float(summary.get("total_ms"))
+    if total_ms is None:
+        total_ms = _safe_float(summary.get("total_latency_ms")) or 0.0
+    render_ms = _safe_float(summary.get("render_ms")) or 0.0
+
+    source_breakdown = dict(summary.get("retrieval_source_breakdown", {}) or {})
+    precomputed = int(source_breakdown.get("precomputed", 0) or 0)
+    on_the_fly = int(source_breakdown.get("on_the_fly", 0) or 0)
+    total_sources = max(1, precomputed + on_the_fly)
+    precomputed_ratio = float(precomputed) / float(total_sources)
+    precomputed_used = bool(summary.get("precomputed_retrieval_used", False))
+    precomputed_only = precomputed_used and precomputed > 0 and on_the_fly == 0
+
+    total_ge_generation = bool(total_ms + 1e-9 >= generation_ms)
+    total_ge_render = bool(total_ms + 1e-9 >= render_ms)
+    total_ge_retrieval = bool(total_ms + 1e-9 >= retrieval_ms)
+    total_ge_retrieval_plus_generation = bool(total_ms + 1e-9 >= (retrieval_ms + generation_ms))
+
+    if precomputed_only:
+        latency_mode = "precomputed_retrieval_latency_reused"
+        checks_passed = bool(total_ge_generation and total_ge_render)
+        note = (
+            "retrieval_ms is loaded from precomputed retrieval rows; "
+            "total_ms/generation_ms are measured in this replay run."
+        )
+    else:
+        latency_mode = "current_run_measured"
+        checks_passed = bool(
+            total_ge_generation
+            and total_ge_render
+            and total_ge_retrieval
+            and total_ge_retrieval_plus_generation
+        )
+        note = "all latency components are measured in the current run."
+
+    return {
+        "precomputed_retrieval_used": precomputed_used,
+        "retrieval_source_precomputed_ratio": precomputed_ratio,
+        "latency_mode": latency_mode,
+        "latency_check_total_ge_generation": total_ge_generation,
+        "latency_check_total_ge_retrieval": total_ge_retrieval,
+        "latency_check_total_ge_render": total_ge_render,
+        "latency_check_total_ge_retrieval_plus_generation": total_ge_retrieval_plus_generation,
+        "latency_checks_passed": checks_passed,
+        "latency_note": note,
+    }
+
+
 def _load_sample_ids(query_path: Path) -> List[str]:
     out: List[str] = []
     if not query_path.exists():
@@ -231,16 +293,64 @@ def _run_once(cfg_path: Path, dataset: str, n_samples: int) -> int:
 
 
 def _summary_metrics(summary: Mapping[str, Any], cfg: Mapping[str, Any], stage: str, profile: str, dataset: str) -> Dict[str, Any]:
-    return {
+    sf_p = _extract_metric(summary, "supporting_fact_precision")
+    sf_f1 = _extract_metric(summary, "supporting_fact_f1")
+    rendered_sf_p = _extract_metric(summary, "rendered_supporting_fact_precision")
+    rendered_sf_f1 = _extract_metric(summary, "rendered_supporting_fact_f1")
+    prompt_tokens_avg = _extract_metric(summary, "prompt_tokens_avg")
+    completion_tokens_avg = _extract_metric(summary, "completion_tokens_avg")
+    answer_surface_token_density = _extract_metric(summary, "answer_surface_token_density")
+    em = _extract_metric(summary, "em")
+    f1 = _extract_metric(summary, "f1")
+    abgf = _extract_metric(summary, "abgf_support_present_generation_fail")
+
+    pt = _safe_float(prompt_tokens_avg) or 0.0
+    ct = _safe_float(completion_tokens_avg) or 0.0
+    tt = pt + ct
+    sf_p_f = _safe_float(sf_p) or 0.0
+    sf_f1_f = _safe_float(sf_f1) or 0.0
+    em_f = _safe_float(em) or 0.0
+    f1_f = _safe_float(f1) or 0.0
+    abgf_f = _safe_float(abgf) or 0.0
+
+    token_fields = {
+        "prompt_tokens_avg": pt,
+        "completion_tokens_avg": ct,
+        "total_tokens_avg": tt,
+        "answer_surface_token_density": _safe_float(answer_surface_token_density),
+        "sf_P_per_1k_prompt_tokens": 1000.0 * _safe_div(sf_p_f, pt, 0.0),
+        "sf_F1_per_1k_prompt_tokens": 1000.0 * _safe_div(sf_f1_f, pt, 0.0),
+        "em_per_1k_prompt_tokens": 1000.0 * _safe_div(em_f, pt, 0.0),
+        "f1_per_1k_prompt_tokens": 1000.0 * _safe_div(f1_f, pt, 0.0),
+        "abgf_per_1k_prompt_tokens": 1000.0 * _safe_div(abgf_f, pt, 0.0),
+        "sf_P_per_1k_total_tokens": 1000.0 * _safe_div(sf_p_f, tt, 0.0),
+        "sf_F1_per_1k_total_tokens": 1000.0 * _safe_div(sf_f1_f, tt, 0.0),
+        "em_per_1k_total_tokens": 1000.0 * _safe_div(em_f, tt, 0.0),
+        "f1_per_1k_total_tokens": 1000.0 * _safe_div(f1_f, tt, 0.0),
+        "abgf_per_1k_total_tokens": 1000.0 * _safe_div(abgf_f, tt, 0.0),
+        "em_per_100ms": _extract_metric(summary, "em_per_100ms"),
+        "f1_per_100ms": _extract_metric(summary, "f1_per_100ms"),
+    }
+    timing_fields = _derive_timing_fields(summary)
+
+    out = {
         "stage": stage,
         "dataset": dataset,
         "profile": profile,
         "Recall@1": _extract_metric(summary, "recall_at_1"),
         "Recall@5": _extract_metric(summary, "recall_at_5"),
         "Recall@10": _extract_metric(summary, "recall_at_10"),
-        "EM": _extract_metric(summary, "em"),
-        "F1": _extract_metric(summary, "f1"),
-        "ABGF": _extract_metric(summary, "abgf_support_present_generation_fail"),
+        "EM": em,
+        "F1": f1,
+        "ABGF": abgf,
+        "sf_P": sf_p,
+        "sf_F1": sf_f1,
+        "supporting_fact_precision": sf_p,
+        "supporting_fact_f1": sf_f1,
+        "rendered_sf_P": rendered_sf_p,
+        "rendered_sf_F1": rendered_sf_f1,
+        "rendered_supporting_fact_precision": rendered_sf_p,
+        "rendered_supporting_fact_f1": rendered_sf_f1,
         "output_overlap": _extract_metric(summary, "output_overlap_answer_bearing"),
         "minimal_support_subset_coverage": _extract_metric(summary, "minimal_support_subset_coverage"),
         "equivalent_evidence_coverage": _extract_metric(summary, "equivalent_evidence_coverage"),
@@ -254,6 +364,9 @@ def _summary_metrics(summary: Mapping[str, Any], cfg: Mapping[str, Any], stage: 
         "prompt_variant": cfg.get("prompt_variant"),
         "added_instruction": cfg.get("added_instruction"),
     }
+    out.update(token_fields)
+    out.update(timing_fields)
+    return out
 
 
 def _mk_markdown_table(headers: Sequence[str], rows: Sequence[Sequence[Any]]) -> str:
@@ -763,6 +876,38 @@ def main() -> None:
         rows=stage_b_rows_table,
     )
 
+    stage_b_diag_rows = []
+    for m in metric_rows:
+        if m.get("stage") != "stage_b_full":
+            continue
+        stage_b_diag_rows.append(
+            [
+                str(m.get("dataset")),
+                str(m.get("profile")),
+                f"{(_safe_float(m.get('sf_P')) or 0.0):.6f}",
+                f"{(_safe_float(m.get('sf_F1')) or 0.0):.6f}",
+                f"{(_safe_float(m.get('prompt_tokens_avg')) or 0.0):.3f}",
+                f"{(_safe_float(m.get('completion_tokens_avg')) or 0.0):.3f}",
+                f"{(_safe_float(m.get('sf_F1_per_1k_prompt_tokens')) or 0.0):.6f}",
+                str(m.get("latency_mode")),
+                str(m.get("latency_checks_passed")),
+            ]
+        )
+    stage_b_diag_table = _mk_markdown_table(
+        headers=[
+            "dataset",
+            "profile",
+            "sf_P",
+            "sf_F1",
+            "prompt_tokens_avg",
+            "completion_tokens_avg",
+            "sf_F1_per_1k_prompt_tokens",
+            "latency_mode",
+            "latency_checks_passed",
+        ],
+        rows=stage_b_diag_rows,
+    )
+
     recommendation = "v0 parity가 불충분하여 v1 해석 보류"
     if bool(v0_weight_parity.get("all_passed")) and bool(v0_recall_parity.get("all_passed")):
         if stage_b_threshold.get("available"):
@@ -803,6 +948,8 @@ def main() -> None:
         + stage_a_table
         + "\n\n## Stage B Metrics\n"
         + stage_b_table
+        + "\n\n## Stage B SF/Token/Timing Diagnostics\n"
+        + stage_b_diag_table
         + "\n\n## Delta from Reference\n"
         + delta_table
         + "\n\n## Acceptance Threshold Check\n"
