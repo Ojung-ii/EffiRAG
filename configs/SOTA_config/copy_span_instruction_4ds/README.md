@@ -1,7 +1,11 @@
-# Copy-Span-Instruction SOTA Config (4 Datasets)
+# Legacy Copy-Span-Instruction SOTA Replay Config (4 Datasets)
 
 This directory is the single source of truth for reproducible 4-dataset
-copy-span-instruction runs.
+copy-span-instruction legacy SOTA replay runs.
+
+These configs intentionally preserve the previous best internal reproduction,
+including dataset-specific compatibility behavior. They are regression and
+comparison baselines, not the paper's strict unified main method.
 
 ## Contract
 - `prompt_variant=light_separator_copy_span_instruction`

@@ -1,0 +1,191 @@
+{
+  "profile_family": "copy_span_instruction_unified",
+  "canonical_variant_name": "phase6_strict_unified_v1",
+  "updated_at_utc": "2026-05-13T15:54:51Z",
+  "source_root": "/home/ojungii/EffiRAG/configs/SOTA_config/copy_span_instruction_4ds/on_the_fly",
+  "dataset_order": [
+    "hotpotqa",
+    "2wikimultihopqa",
+    "musique",
+    "popqa"
+  ],
+  "strict_unified_contract": {
+    "retrieval_objective_mode": "baseline",
+    "answer_support_pinning_enabled": false,
+    "final_top_slice_reorder_enabled": false,
+    "corridor_answer_preserve_guarded_hotpot_enabled": false,
+    "oracle_support_injection_enabled": false,
+    "precomputed_retrieval_path": "",
+    "precomputed_retrieval_strict": false,
+    "dataset_specific_method_toggles_allowed": false
+  },
+  "profiles": {
+    "unified_large": {
+      "profile_name": "copy_span_instruction_unified_large",
+      "budget": {
+        "seed_topn": 45,
+        "run_topn": 24,
+        "render_topn": 24
+      },
+      "budget_config": {
+        "semantic_topn_entity": 45,
+        "semantic_topn_chunk": 24,
+        "graph_reserve_topn": 24
+      },
+      "method_signature": {
+        "retrieval_objective_mode": "baseline",
+        "canonical_variant_name": "phase6_strict_unified_v1",
+        "shared_budget_profile": "off",
+        "max_anchors": 4,
+        "samples_per_anchor": 4,
+        "hybrid_anchor_recall_enabled": false,
+        "bridge_candidate_induction_enabled": false,
+        "role_aware_chunk_scoring_enabled": false,
+        "coverage_selection_enabled": false,
+        "corridor_compact_shaping_enabled": false,
+        "corridor_answer_preserve_enabled": false,
+        "corridor_bridge_purity_shaping_enabled": false,
+        "corridor_path_preserve_enabled": false,
+        "corridor_path_preserve_compact_enabled": false,
+        "corridor_path_preserve_guarded_enabled": false,
+        "corridor_path_preserve_compact_lite_enabled": false,
+        "corridor_answer_preserve_confidence_gated_enabled": false,
+        "top1_correction_enabled": false,
+        "run_light_rerank_enabled": false,
+        "chunk_grounding_enabled": false,
+        "answer_support_pinning_enabled": false,
+        "answer_support_pinning_min": 1,
+        "final_top_slice_reorder_enabled": false,
+        "final_top_slice_reorder_topk": 4,
+        "corridor_answer_preserve_guarded_hotpot_enabled": false,
+        "oracle_support_injection_enabled": false
+      },
+      "configs": {
+        "hotpotqa": "/home/ojungii/EffiRAG/configs/main_config/copy_span_instruction_unified/unified_large/hotpotqa.yaml",
+        "2wikimultihopqa": "/home/ojungii/EffiRAG/configs/main_config/copy_span_instruction_unified/unified_large/2wikimultihopqa.yaml",
+        "musique": "/home/ojungii/EffiRAG/configs/main_config/copy_span_instruction_unified/unified_large/musique.yaml",
+        "popqa": "/home/ojungii/EffiRAG/configs/main_config/copy_span_instruction_unified/unified_large/popqa.yaml"
+      },
+      "invariance_audit": {
+        "ok": true,
+        "errors": []
+      }
+    },
+    "unified_medium": {
+      "profile_name": "copy_span_instruction_unified_medium",
+      "budget": {
+        "seed_topn": 36,
+        "run_topn": 18,
+        "render_topn": 18
+      },
+      "budget_config": {
+        "semantic_topn_entity": 36,
+        "semantic_topn_chunk": 18,
+        "graph_reserve_topn": 18
+      },
+      "method_signature": {
+        "retrieval_objective_mode": "baseline",
+        "canonical_variant_name": "phase6_strict_unified_v1",
+        "shared_budget_profile": "off",
+        "max_anchors": 4,
+        "samples_per_anchor": 4,
+        "hybrid_anchor_recall_enabled": false,
+        "bridge_candidate_induction_enabled": false,
+        "role_aware_chunk_scoring_enabled": false,
+        "coverage_selection_enabled": false,
+        "corridor_compact_shaping_enabled": false,
+        "corridor_answer_preserve_enabled": false,
+        "corridor_bridge_purity_shaping_enabled": false,
+        "corridor_path_preserve_enabled": false,
+        "corridor_path_preserve_compact_enabled": false,
+        "corridor_path_preserve_guarded_enabled": false,
+        "corridor_path_preserve_compact_lite_enabled": false,
+        "corridor_answer_preserve_confidence_gated_enabled": false,
+        "top1_correction_enabled": false,
+        "run_light_rerank_enabled": false,
+        "chunk_grounding_enabled": false,
+        "answer_support_pinning_enabled": false,
+        "answer_support_pinning_min": 1,
+        "final_top_slice_reorder_enabled": false,
+        "final_top_slice_reorder_topk": 4,
+        "corridor_answer_preserve_guarded_hotpot_enabled": false,
+        "oracle_support_injection_enabled": false
+      },
+      "configs": {
+        "hotpotqa": "/home/ojungii/EffiRAG/configs/main_config/copy_span_instruction_unified/unified_medium/hotpotqa.yaml",
+        "2wikimultihopqa": "/home/ojungii/EffiRAG/configs/main_config/copy_span_instruction_unified/unified_medium/2wikimultihopqa.yaml",
+        "musique": "/home/ojungii/EffiRAG/configs/main_config/copy_span_instruction_unified/unified_medium/musique.yaml",
+        "popqa": "/home/ojungii/EffiRAG/configs/main_config/copy_span_instruction_unified/unified_medium/popqa.yaml"
+      },
+      "invariance_audit": {
+        "ok": true,
+        "errors": []
+      }
+    },
+    "unified_compact": {
+      "profile_name": "copy_span_instruction_unified_compact",
+      "budget": {
+        "seed_topn": 30,
+        "run_topn": 15,
+        "render_topn": 15
+      },
+      "budget_config": {
+        "semantic_topn_entity": 30,
+        "semantic_topn_chunk": 15,
+        "graph_reserve_topn": 15
+      },
+      "method_signature": {
+        "retrieval_objective_mode": "baseline",
+        "canonical_variant_name": "phase6_strict_unified_v1",
+        "shared_budget_profile": "off",
+        "max_anchors": 4,
+        "samples_per_anchor": 4,
+        "hybrid_anchor_recall_enabled": false,
+        "bridge_candidate_induction_enabled": false,
+        "role_aware_chunk_scoring_enabled": false,
+        "coverage_selection_enabled": false,
+        "corridor_compact_shaping_enabled": false,
+        "corridor_answer_preserve_enabled": false,
+        "corridor_bridge_purity_shaping_enabled": false,
+        "corridor_path_preserve_enabled": false,
+        "corridor_path_preserve_compact_enabled": false,
+        "corridor_path_preserve_guarded_enabled": false,
+        "corridor_path_preserve_compact_lite_enabled": false,
+        "corridor_answer_preserve_confidence_gated_enabled": false,
+        "top1_correction_enabled": false,
+        "run_light_rerank_enabled": false,
+        "chunk_grounding_enabled": false,
+        "answer_support_pinning_enabled": false,
+        "answer_support_pinning_min": 1,
+        "final_top_slice_reorder_enabled": false,
+        "final_top_slice_reorder_topk": 4,
+        "corridor_answer_preserve_guarded_hotpot_enabled": false,
+        "oracle_support_injection_enabled": false
+      },
+      "configs": {
+        "hotpotqa": "/home/ojungii/EffiRAG/configs/main_config/copy_span_instruction_unified/unified_compact/hotpotqa.yaml",
+        "2wikimultihopqa": "/home/ojungii/EffiRAG/configs/main_config/copy_span_instruction_unified/unified_compact/2wikimultihopqa.yaml",
+        "musique": "/home/ojungii/EffiRAG/configs/main_config/copy_span_instruction_unified/unified_compact/musique.yaml",
+        "popqa": "/home/ojungii/EffiRAG/configs/main_config/copy_span_instruction_unified/unified_compact/popqa.yaml"
+      },
+      "invariance_audit": {
+        "ok": true,
+        "errors": []
+      }
+    }
+  },
+  "invariance_audit": {
+    "copy_span_instruction_unified_large": {
+      "ok": true,
+      "errors": []
+    },
+    "copy_span_instruction_unified_medium": {
+      "ok": true,
+      "errors": []
+    },
+    "copy_span_instruction_unified_compact": {
+      "ok": true,
+      "errors": []
+    }
+  }
+}

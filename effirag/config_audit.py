@@ -2,6 +2,7 @@ import argparse
 import json
 from pathlib import Path
 
+from .unified_copy_span_policy import audit_unified_configs
 from .utils import load_yaml
 
 
@@ -12,6 +13,7 @@ def main():
 
     root = Path(args.config_dir)
     rows = []
+    unified_groups = {}
     for path in sorted(root.rglob("*.yaml")):
         payload = load_yaml(path)
         audit = payload.get("_config_audit", {}) or {}
@@ -25,7 +27,29 @@ def main():
             "warning_count": audit.get("warning_count", 0),
             "warnings": audit.get("warnings", []),
         })
-    print(json.dumps(rows, ensure_ascii=False, indent=2))
+        normalized = str(path).replace("\\", "/")
+        if "/copy_span_instruction_unified/" in normalized:
+            profile_name = path.parent.name
+            unified_groups.setdefault(profile_name, {})[path.stem] = dict(payload)
+
+    result = {"configs": rows}
+    if unified_groups:
+        unified_audit = {
+            profile_name: audit_unified_configs(configs)
+            for profile_name, configs in sorted(unified_groups.items())
+        }
+        result["unified_profile_invariance"] = unified_audit
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        errors = [
+            error
+            for audit in unified_audit.values()
+            for error in audit.get("errors", [])
+        ]
+        if errors:
+            raise SystemExit(1)
+        return
+
+    print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

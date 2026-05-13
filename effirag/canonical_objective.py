@@ -45,6 +45,18 @@ def is_canonical_copy_span_mode(mode: str | None) -> bool:
     return _normalize_mode(mode) in set(CANONICAL_OBJECTIVE_MODES)
 
 
+def resolve_legacy_sota_copy_span_mode(dataset_name: str | None = None) -> str:
+    ds = _normalize_dataset_name(dataset_name)
+    if ds == "hotpotqa":
+        return "p3_answer_preserve_guarded_hotpot"
+    return "baseline"
+
+
+def resolve_unified_copy_span_mode(dataset_name: str | None = None) -> str:
+    _ = dataset_name
+    return "baseline"
+
+
 def _mode_options(mode: str | None) -> Dict[str, bool]:
     mm = _normalize_mode(mode)
     return {

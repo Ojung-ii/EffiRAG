@@ -50,6 +50,9 @@ COPY_SPAN_DISABLED_MODULES = {
     "coverage_selection_enabled": False,
 }
 
+# Legacy compatibility settings for reproducing previous SOTA runs.
+# These settings may contain dataset-specific behavior and must not be used
+# as the paper's strict unified main method.
 COPY_SPAN_DATASET_LOCKS = {
     "hotpotqa": {
         "retrieval_objective_mode": "p3_answer_preserve_guarded_hotpot",
