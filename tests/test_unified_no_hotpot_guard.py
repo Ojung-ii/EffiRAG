@@ -23,6 +23,11 @@ def test_hotpotqa_unified_profile_does_not_enable_hotpot_guard_at_runtime():
         "unified_candidate_recall_boost_v1",
         "unified_candidate_recall_boost_dynamic_v1",
         "unified_candidate_recall_boost_density_rerank_v1",
+        "unified_gl_rcedr_v1",
+        "unified_gl_rcedr_no_dynamic_control",
+        "unified_gl_rcedr_no_stability",
+        "unified_gl_rcedr_no_bridge_path",
+        "unified_gl_rcedr_density_first_ablation",
     ]
 
     for profile in profiles:
@@ -50,6 +55,11 @@ def test_hotpotqa_unified_profile_does_not_enable_hotpot_guard_at_runtime():
             "unified_candidate_recall_boost_v1",
             "unified_candidate_recall_boost_dynamic_v1",
             "unified_candidate_recall_boost_density_rerank_v1",
+            "unified_gl_rcedr_v1",
+            "unified_gl_rcedr_no_dynamic_control",
+            "unified_gl_rcedr_no_stability",
+            "unified_gl_rcedr_no_bridge_path",
+            "unified_gl_rcedr_density_first_ablation",
         }:
             assert cfg.bridge_candidate_induction_enabled is True
             assert cfg.path_candidate_expansion_enabled is True
@@ -58,6 +68,37 @@ def test_hotpotqa_unified_profile_does_not_enable_hotpot_guard_at_runtime():
             assert cfg.entity_diversity_enabled is True
             assert cfg.source_diversity_enabled is True
             assert cfg.dataset_specific_branch_enabled is False
+        if profile in {
+            "unified_gl_rcedr_v1",
+            "unified_gl_rcedr_no_dynamic_control",
+            "unified_gl_rcedr_no_stability",
+            "unified_gl_rcedr_no_bridge_path",
+            "unified_gl_rcedr_density_first_ablation",
+        }:
+            assert cfg.gl_rcedr_enabled is True
+            assert cfg.answer_support_pinning_enabled is False
+            assert cfg.corridor_answer_preserve_guarded_hotpot_enabled is False
+            assert cfg.oracle_support_injection_enabled is False
+            assert cfg.dataset_specific_branch_enabled is False
+        if profile == "unified_gl_rcedr_v1":
+            assert cfg.gl_rcedr_dynamic_control_enabled is True
+            assert cfg.gl_rcedr_stability_enabled is True
+            assert cfg.gl_rcedr_bridge_path_enabled is True
+            assert cfg.gl_rcedr_density_first_ablation_enabled is False
+        if profile == "unified_gl_rcedr_no_dynamic_control":
+            assert cfg.gl_rcedr_dynamic_control_enabled is False
+            assert cfg.gl_rcedr_stability_enabled is True
+            assert cfg.gl_rcedr_bridge_path_enabled is True
+        if profile == "unified_gl_rcedr_no_stability":
+            assert cfg.gl_rcedr_dynamic_control_enabled is True
+            assert cfg.gl_rcedr_stability_enabled is False
+            assert cfg.gl_rcedr_bridge_path_enabled is True
+        if profile == "unified_gl_rcedr_no_bridge_path":
+            assert cfg.gl_rcedr_dynamic_control_enabled is True
+            assert cfg.gl_rcedr_stability_enabled is True
+            assert cfg.gl_rcedr_bridge_path_enabled is False
+        if profile == "unified_gl_rcedr_density_first_ablation":
+            assert cfg.gl_rcedr_density_first_ablation_enabled is True
         if profile == "unified_candidate_recall_boost_density_rerank_v1":
             assert cfg.evidence_density_rerank_enabled is True
             assert cfg.bridge_path_utility_enabled is True

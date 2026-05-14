@@ -30,6 +30,7 @@ from .candidate_recall_boost import apply_candidate_recall_boost
 from .config import RetrievalConfig
 from .embedding import cosine_similarity, encode_texts, rerank_sentences_by_embedding, topk_cosine_similarity
 from .evidence_density_rerank import rerank_evidence_density
+from .gl_rcedr import apply_gl_rcedr
 from .global_index import load_or_build_global_index, load_semantic_index
 from .graph import build_document_entity_graph
 from .legacy_objectives import (
@@ -5659,6 +5660,11 @@ def run_graphrag_core(
         "applied": False,
         "reason": "disabled",
     }
+    gl_rcedr_diag = {
+        "enabled": False,
+        "applied": False,
+        "reason": "disabled",
+    }
     graph_scope = "query_context"
     global_index_meta = {}
     g = None
@@ -6679,6 +6685,21 @@ def run_graphrag_core(
         sentence_score_map=selected_sentence_score_map,
         corridors=filtered_corridors,
     )
+    selected_sentence_ids, selected_sentences, gl_rcedr_diag = apply_gl_rcedr(
+        question_text=sample.question,
+        selected_sentence_ids=selected_sentence_ids,
+        selected_sentences=selected_sentences,
+        sentence_feature_table=sentence_feature_table,
+        cfg=cfg,
+    )
+    if bool(gl_rcedr_diag.get("applied", False)):
+        sentence_feature_table = _build_sentence_feature_table(
+            sample=sample,
+            selected_sentence_ids=selected_sentence_ids,
+            sentence_texts=selected_sentences,
+            sentence_score_map=selected_sentence_score_map,
+            corridors=filtered_corridors,
+        )
     selected_sentence_ids, selected_sentences, evidence_density_rerank_diag = rerank_evidence_density(
         question_text=sample.question,
         selected_sentence_ids=selected_sentence_ids,
@@ -6871,6 +6892,7 @@ def run_graphrag_core(
             "hybrid_anchor_recall_diag": dict(hybrid_anchor_diag or {}),
             "bridge_candidate_induction_diag": dict(bridge_induction_diag or {}),
             "candidate_recall_boost_diag": dict(candidate_recall_boost_diag or {}),
+            "gl_rcedr_diag": dict(gl_rcedr_diag or {}),
             "evidence_density_rerank_diag": dict(evidence_density_rerank_diag or {}),
             "shared_budget_profile": str((shared_budget_diag or {}).get("resolved_profile", "off") or "off"),
             "shared_budget_proposal_step": int((shared_budget_diag or {}).get("proposal_step", 0)),

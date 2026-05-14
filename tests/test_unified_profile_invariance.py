@@ -25,6 +25,11 @@ PROFILES = [
     "unified_candidate_recall_boost_v1",
     "unified_candidate_recall_boost_dynamic_v1",
     "unified_candidate_recall_boost_density_rerank_v1",
+    "unified_gl_rcedr_v1",
+    "unified_gl_rcedr_no_dynamic_control",
+    "unified_gl_rcedr_no_stability",
+    "unified_gl_rcedr_no_bridge_path",
+    "unified_gl_rcedr_density_first_ablation",
 ]
 
 REORDER_ALL_PROFILES = {
@@ -46,6 +51,11 @@ LIGHTSEP_PROFILES = {
     "unified_candidate_recall_boost_v1",
     "unified_candidate_recall_boost_dynamic_v1",
     "unified_candidate_recall_boost_density_rerank_v1",
+    "unified_gl_rcedr_v1",
+    "unified_gl_rcedr_no_dynamic_control",
+    "unified_gl_rcedr_no_stability",
+    "unified_gl_rcedr_no_bridge_path",
+    "unified_gl_rcedr_density_first_ablation",
 }
 
 DYNAMIC_PROFILES = {
@@ -59,6 +69,19 @@ CANDIDATE_RECALL_BOOST_PROFILES = {
     "unified_candidate_recall_boost_v1",
     "unified_candidate_recall_boost_dynamic_v1",
     "unified_candidate_recall_boost_density_rerank_v1",
+    "unified_gl_rcedr_v1",
+    "unified_gl_rcedr_no_dynamic_control",
+    "unified_gl_rcedr_no_stability",
+    "unified_gl_rcedr_no_bridge_path",
+    "unified_gl_rcedr_density_first_ablation",
+}
+
+GL_RCEDR_PROFILES = {
+    "unified_gl_rcedr_v1",
+    "unified_gl_rcedr_no_dynamic_control",
+    "unified_gl_rcedr_no_stability",
+    "unified_gl_rcedr_no_bridge_path",
+    "unified_gl_rcedr_density_first_ablation",
 }
 
 
@@ -109,6 +132,11 @@ def test_unified_budget_is_profile_selected_not_dataset_selected():
     assert observed_by_profile["unified_candidate_recall_boost_v1"] == (45, 24, 24)
     assert observed_by_profile["unified_candidate_recall_boost_dynamic_v1"] == (45, 24, 24)
     assert observed_by_profile["unified_candidate_recall_boost_density_rerank_v1"] == (45, 24, 24)
+    assert observed_by_profile["unified_gl_rcedr_v1"] == (45, 24, 24)
+    assert observed_by_profile["unified_gl_rcedr_no_dynamic_control"] == (45, 24, 24)
+    assert observed_by_profile["unified_gl_rcedr_no_stability"] == (45, 24, 24)
+    assert observed_by_profile["unified_gl_rcedr_no_bridge_path"] == (45, 24, 24)
+    assert observed_by_profile["unified_gl_rcedr_density_first_ablation"] == (45, 24, 24)
 
 
 def test_enhanced_profile_policy_flags_are_global():
@@ -130,6 +158,11 @@ def test_enhanced_profile_policy_flags_are_global():
         "copy_span_instruction_unified_dynamic_compact_v2",
         "copy_span_instruction_unified_dynamic_contextual_compact_v3",
         "copy_span_instruction_unified_candidate_recall_boost_dynamic_v1",
+        "copy_span_instruction_unified_gl_rcedr_v1",
+        "copy_span_instruction_unified_gl_rcedr_no_dynamic_control",
+        "copy_span_instruction_unified_gl_rcedr_no_stability",
+        "copy_span_instruction_unified_gl_rcedr_no_bridge_path",
+        "copy_span_instruction_unified_gl_rcedr_density_first_ablation",
     }.issubset(set(UNIFIED_DYNAMIC_PROFILE_NAMES))
 
     for profile in PROFILES:
@@ -160,6 +193,52 @@ def test_enhanced_profile_policy_flags_are_global():
                 assert cfg["max_expanded_candidates"] == 64
                 assert cfg["candidate_dedup_enabled"] is True
                 assert cfg["dataset_specific_branch_enabled"] is False
+            if profile in GL_RCEDR_PROFILES:
+                assert cfg["gl_rcedr_enabled"] is True
+                assert cfg["retrieval_objective_mode"] == "baseline"
+                assert cfg["answer_support_pinning_enabled"] is False
+                assert cfg["corridor_answer_preserve_guarded_hotpot_enabled"] is False
+                assert cfg["oracle_support_injection_enabled"] is False
+                assert cfg["dataset_specific_branch_enabled"] is False
+                assert cfg["gl_rcedr_view_count"] == 6
+                assert cfg["gl_rcedr_seed_topk"] == 6
+                assert cfg["gl_rcedr_recall_weight"] == 0.34
+                assert cfg["gl_rcedr_bridge_path_weight"] == 0.22
+                assert cfg["gl_rcedr_diversity_weight"] == 0.16
+                assert cfg["gl_rcedr_stability_weight"] == 0.12
+                assert cfg["gl_rcedr_redundancy_weight"] == 0.16
+                assert cfg["gl_rcedr_cost_weight"] == 0.12
+                assert cfg["gl_rcedr_max_selected_candidates"] == 24
+                assert cfg["gl_rcedr_max_rendered_candidates"] == 24
+                assert cfg["gl_rcedr_max_rendered_tokens"] == 360
+                assert cfg["gl_rcedr_core_preserve_threshold"] == 0.56
+                assert cfg["gl_rcedr_bridge_preserve_threshold"] == 0.46
+                assert cfg["gl_rcedr_coverage_preserve_threshold"] == 0.38
+            if profile == "unified_gl_rcedr_v1":
+                assert cfg["gl_rcedr_dynamic_control_enabled"] is True
+                assert cfg["gl_rcedr_stability_enabled"] is True
+                assert cfg["gl_rcedr_bridge_path_enabled"] is True
+                assert cfg["gl_rcedr_density_first_ablation_enabled"] is False
+            if profile == "unified_gl_rcedr_no_dynamic_control":
+                assert cfg["gl_rcedr_dynamic_control_enabled"] is False
+                assert cfg["gl_rcedr_stability_enabled"] is True
+                assert cfg["gl_rcedr_bridge_path_enabled"] is True
+                assert cfg["gl_rcedr_density_first_ablation_enabled"] is False
+            if profile == "unified_gl_rcedr_no_stability":
+                assert cfg["gl_rcedr_dynamic_control_enabled"] is True
+                assert cfg["gl_rcedr_stability_enabled"] is False
+                assert cfg["gl_rcedr_bridge_path_enabled"] is True
+                assert cfg["gl_rcedr_density_first_ablation_enabled"] is False
+            if profile == "unified_gl_rcedr_no_bridge_path":
+                assert cfg["gl_rcedr_dynamic_control_enabled"] is True
+                assert cfg["gl_rcedr_stability_enabled"] is True
+                assert cfg["gl_rcedr_bridge_path_enabled"] is False
+                assert cfg["gl_rcedr_density_first_ablation_enabled"] is False
+            if profile == "unified_gl_rcedr_density_first_ablation":
+                assert cfg["gl_rcedr_dynamic_control_enabled"] is True
+                assert cfg["gl_rcedr_stability_enabled"] is True
+                assert cfg["gl_rcedr_bridge_path_enabled"] is True
+                assert cfg["gl_rcedr_density_first_ablation_enabled"] is True
             if profile in DYNAMIC_PROFILES:
                 assert cfg["coverage_gain_enabled"] is True
                 assert cfg["redundancy_penalty_enabled"] is True
@@ -284,6 +363,25 @@ def test_dynamic_compact_profile_has_no_dataset_specific_method_drift():
         "max_selected_candidates",
         "max_rendered_candidates",
         "max_rendered_tokens",
+        "gl_rcedr_enabled",
+        "gl_rcedr_dynamic_control_enabled",
+        "gl_rcedr_stability_enabled",
+        "gl_rcedr_bridge_path_enabled",
+        "gl_rcedr_density_first_ablation_enabled",
+        "gl_rcedr_view_count",
+        "gl_rcedr_seed_topk",
+        "gl_rcedr_recall_weight",
+        "gl_rcedr_bridge_path_weight",
+        "gl_rcedr_diversity_weight",
+        "gl_rcedr_stability_weight",
+        "gl_rcedr_redundancy_weight",
+        "gl_rcedr_cost_weight",
+        "gl_rcedr_max_selected_candidates",
+        "gl_rcedr_max_rendered_candidates",
+        "gl_rcedr_max_rendered_tokens",
+        "gl_rcedr_core_preserve_threshold",
+        "gl_rcedr_bridge_preserve_threshold",
+        "gl_rcedr_coverage_preserve_threshold",
         "order_strategy",
         "prompt_variant",
         "top_corridors",

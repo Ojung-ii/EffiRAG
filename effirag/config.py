@@ -392,6 +392,26 @@ class RagConfig(RetrievalConfig):
     max_selected_candidates: int = 24
     max_rendered_candidates: int = 24
     max_rendered_tokens: int = 340
+    # GL-RCEDR (Global-to-Local Recall-Constrained Evidence-Density Retrieval)
+    gl_rcedr_enabled: bool = False
+    gl_rcedr_dynamic_control_enabled: bool = True
+    gl_rcedr_stability_enabled: bool = True
+    gl_rcedr_bridge_path_enabled: bool = True
+    gl_rcedr_density_first_ablation_enabled: bool = False
+    gl_rcedr_view_count: int = 6
+    gl_rcedr_seed_topk: int = 6
+    gl_rcedr_recall_weight: float = 0.34
+    gl_rcedr_bridge_path_weight: float = 0.22
+    gl_rcedr_diversity_weight: float = 0.16
+    gl_rcedr_stability_weight: float = 0.12
+    gl_rcedr_redundancy_weight: float = 0.16
+    gl_rcedr_cost_weight: float = 0.12
+    gl_rcedr_max_selected_candidates: int = 24
+    gl_rcedr_max_rendered_candidates: int = 24
+    gl_rcedr_max_rendered_tokens: int = 360
+    gl_rcedr_core_preserve_threshold: float = 0.56
+    gl_rcedr_bridge_preserve_threshold: float = 0.46
+    gl_rcedr_coverage_preserve_threshold: float = 0.38
     # Selector-aware compact rendering. These flags only affect the final
     # prompt assembly path and do not alter retrieval or selector scoring.
     selector_aware_render_enabled: bool = False
@@ -507,6 +527,11 @@ def apply_cli_overrides(config_dict, args_namespace):
         "bridge_path_utility_enabled",
         "token_cost_penalty_enabled",
         "density_budget_awareness_enabled",
+        "gl_rcedr_enabled",
+        "gl_rcedr_dynamic_control_enabled",
+        "gl_rcedr_stability_enabled",
+        "gl_rcedr_bridge_path_enabled",
+        "gl_rcedr_density_first_ablation_enabled",
         "selector_aware_render_enabled",
         "render_selected_only",
         "render_selected_centered",
