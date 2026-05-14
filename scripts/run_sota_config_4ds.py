@@ -56,6 +56,11 @@ def main() -> None:
     p.add_argument("--mode", choices=["locked_precomputed", "on_the_fly"], default="locked_precomputed")
     p.add_argument("--datasets", nargs="+", default=["hotpotqa", "2wikimultihopqa", "musique", "popqa"])
     p.add_argument("--sample-size", "--limit", dest="limit", type=int, default=0, help="Override sample limit when >0.")
+    p.add_argument(
+        "--retrieval-only",
+        action="store_true",
+        help="Skip QA generation and run retrieval/render pipeline only.",
+    )
     p.add_argument("--profile-root", default=str(DEFAULT_PROFILE_ROOT))
     p.add_argument(
         "--output-root",
@@ -100,6 +105,8 @@ def main() -> None:
         ]
         if int(args.limit or 0) > 0:
             cmd.extend(["--limit", str(int(args.limit))])
+        if bool(args.retrieval_only):
+            cmd.extend(["--retrieval-only", "true"])
 
         print(f"\n=== [{ds}] running")
         print(" ".join(cmd))

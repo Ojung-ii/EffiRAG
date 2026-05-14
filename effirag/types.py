@@ -36,6 +36,8 @@ class RetrievalResult:
     selected_nodes: List[str]
     selected_sentence_ids: List[str]
     selected_sentences: List[str]
+    candidate_sentence_ids: List[str] = field(default_factory=list)
+    candidate_sentences: List[str] = field(default_factory=list)
     corridors: List[Dict[str, Any]] = field(default_factory=list)
     anchor_results: List[AnchorResult] = field(default_factory=list)
     diagnostics: Dict[str, Any] = field(default_factory=dict)

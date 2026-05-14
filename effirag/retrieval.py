@@ -6776,6 +6776,16 @@ def run_graphrag_core(
             "final_text_rerank": final_text_rerank_trace,
         }
 
+    candidate_nodes_for_audit = _ordered_unique(
+        list((chosen or {}).get("candidates", []) or []) + list((chosen or {}).get("seeds", set()) or [])
+    )
+    candidate_unit_ids, candidate_text_map = _candidate_text_unit_ids(
+        reduced_graph if reduced_graph is not None else g,
+        candidate_nodes_for_audit,
+    )
+    candidate_sentence_ids = sorted({str(x) for x in list(candidate_unit_ids or []) if str(x)})
+    candidate_sentences = [str((candidate_text_map or {}).get(sid, "") or "") for sid in candidate_sentence_ids]
+
     latency_ms = (time.perf_counter() - start) * 1000.0
     return RetrievalResult(
         sample_id=sample.qid,
@@ -6785,6 +6795,8 @@ def run_graphrag_core(
         selected_nodes=sorted(selected_nodes),
         selected_sentence_ids=selected_sentence_ids,
         selected_sentences=selected_sentences,
+        candidate_sentence_ids=candidate_sentence_ids,
+        candidate_sentences=candidate_sentences,
         corridors=filtered_corridors,
         anchor_results=anchor_results,
         diagnostics={
@@ -6817,6 +6829,8 @@ def run_graphrag_core(
             "selected_text_map": selected_text_map,
             "selected_text_unit_ids": list(selected_sentence_ids),
             "selected_texts": list(selected_sentences),
+            "candidate_text_unit_ids": list(candidate_sentence_ids),
+            "candidate_texts": list(candidate_sentences),
             "stagewise_loss_funnel": stagewise_loss_funnel,
             "anchor_hit_rate": float((stagewise_loss_funnel or {}).get("anchor_hit_rate", 0.0)),
             "proposal_hit_rate": float((stagewise_loss_funnel or {}).get("proposal_hit_rate", 0.0)),

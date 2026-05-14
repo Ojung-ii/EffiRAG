@@ -84,6 +84,8 @@ def _reconstruct_retrieval(payload: dict) -> RetrievalResult:
         selected_nodes=[str(x) for x in (payload.get("selected_nodes", []) or [])],
         selected_sentence_ids=[str(x) for x in (payload.get("selected_sentence_ids", []) or [])],
         selected_sentences=[str(x) for x in (payload.get("selected_sentences", []) or [])],
+        candidate_sentence_ids=[str(x) for x in (payload.get("candidate_sentence_ids", []) or [])],
+        candidate_sentences=[str(x) for x in (payload.get("candidate_sentences", []) or [])],
         corridors=payload.get("corridors", []) or [],
         anchor_results=anchor_results,
         diagnostics=payload.get("diagnostics", {}) or {},

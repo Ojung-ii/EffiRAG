@@ -79,6 +79,11 @@ def main() -> None:
     parser.add_argument("--profile", default="unified_medium")
     parser.add_argument("--datasets", nargs="+", default=["hotpotqa", "2wikimultihopqa", "musique", "popqa"])
     parser.add_argument("--sample-size", "--limit", dest="limit", type=int, default=0)
+    parser.add_argument(
+        "--retrieval-only",
+        action="store_true",
+        help="Skip QA generation and run retrieval/render pipeline only.",
+    )
     parser.add_argument("--profile-root", default=str(DEFAULT_PROFILE_ROOT))
     parser.add_argument(
         "--output-root",
@@ -134,6 +139,8 @@ def main() -> None:
         ]
         if int(args.limit or 0) > 0:
             cmd.extend(["--limit", str(int(args.limit))])
+        if bool(args.retrieval_only):
+            cmd.extend(["--retrieval-only", "true"])
 
         print(f"\n=== [{dataset}] running strict unified profile={profile_dir_name}")
         print(" ".join(cmd))
