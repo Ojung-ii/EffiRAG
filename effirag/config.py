@@ -379,6 +379,19 @@ class RagConfig(RetrievalConfig):
     bridge_score_threshold: float = 0.35
     redundancy_threshold: float = 0.62
     marginal_gain_threshold: float = 0.08
+    # Dataset-independent evidence-density reranking over selected evidence.
+    evidence_density_rerank_enabled: bool = False
+    bridge_path_utility_enabled: bool = False
+    token_cost_penalty_enabled: bool = False
+    density_budget_awareness_enabled: bool = False
+    density_semantic_weight: float = 0.42
+    density_bridge_path_weight: float = 0.24
+    density_coverage_weight: float = 0.24
+    density_redundancy_weight: float = 0.18
+    density_token_cost_weight: float = 0.22
+    max_selected_candidates: int = 24
+    max_rendered_candidates: int = 24
+    max_rendered_tokens: int = 340
     # Selector-aware compact rendering. These flags only affect the final
     # prompt assembly path and do not alter retrieval or selector scoring.
     selector_aware_render_enabled: bool = False
@@ -490,6 +503,10 @@ def apply_cli_overrides(config_dict, args_namespace):
         "bridge_preserve_enabled",
         "path_preserve_enabled",
         "adaptive_stop_enabled",
+        "evidence_density_rerank_enabled",
+        "bridge_path_utility_enabled",
+        "token_cost_penalty_enabled",
+        "density_budget_awareness_enabled",
         "selector_aware_render_enabled",
         "render_selected_only",
         "render_selected_centered",

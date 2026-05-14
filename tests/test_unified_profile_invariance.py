@@ -24,6 +24,7 @@ PROFILES = [
     "unified_dynamic_contextual_compact_v3",
     "unified_candidate_recall_boost_v1",
     "unified_candidate_recall_boost_dynamic_v1",
+    "unified_candidate_recall_boost_density_rerank_v1",
 ]
 
 REORDER_ALL_PROFILES = {
@@ -44,6 +45,7 @@ LIGHTSEP_PROFILES = {
     "unified_dynamic_contextual_compact_v3",
     "unified_candidate_recall_boost_v1",
     "unified_candidate_recall_boost_dynamic_v1",
+    "unified_candidate_recall_boost_density_rerank_v1",
 }
 
 DYNAMIC_PROFILES = {
@@ -56,6 +58,7 @@ DYNAMIC_PROFILES = {
 CANDIDATE_RECALL_BOOST_PROFILES = {
     "unified_candidate_recall_boost_v1",
     "unified_candidate_recall_boost_dynamic_v1",
+    "unified_candidate_recall_boost_density_rerank_v1",
 }
 
 
@@ -105,6 +108,7 @@ def test_unified_budget_is_profile_selected_not_dataset_selected():
     assert observed_by_profile["unified_dynamic_contextual_compact_v3"] == (45, 24, 24)
     assert observed_by_profile["unified_candidate_recall_boost_v1"] == (45, 24, 24)
     assert observed_by_profile["unified_candidate_recall_boost_dynamic_v1"] == (45, 24, 24)
+    assert observed_by_profile["unified_candidate_recall_boost_density_rerank_v1"] == (45, 24, 24)
 
 
 def test_enhanced_profile_policy_flags_are_global():
@@ -114,6 +118,7 @@ def test_enhanced_profile_policy_flags_are_global():
         "copy_span_instruction_unified_large_lightsep_reorder_all",
         "copy_span_instruction_unified_medium_lightsep_reorder_all",
         "copy_span_instruction_unified_candidate_recall_boost_v1",
+        "copy_span_instruction_unified_candidate_recall_boost_density_rerank_v1",
     }.issubset(set(UNIFIED_ENHANCED_PROFILE_NAMES))
     assert {
         "copy_span_instruction_unified_large",
@@ -206,6 +211,21 @@ def test_enhanced_profile_policy_flags_are_global():
                 assert cfg["max_prompt_tokens"] == 700
                 assert cfg["selector_aware_render_enabled"] is False
                 assert cfg["render_selected_only"] is False
+            if profile == "unified_candidate_recall_boost_density_rerank_v1":
+                assert cfg["evidence_density_rerank_enabled"] is True
+                assert cfg["bridge_path_utility_enabled"] is True
+                assert cfg["coverage_gain_enabled"] is True
+                assert cfg["redundancy_penalty_enabled"] is True
+                assert cfg["token_cost_penalty_enabled"] is True
+                assert cfg["density_budget_awareness_enabled"] is True
+                assert cfg["density_semantic_weight"] == 0.42
+                assert cfg["density_bridge_path_weight"] == 0.24
+                assert cfg["density_coverage_weight"] == 0.24
+                assert cfg["density_redundancy_weight"] == 0.18
+                assert cfg["density_token_cost_weight"] == 0.22
+                assert cfg["max_selected_candidates"] == 24
+                assert cfg["max_rendered_candidates"] == 24
+                assert cfg["max_rendered_tokens"] == 340
 
 
 def test_enhanced_profile_interfaces_are_explicit():
@@ -252,6 +272,18 @@ def test_dynamic_compact_profile_has_no_dataset_specific_method_drift():
         "bridge_score_threshold",
         "redundancy_threshold",
         "marginal_gain_threshold",
+        "evidence_density_rerank_enabled",
+        "bridge_path_utility_enabled",
+        "token_cost_penalty_enabled",
+        "density_budget_awareness_enabled",
+        "density_semantic_weight",
+        "density_bridge_path_weight",
+        "density_coverage_weight",
+        "density_redundancy_weight",
+        "density_token_cost_weight",
+        "max_selected_candidates",
+        "max_rendered_candidates",
+        "max_rendered_tokens",
         "order_strategy",
         "prompt_variant",
         "top_corridors",

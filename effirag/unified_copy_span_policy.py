@@ -30,6 +30,9 @@ COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_V1 = "copy_span_instruction
 COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DYNAMIC_V1 = (
     "copy_span_instruction_unified_candidate_recall_boost_dynamic_v1"
 )
+COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DENSITY_RERANK_V1 = (
+    "copy_span_instruction_unified_candidate_recall_boost_density_rerank_v1"
+)
 
 UNIFIED_CLEAN_PROFILE_NAMES = (
     COPY_SPAN_INSTRUCTION_UNIFIED_LARGE,
@@ -43,6 +46,7 @@ UNIFIED_ENHANCED_PROFILE_NAMES = (
     COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP_REORDER_ALL,
     COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL,
     COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_V1,
+    COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DENSITY_RERANK_V1,
 )
 
 UNIFIED_DYNAMIC_PROFILE_NAMES = (
@@ -91,6 +95,9 @@ UNIFIED_PROFILE_ALIASES = {
     "candidate_recall_boost_dynamic_v1": COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DYNAMIC_V1,
     "unified_candidate_recall_boost_dynamic_v1": COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DYNAMIC_V1,
     COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DYNAMIC_V1: COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DYNAMIC_V1,
+    "candidate_recall_boost_density_rerank_v1": COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DENSITY_RERANK_V1,
+    "unified_candidate_recall_boost_density_rerank_v1": COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DENSITY_RERANK_V1,
+    COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DENSITY_RERANK_V1: COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DENSITY_RERANK_V1,
 }
 
 UNIFIED_PROFILE_DIRS = {
@@ -106,6 +113,7 @@ UNIFIED_PROFILE_DIRS = {
     COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_CONTEXTUAL_COMPACT_V3: "unified_dynamic_contextual_compact_v3",
     COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_V1: "unified_candidate_recall_boost_v1",
     COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DYNAMIC_V1: "unified_candidate_recall_boost_dynamic_v1",
+    COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DENSITY_RERANK_V1: "unified_candidate_recall_boost_density_rerank_v1",
 }
 
 UNIFIED_BUDGETS = {
@@ -165,6 +173,11 @@ UNIFIED_BUDGETS = {
         "render_topn": 24,
     },
     COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DYNAMIC_V1: {
+        "seed_topn": 45,
+        "run_topn": 24,
+        "render_topn": 24,
+    },
+    COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DENSITY_RERANK_V1: {
         "seed_topn": 45,
         "run_topn": 24,
         "render_topn": 24,
@@ -242,6 +255,18 @@ UNIFIED_METHOD_LOCK = {
     "bridge_score_threshold": 0.35,
     "redundancy_threshold": 0.62,
     "marginal_gain_threshold": 0.08,
+    "evidence_density_rerank_enabled": False,
+    "bridge_path_utility_enabled": False,
+    "token_cost_penalty_enabled": False,
+    "density_budget_awareness_enabled": False,
+    "density_semantic_weight": 0.42,
+    "density_bridge_path_weight": 0.24,
+    "density_coverage_weight": 0.24,
+    "density_redundancy_weight": 0.18,
+    "density_token_cost_weight": 0.22,
+    "max_selected_candidates": 24,
+    "max_rendered_candidates": 24,
+    "max_rendered_tokens": 340,
     "selector_aware_render_enabled": False,
     "render_selected_only": False,
     "render_include_neighbor_sentences": False,
@@ -278,6 +303,7 @@ UNIFIED_PROFILE_INTERFACE_LOCKS = {
     COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_CONTEXTUAL_COMPACT_V3: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
     COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_V1: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
     COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DYNAMIC_V1: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DENSITY_RERANK_V1: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
 }
 
 UNIFIED_PROFILE_METHOD_OVERRIDES = {
@@ -411,6 +437,34 @@ UNIFIED_PROFILE_METHOD_OVERRIDES = {
         "max_context_sentences": 24,
         "max_sentences": 24,
         "top_corridors": 0,
+    },
+    COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DENSITY_RERANK_V1: {
+        "bridge_candidate_induction_enabled": True,
+        "path_candidate_expansion_enabled": True,
+        "anchor_expansion_enabled": True,
+        "candidate_diversity_enabled": True,
+        "entity_diversity_enabled": True,
+        "source_diversity_enabled": True,
+        "max_bridge_candidates": 24,
+        "max_path_candidates": 24,
+        "max_anchor_expansion_hops": 1,
+        "max_expanded_candidates": 64,
+        "candidate_dedup_enabled": True,
+        "dataset_specific_branch_enabled": False,
+        "evidence_density_rerank_enabled": True,
+        "coverage_gain_enabled": True,
+        "redundancy_penalty_enabled": True,
+        "bridge_path_utility_enabled": True,
+        "token_cost_penalty_enabled": True,
+        "density_budget_awareness_enabled": True,
+        "density_semantic_weight": 0.42,
+        "density_bridge_path_weight": 0.24,
+        "density_coverage_weight": 0.24,
+        "density_redundancy_weight": 0.18,
+        "density_token_cost_weight": 0.22,
+        "max_selected_candidates": 24,
+        "max_rendered_candidates": 24,
+        "max_rendered_tokens": 340,
     },
 }
 
