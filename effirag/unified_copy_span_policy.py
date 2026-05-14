@@ -23,6 +23,7 @@ COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP = "copy_span_instruction_unified_la
 COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_REORDER_ALL = "copy_span_instruction_unified_large_reorder_all"
 COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP_REORDER_ALL = "copy_span_instruction_unified_large_lightsep_reorder_all"
 COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL = "copy_span_instruction_unified_medium_lightsep_reorder_all"
+COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1 = "copy_span_instruction_unified_dynamic_compact_v1"
 
 UNIFIED_CLEAN_PROFILE_NAMES = (
     COPY_SPAN_INSTRUCTION_UNIFIED_LARGE,
@@ -37,7 +38,11 @@ UNIFIED_ENHANCED_PROFILE_NAMES = (
     COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL,
 )
 
-UNIFIED_PROFILE_NAMES = UNIFIED_CLEAN_PROFILE_NAMES + UNIFIED_ENHANCED_PROFILE_NAMES
+UNIFIED_DYNAMIC_PROFILE_NAMES = (
+    COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1,
+)
+
+UNIFIED_PROFILE_NAMES = UNIFIED_CLEAN_PROFILE_NAMES + UNIFIED_ENHANCED_PROFILE_NAMES + UNIFIED_DYNAMIC_PROFILE_NAMES
 
 UNIFIED_PROFILE_ALIASES = {
     "large": COPY_SPAN_INSTRUCTION_UNIFIED_LARGE,
@@ -61,6 +66,9 @@ UNIFIED_PROFILE_ALIASES = {
     "medium_lightsep_reorder_all": COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL,
     "unified_medium_lightsep_reorder_all": COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL,
     COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL: COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL,
+    "dynamic_compact_v1": COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1,
+    "unified_dynamic_compact_v1": COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1,
+    COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1: COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1,
 }
 
 UNIFIED_PROFILE_DIRS = {
@@ -71,6 +79,7 @@ UNIFIED_PROFILE_DIRS = {
     COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_REORDER_ALL: "unified_large_reorder_all",
     COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP_REORDER_ALL: "unified_large_lightsep_reorder_all",
     COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL: "unified_medium_lightsep_reorder_all",
+    COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1: "unified_dynamic_compact_v1",
 }
 
 UNIFIED_BUDGETS = {
@@ -108,6 +117,11 @@ UNIFIED_BUDGETS = {
         "seed_topn": 36,
         "run_topn": 18,
         "render_topn": 18,
+    },
+    COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1: {
+        "seed_topn": 45,
+        "run_topn": 24,
+        "render_topn": 24,
     },
 }
 
@@ -157,6 +171,20 @@ UNIFIED_METHOD_LOCK = {
     "top1_correction_enabled": False,
     "run_light_rerank_enabled": False,
     "chunk_grounding_enabled": False,
+    "dynamic_compact_selection_enabled": False,
+    "coverage_gain_enabled": False,
+    "redundancy_penalty_enabled": False,
+    "bridge_preserve_enabled": False,
+    "path_preserve_enabled": False,
+    "adaptive_stop_enabled": False,
+    "max_render_topn": 24,
+    "min_render_topn": 6,
+    "target_prompt_tokens": 600,
+    "max_prompt_tokens": 700,
+    "coverage_gain_threshold": 0.05,
+    "bridge_score_threshold": 0.35,
+    "redundancy_threshold": 0.62,
+    "marginal_gain_threshold": 0.08,
     **UNIFIED_RENDERING_LOCK,
 }
 
@@ -170,6 +198,30 @@ UNIFIED_PROFILE_INTERFACE_LOCKS = {
     COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_REORDER_ALL: UNIFIED_DEFAULT_INTERFACE_LOCK,
     COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP_REORDER_ALL: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
     COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
+}
+
+UNIFIED_PROFILE_METHOD_OVERRIDES = {
+    COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1: {
+        "dynamic_compact_selection_enabled": True,
+        "coverage_gain_enabled": True,
+        "redundancy_penalty_enabled": True,
+        "bridge_preserve_enabled": True,
+        "path_preserve_enabled": True,
+        "adaptive_stop_enabled": True,
+        "max_render_topn": 24,
+        "min_render_topn": 6,
+        "target_prompt_tokens": 600,
+        "max_prompt_tokens": 700,
+        "coverage_gain_threshold": 0.05,
+        "bridge_score_threshold": 0.35,
+        "redundancy_threshold": 0.62,
+        "marginal_gain_threshold": 0.08,
+        # Let the dynamic selector see the large retrieved candidate pool.
+        "max_context_sentences": 24,
+        "max_sentences": 24,
+        "top_corridors": 0,
+    },
 }
 
 UNIFIED_PROFILE_RENDERING_OVERRIDES = {
@@ -194,7 +246,13 @@ UNIFIED_INTERFACE_SETTING_KEYS = (
     "prompt_variant",
 )
 
-UNIFIED_METHOD_SETTING_KEYS = tuple(UNIFIED_METHOD_LOCK.keys()) + UNIFIED_INTERFACE_SETTING_KEYS
+UNIFIED_RENDER_SELECTION_KEYS = (
+    "max_context_sentences",
+    "max_sentences",
+    "top_corridors",
+)
+
+UNIFIED_METHOD_SETTING_KEYS = tuple(UNIFIED_METHOD_LOCK.keys()) + UNIFIED_INTERFACE_SETTING_KEYS + UNIFIED_RENDER_SELECTION_KEYS
 
 
 def normalize_dataset_name(dataset_name: str | None) -> str:
@@ -243,6 +301,11 @@ def unified_rendering_overrides(profile_name: str | None) -> Dict[str, Any]:
     return dict(UNIFIED_PROFILE_RENDERING_OVERRIDES.get(normalized, {}))
 
 
+def unified_method_overrides(profile_name: str | None) -> Dict[str, Any]:
+    normalized = normalize_unified_profile_name(profile_name)
+    return dict(UNIFIED_PROFILE_METHOD_OVERRIDES.get(normalized, {}))
+
+
 def unified_budget_config(profile_name: str | None) -> Dict[str, int]:
     budget = unified_budget(profile_name)
     return {
@@ -269,6 +332,7 @@ def apply_unified_profile(
     out.update(COPY_SPAN_RENDER_WEIGHTS)
     out.update(COPY_SPAN_DISABLED_MODULES)
     out.update(UNIFIED_METHOD_LOCK)
+    out.update(unified_method_overrides(normalized_profile))
     out["retrieval_objective_mode"] = resolve_unified_copy_span_mode(ds)
     out.update(unified_interface_config(normalized_profile))
     out.update(unified_rendering_overrides(normalized_profile))

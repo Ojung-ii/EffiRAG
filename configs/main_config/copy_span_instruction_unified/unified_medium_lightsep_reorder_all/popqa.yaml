@@ -278,3 +278,17 @@ profile_output: ''
 profile_limit: 0
 profile_query_indices: ''
 retrieval_only: false
+dynamic_compact_selection_enabled: false
+coverage_gain_enabled: false
+redundancy_penalty_enabled: false
+bridge_preserve_enabled: false
+path_preserve_enabled: false
+adaptive_stop_enabled: false
+max_render_topn: 24
+min_render_topn: 6
+target_prompt_tokens: 600
+max_prompt_tokens: 700
+coverage_gain_threshold: 0.05
+bridge_score_threshold: 0.35
+redundancy_threshold: 0.62
+marginal_gain_threshold: 0.08

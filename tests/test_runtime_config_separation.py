@@ -17,6 +17,7 @@ def test_runtime_precomputed_fields_do_not_change_unified_method_signature():
         "unified_large_reorder_all",
         "unified_large_lightsep_reorder_all",
         "unified_medium_lightsep_reorder_all",
+        "unified_dynamic_compact_v1",
     ]
 
     for profile in profiles:

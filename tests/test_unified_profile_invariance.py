@@ -3,6 +3,7 @@ from effirag.unified_copy_span_policy import (
     UNIFIED_ENHANCED_PROFILE_NAMES,
     UNIFIED_BUDGET_CONFIG_KEYS,
     UNIFIED_CLEAN_PROFILE_NAMES,
+    UNIFIED_DYNAMIC_PROFILE_NAMES,
     UNIFIED_RENDERING_LOCK,
     apply_unified_profile,
     unified_budget_signature,
@@ -18,6 +19,7 @@ PROFILES = [
     "unified_large_reorder_all",
     "unified_large_lightsep_reorder_all",
     "unified_medium_lightsep_reorder_all",
+    "unified_dynamic_compact_v1",
 ]
 
 REORDER_ALL_PROFILES = {
@@ -33,6 +35,7 @@ LIGHTSEP_PROFILES = {
     "unified_large_lightsep",
     "unified_large_lightsep_reorder_all",
     "unified_medium_lightsep_reorder_all",
+    "unified_dynamic_compact_v1",
 }
 
 
@@ -77,6 +80,7 @@ def test_unified_budget_is_profile_selected_not_dataset_selected():
     assert observed_by_profile["unified_large_reorder_all"] == (45, 24, 24)
     assert observed_by_profile["unified_large_lightsep_reorder_all"] == (45, 24, 24)
     assert observed_by_profile["unified_medium_lightsep_reorder_all"] == (36, 18, 18)
+    assert observed_by_profile["unified_dynamic_compact_v1"] == (45, 24, 24)
 
 
 def test_enhanced_profile_policy_flags_are_global():
@@ -91,6 +95,9 @@ def test_enhanced_profile_policy_flags_are_global():
         "copy_span_instruction_unified_medium",
         "copy_span_instruction_unified_compact",
     }.issubset(set(UNIFIED_CLEAN_PROFILE_NAMES))
+    assert {
+        "copy_span_instruction_unified_dynamic_compact_v1",
+    }.issubset(set(UNIFIED_DYNAMIC_PROFILE_NAMES))
 
     for profile in PROFILES:
         configs = {
@@ -106,6 +113,17 @@ def test_enhanced_profile_policy_flags_are_global():
             assert cfg["final_top_slice_reorder_enabled"] is _expected_reorder(profile)
             assert cfg["order_strategy"] == first["order_strategy"]
             assert cfg["prompt_variant"] == first["prompt_variant"]
+            assert cfg["dynamic_compact_selection_enabled"] is (profile == "unified_dynamic_compact_v1")
+            if profile == "unified_dynamic_compact_v1":
+                assert cfg["coverage_gain_enabled"] is True
+                assert cfg["redundancy_penalty_enabled"] is True
+                assert cfg["bridge_preserve_enabled"] is True
+                assert cfg["path_preserve_enabled"] is True
+                assert cfg["adaptive_stop_enabled"] is True
+                assert cfg["min_render_topn"] == 6
+                assert cfg["max_render_topn"] == 24
+                assert cfg["target_prompt_tokens"] == 600
+                assert cfg["max_prompt_tokens"] == 700
 
 
 def test_enhanced_profile_interfaces_are_explicit():
@@ -117,3 +135,40 @@ def test_enhanced_profile_interfaces_are_explicit():
     reorder_only = apply_unified_profile({}, "hotpotqa", "unified_large_reorder_all")
     assert reorder_only["order_strategy"] == "score"
     assert reorder_only["prompt_variant"] == "default"
+
+
+def test_dynamic_compact_profile_has_no_dataset_specific_method_drift():
+    configs = {
+        dataset: apply_unified_profile({}, dataset, "unified_dynamic_compact_v1")
+        for dataset in DATASET_ORDER
+    }
+    first = configs[DATASET_ORDER[0]]
+    forbidden_drift_keys = [
+        "retrieval_objective_mode",
+        "answer_support_pinning_enabled",
+        "final_top_slice_reorder_enabled",
+        "corridor_answer_preserve_guarded_hotpot_enabled",
+        "oracle_support_injection_enabled",
+        "dynamic_compact_selection_enabled",
+        "coverage_gain_enabled",
+        "redundancy_penalty_enabled",
+        "bridge_preserve_enabled",
+        "path_preserve_enabled",
+        "adaptive_stop_enabled",
+        "max_render_topn",
+        "min_render_topn",
+        "target_prompt_tokens",
+        "max_prompt_tokens",
+        "coverage_gain_threshold",
+        "bridge_score_threshold",
+        "redundancy_threshold",
+        "marginal_gain_threshold",
+        "order_strategy",
+        "prompt_variant",
+        "top_corridors",
+        "max_sentences",
+        "max_context_sentences",
+    ]
+    for dataset, cfg in configs.items():
+        for key in forbidden_drift_keys:
+            assert cfg[key] == first[key], f"{key} drifted for {dataset}"

@@ -30,6 +30,7 @@ from effirag.unified_copy_span_policy import (
     DATASET_ORDER,
     STRICT_UNIFIED_PROFILE_FAMILY,
     STRICT_UNIFIED_VARIANT_NAME,
+    UNIFIED_DYNAMIC_PROFILE_NAMES,
     UNIFIED_ENHANCED_PROFILE_NAMES,
     UNIFIED_PROFILE_NAMES,
     UNIFIED_PROFILE_DIRS,
@@ -103,6 +104,10 @@ def build_unified_config_pack(profile_root: Path, source_root: Path) -> Path:
         "enhanced_profiles": [
             UNIFIED_PROFILE_DIRS[profile]
             for profile in UNIFIED_ENHANCED_PROFILE_NAMES
+        ],
+        "dynamic_profiles": [
+            UNIFIED_PROFILE_DIRS[profile]
+            for profile in UNIFIED_DYNAMIC_PROFILE_NAMES
         ],
         "profiles": {},
     }

@@ -352,6 +352,22 @@ class RagConfig(RetrievalConfig):
     top_corridors: int = 3
     max_sentences: int = 14
     reserve_top_corridor: bool = False
+    # Dataset-independent dynamic evidence compaction. This operates after
+    # retrieval candidate generation and before final context rendering.
+    dynamic_compact_selection_enabled: bool = False
+    coverage_gain_enabled: bool = False
+    redundancy_penalty_enabled: bool = False
+    bridge_preserve_enabled: bool = False
+    path_preserve_enabled: bool = False
+    adaptive_stop_enabled: bool = False
+    max_render_topn: int = 24
+    min_render_topn: int = 6
+    target_prompt_tokens: int = 600
+    max_prompt_tokens: int = 700
+    coverage_gain_threshold: float = 0.05
+    bridge_score_threshold: float = 0.35
+    redundancy_threshold: float = 0.62
+    marginal_gain_threshold: float = 0.08
     # score | retrieval | corridor_rank | query_bridge_answer
     # corridor_aware_flat flags:
     # +raw_focus_front +raw_focus_dedup +raw_focus_scaffold_light +raw_focus_top1_bundle_only(+top2)
@@ -436,6 +452,16 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["measure_cpu_ram"] = parse_bool(merged["measure_cpu_ram"])
     if "reserve_top_corridor" in merged:
         merged["reserve_top_corridor"] = parse_bool(merged["reserve_top_corridor"])
+    for key in (
+        "dynamic_compact_selection_enabled",
+        "coverage_gain_enabled",
+        "redundancy_penalty_enabled",
+        "bridge_preserve_enabled",
+        "path_preserve_enabled",
+        "adaptive_stop_enabled",
+    ):
+        if key in merged:
+            merged[key] = parse_bool(merged[key])
     if "force_rebuild_graph_index" in merged:
         merged["force_rebuild_graph_index"] = parse_bool(merged["force_rebuild_graph_index"])
     if "timestamp_output" in merged:

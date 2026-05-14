@@ -900,11 +900,14 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
     out_dir.mkdir(parents=True, exist_ok=True)
     query_path = out_dir / "rag_query_results.jsonl"
     summary_path = out_dir / "rag_summary.json"
+    selector_diagnostics_path = out_dir / "selector_diagnostics.jsonl"
     sf_debug_rows = []
     sf_debug_limit = max(0, int(getattr(cfg, "sf_debug_sample_limit", 0) or 0))
     sf_debug_enabled = bool(sf_debug_limit > 0)
     # Stream per-sample outputs so progress is inspectable even before the run ends.
     query_path.write_text("", encoding="utf-8")
+    if bool(getattr(cfg, "dynamic_compact_selection_enabled", False)):
+        selector_diagnostics_path.write_text("", encoding="utf-8")
     render_mode_requested = str(cfg.render_mode or "").strip()
     resolved_render_mode = render_mode_requested or ("corridor_aware_flat" if cfg.method == "effirag" else "flat")
     retrieval_source_counts = {"precomputed": 0, "on_the_fly": 0}
@@ -1021,6 +1024,20 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     max_sentences=cfg.max_sentences,
                     reserve_top_corridor=cfg.reserve_top_corridor,
                     order_strategy=cfg.order_strategy,
+                    dynamic_compact_selection_enabled=cfg.dynamic_compact_selection_enabled,
+                    coverage_gain_enabled=cfg.coverage_gain_enabled,
+                    redundancy_penalty_enabled=cfg.redundancy_penalty_enabled,
+                    bridge_preserve_enabled=cfg.bridge_preserve_enabled,
+                    path_preserve_enabled=cfg.path_preserve_enabled,
+                    adaptive_stop_enabled=cfg.adaptive_stop_enabled,
+                    max_render_topn=cfg.max_render_topn,
+                    min_render_topn=cfg.min_render_topn,
+                    target_prompt_tokens=cfg.target_prompt_tokens,
+                    max_prompt_tokens=cfg.max_prompt_tokens,
+                    coverage_gain_threshold=cfg.coverage_gain_threshold,
+                    bridge_score_threshold=cfg.bridge_score_threshold,
+                    redundancy_threshold=cfg.redundancy_threshold,
+                    marginal_gain_threshold=cfg.marginal_gain_threshold,
                 )
                 meta = dict((rendered.metadata or {}))
                 meta["prompt_variant"] = str(getattr(cfg, "prompt_variant", "default") or "default")
@@ -1202,6 +1219,19 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     "chunk_excerpt_truncated_count": int(chunk_excerpt_truncated_count),
                     "oracle_support_injection_applied": bool(rendered_meta.get("oracle_support_injection_applied", False)),
                     "oracle_support_injected": int(_safe_int(rendered_meta.get("oracle_support_injected", 0), 0)),
+                    "dynamic_compact_selection_enabled": bool(
+                        rendered_meta.get("dynamic_compact_selection_enabled", False)
+                    ),
+                    "dynamic_compact_selector": dict(rendered_meta.get("dynamic_compact_selector", {}) or {}),
+                    "dynamic_compact_selected_count": int(
+                        _safe_int(rendered_meta.get("dynamic_compact_selected_count", 0), 0)
+                    ),
+                    "dynamic_compact_candidate_count": int(
+                        _safe_int(rendered_meta.get("dynamic_compact_candidate_count", 0), 0)
+                    ),
+                    "dynamic_compact_early_stop_reason": str(
+                        rendered_meta.get("dynamic_compact_early_stop_reason", "") or ""
+                    ),
                 },
                 "generation_diagnostics": {
                     "prompt_tokens": prompt_tokens,
@@ -1224,6 +1254,19 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     "chunk_excerpt_avg_len": float(chunk_excerpt_avg_len),
                     "evidence_package_count": int(evidence_package_count),
                     "chunk_excerpt_truncated_count": int(chunk_excerpt_truncated_count),
+                    "dynamic_compact_selection_enabled": bool(
+                        rendered_meta.get("dynamic_compact_selection_enabled", False)
+                    ),
+                    "dynamic_compact_selector": dict(rendered_meta.get("dynamic_compact_selector", {}) or {}),
+                    "dynamic_compact_selected_count": int(
+                        _safe_int(rendered_meta.get("dynamic_compact_selected_count", 0), 0)
+                    ),
+                    "dynamic_compact_candidate_count": int(
+                        _safe_int(rendered_meta.get("dynamic_compact_candidate_count", 0), 0)
+                    ),
+                    "dynamic_compact_early_stop_reason": str(
+                        rendered_meta.get("dynamic_compact_early_stop_reason", "") or ""
+                    ),
                 },
                 "retrieval_source": retrieval_source,
                 "oracle_support_injection_enabled": bool(getattr(cfg, "oracle_support_injection_enabled", False)),
@@ -1232,6 +1275,16 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             }
             rows.append(row)
             append_jsonl(query_path, row)
+            if bool(getattr(cfg, "dynamic_compact_selection_enabled", False)):
+                selector_diag = dict(rendered_meta.get("dynamic_compact_selector", {}) or {})
+                selector_diag.update(
+                    {
+                        "dataset": str(cfg.dataset),
+                        "qid": str(sample.qid),
+                        "sample_index": int(sample_index),
+                    }
+                )
+                append_jsonl(selector_diagnostics_path, selector_diag)
             if sf_debug_enabled and len(sf_debug_rows) < sf_debug_limit:
                 sf_debug_rows.append(
                     build_support_fact_debug_payload(
@@ -1245,6 +1298,21 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
     finally:
         retrieval_bar.close()
         generation_bar.close()
+
+    def _dynamic_selector_from_row(row: dict) -> dict:
+        rendering = row.get("rendering", {}) or {}
+        selector = dict(rendering.get("dynamic_compact_selector", {}) or {})
+        if selector:
+            return selector
+        generation_diag = row.get("generation_diagnostics", {}) or {}
+        return dict(generation_diag.get("dynamic_compact_selector", {}) or {})
+
+    def _dynamic_row_value(row: dict, key: str, default: float = 0.0) -> float:
+        rendering = row.get("rendering", {}) or {}
+        if key in rendering:
+            return float(rendering.get(key, default) or default)
+        generation_diag = row.get("generation_diagnostics", {}) or {}
+        return float(generation_diag.get(key, default) or default)
 
     summary = {
         "n_samples": float(len(rows)),
@@ -1349,6 +1417,35 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         ),
         "chunk_excerpt_truncated_count_avg": mean_or_zero(
             [float((r.get("rendering", {}) or {}).get("chunk_excerpt_truncated_count", 0.0)) for r in rows]
+        ),
+        "dynamic_compact_selection_enabled": bool(getattr(cfg, "dynamic_compact_selection_enabled", False)),
+        "selector_diagnostics_path": str(selector_diagnostics_path) if bool(getattr(cfg, "dynamic_compact_selection_enabled", False)) else "",
+        "dynamic_compact_selected_avg": mean_or_zero(
+            [_dynamic_row_value(r, "dynamic_compact_selected_count") for r in rows]
+        ),
+        "dynamic_compact_candidate_avg": mean_or_zero(
+            [_dynamic_row_value(r, "dynamic_compact_candidate_count") for r in rows]
+        ),
+        "dynamic_compact_estimated_prompt_tokens_avg": mean_or_zero(
+            [float(_dynamic_selector_from_row(r).get("prompt_tokens", 0.0) or 0.0) for r in rows]
+        ),
+        "dynamic_compact_coverage_gain_avg": mean_or_zero(
+            [float(_dynamic_selector_from_row(r).get("coverage_gain_sum", 0.0) or 0.0) for r in rows]
+        ),
+        "dynamic_compact_redundancy_penalty_avg": mean_or_zero(
+            [float(_dynamic_selector_from_row(r).get("redundancy_penalty_sum", 0.0) or 0.0) for r in rows]
+        ),
+        "dynamic_compact_bridge_preserve_rate": mean_or_zero(
+            [float(_dynamic_selector_from_row(r).get("bridge_preserve_rate", 0.0) or 0.0) for r in rows]
+        ),
+        "dynamic_compact_early_stop_rate": mean_or_zero(
+            [
+                1.0
+                if str(_dynamic_selector_from_row(r).get("early_stop_reason", ""))
+                in {"marginal_gain", "coverage_saturated", "max_prompt_tokens"}
+                else 0.0
+                for r in rows
+            ]
         ),
         "run_timestamp": run_stamp,
         "run_timestamp_utc": run_iso,
@@ -1503,6 +1600,20 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "top_corridors": cfg.top_corridors,
             "max_sentences": cfg.max_sentences,
             "reserve_top_corridor": cfg.reserve_top_corridor,
+            "dynamic_compact_selection_enabled": cfg.dynamic_compact_selection_enabled,
+            "coverage_gain_enabled": cfg.coverage_gain_enabled,
+            "redundancy_penalty_enabled": cfg.redundancy_penalty_enabled,
+            "bridge_preserve_enabled": cfg.bridge_preserve_enabled,
+            "path_preserve_enabled": cfg.path_preserve_enabled,
+            "adaptive_stop_enabled": cfg.adaptive_stop_enabled,
+            "max_render_topn": cfg.max_render_topn,
+            "min_render_topn": cfg.min_render_topn,
+            "target_prompt_tokens": cfg.target_prompt_tokens,
+            "max_prompt_tokens": cfg.max_prompt_tokens,
+            "coverage_gain_threshold": cfg.coverage_gain_threshold,
+            "bridge_score_threshold": cfg.bridge_score_threshold,
+            "redundancy_threshold": cfg.redundancy_threshold,
+            "marginal_gain_threshold": cfg.marginal_gain_threshold,
             "order_strategy": cfg.order_strategy,
         },
         "profile_config": {

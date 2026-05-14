@@ -13,8 +13,10 @@ profiles do not use dataset-specific method toggles.
 - `unified_large_reorder_all/`: `45/24/24`, global final top-slice reorder
 - `unified_large_lightsep_reorder_all/`: `45/24/24`, global light-separator interface plus reorder
 - `unified_medium_lightsep_reorder_all/`: `36/18/18`, medium-budget global light-separator interface plus reorder
+- `unified_dynamic_compact_v1/`: `45/24/24` candidate pool with dataset-independent dynamic compact evidence selection
 
-`unified_medium` is the primary main-method candidate.
+`unified_medium` is the fixed-profile main-method candidate. `unified_dynamic_compact_v1`
+is the Phase-6B method candidate for compact evidence-density experiments.
 
 ## Strict Unified Lock
 
@@ -32,6 +34,20 @@ Every dataset in a profile uses the same method-level settings:
 Enhanced profiles may enable `final_top_slice_reorder_enabled: true`, but only
 globally for every dataset in the profile. HotpotQA-only guards/pinning and
 2Wiki-only reorder remain forbidden.
+
+Dynamic compact profiles may enable the following selector fields, again only
+globally for every dataset in the profile:
+
+- `dynamic_compact_selection_enabled: true`
+- `coverage_gain_enabled: true`
+- `redundancy_penalty_enabled: true`
+- `bridge_preserve_enabled: true`
+- `path_preserve_enabled: true`
+- `adaptive_stop_enabled: true`
+- `min_render_topn: 6`
+- `max_render_topn: 24`
+- `target_prompt_tokens: 600`
+- `max_prompt_tokens: 700`
 
 Dataset names may select dataset files and corpus paths, but not method
 behavior.

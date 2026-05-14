@@ -1,6 +1,7 @@
 from .types import RenderedContext
 from .canonical_objective import is_canonical_copy_span_mode
 from .canonical_scoring import canonical_sentence_score
+from .dynamic_compact_selector import select_dynamic_compact_evidence
 from .metrics import supporting_fact_match_details
 from .utils import content_tokens
 
@@ -2059,6 +2060,20 @@ def render_corridor_aware_flat_context(
     max_sentences,
     reserve_top_corridor,
     order_strategy,
+    dynamic_compact_selection_enabled=False,
+    coverage_gain_enabled=True,
+    redundancy_penalty_enabled=True,
+    bridge_preserve_enabled=True,
+    path_preserve_enabled=True,
+    adaptive_stop_enabled=True,
+    max_render_topn=24,
+    min_render_topn=6,
+    target_prompt_tokens=600,
+    max_prompt_tokens=700,
+    coverage_gain_threshold=0.05,
+    bridge_score_threshold=0.35,
+    redundancy_threshold=0.62,
+    marginal_gain_threshold=0.08,
 ):
     diagnostics = (getattr(retrieval_result, "diagnostics", {}) or {})
     objective_mode = str(diagnostics.get("retrieval_objective_mode", "") or "").strip().lower()
@@ -2128,6 +2143,7 @@ def render_corridor_aware_flat_context(
     remaining = list(candidate_ids)
     selected_title_counts = {}
     selected_role_counts = {"query": 0, "bridge": 0, "answer": 0}
+    dynamic_selector_diag = {"enabled": False}
 
     def _select_score(sid):
         feat = features.get(sid, {}) or {}
@@ -2200,7 +2216,57 @@ def render_corridor_aware_flat_context(
         if sid in remaining:
             remaining.remove(sid)
 
-    if reserve_top_corridor:
+    if bool(dynamic_compact_selection_enabled):
+        selector_candidates = []
+        max_rank_for_path = max(1, len(candidate_ids))
+        for sid in candidate_ids:
+            feat = features.get(sid, {}) or {}
+            bridge_score = 0.0
+            if bool(feat.get("is_connector_adjacent", False)):
+                bridge_score += 0.65
+            if bool(feat.get("is_support_candidate", False)):
+                bridge_score += 0.25
+            if bool(feat.get("is_main_candidate", False)):
+                bridge_score += 0.10
+            best_rank = int(feat.get("best_corridor_rank", 10**9) or 10**9)
+            path_score = 0.0
+            if best_rank < 10**9:
+                path_score = max(0.0, 1.0 - (float(best_rank - 1) / float(max_rank_for_path)))
+            selector_candidates.append(
+                {
+                    "candidate_id": sid,
+                    "text": candidate_text_map.get(sid, ""),
+                    "semantic_score": float(base_scores.get(sid, 0.0)),
+                    "bridge_score": min(1.0, float(bridge_score)),
+                    "path_score": float(path_score),
+                    "rank": int(retrieval_rank.get(sid, 10**9)) + 1,
+                    "source_doc_id": _unit_title(sid),
+                    "entity_ids": list(feat.get("corridor_ids", []) or []),
+                    "coverage_terms": list(token_cache.get(sid, set()).intersection(_token_set(sample.question))),
+                    "token_count": int(_approx_token_count(candidate_text_map.get(sid, ""))),
+                }
+            )
+        selection = select_dynamic_compact_evidence(
+            selector_candidates,
+            question_text=sample.question,
+            max_render_topn=max(1, int(max_render_topn)),
+            min_render_topn=max(0, int(min_render_topn)),
+            target_prompt_tokens=max(1, int(target_prompt_tokens)),
+            max_prompt_tokens=max(1, int(max_prompt_tokens)),
+            coverage_gain_enabled=bool(coverage_gain_enabled),
+            redundancy_penalty_enabled=bool(redundancy_penalty_enabled),
+            bridge_preserve_enabled=bool(bridge_preserve_enabled),
+            path_preserve_enabled=bool(path_preserve_enabled),
+            adaptive_stop_enabled=bool(adaptive_stop_enabled),
+            coverage_gain_threshold=float(coverage_gain_threshold),
+            bridge_score_threshold=float(bridge_score_threshold),
+            redundancy_threshold=float(redundancy_threshold),
+            marginal_gain_threshold=float(marginal_gain_threshold),
+        )
+        selected_ids = [sid for sid in selection.selected_ids if sid in candidate_text_map]
+        score_at_pick.update({sid: float(selection.score_by_id.get(sid, base_scores.get(sid, 0.0))) for sid in selected_ids})
+        dynamic_selector_diag = dict(selection.diagnostics)
+    elif reserve_top_corridor:
         corridor_rank_map = {}
         for sid in candidate_ids:
             feat = features.get(sid, {}) or {}
@@ -2220,11 +2286,12 @@ def render_corridor_aware_flat_context(
                 continue
             _accept(sid, score, role, title)
 
-    while remaining and len(selected_ids) < max_n:
-        best_sid, best_score, best_role, best_title = _pick_best(remaining)
-        if best_sid is None:
-            break
-        _accept(best_sid, best_score, best_role, best_title)
+    if not bool(dynamic_compact_selection_enabled):
+        while remaining and len(selected_ids) < max_n:
+            best_sid, best_score, best_role, best_title = _pick_best(remaining)
+            if best_sid is None:
+                break
+            _accept(best_sid, best_score, best_role, best_title)
 
     strategy, strategy_flags, top_slice_topk, support_pin_min, raw_focus_top_bundle_only_n = _parse_order_strategy_flags(
         order_strategy=order_strategy,
@@ -2705,6 +2772,16 @@ def render_corridor_aware_flat_context(
             "canonical_render_core_mode": bool(canonical_core_mode),
             "final_order_strategy": str(strategy),
             "strategy_flags": sorted(list(strategy_flags)),
+            "dynamic_compact_selection_enabled": bool(dynamic_compact_selection_enabled),
+            "dynamic_compact_selector": dict(dynamic_selector_diag),
+            "dynamic_compact_selected_count": int(dynamic_selector_diag.get("num_selected", 0) or 0),
+            "dynamic_compact_candidate_count": int(dynamic_selector_diag.get("num_candidates", 0) or 0),
+            "dynamic_compact_estimated_prompt_tokens": int(dynamic_selector_diag.get("prompt_tokens", 0) or 0),
+            "dynamic_compact_early_stop_reason": str(dynamic_selector_diag.get("early_stop_reason", "") or ""),
+            "dynamic_compact_coverage_gain_sum": float(dynamic_selector_diag.get("coverage_gain_sum", 0.0) or 0.0),
+            "dynamic_compact_redundancy_penalty_sum": float(dynamic_selector_diag.get("redundancy_penalty_sum", 0.0) or 0.0),
+            "dynamic_compact_bridge_preserved": bool(dynamic_selector_diag.get("bridge_preserved", False)),
+            "dynamic_compact_bridge_preserve_rate": float(dynamic_selector_diag.get("bridge_preserve_rate", 0.0) or 0.0),
             "top_slice_reorder_applied": bool(top_slice_diag.get("applied", False)),
             "top_slice_reorder_head_size": int(top_slice_diag.get("head_size", 0)),
             "top_slice_reorder_reordered": int(top_slice_diag.get("reordered", 0)),
@@ -2821,6 +2898,20 @@ def render_context(
     max_sentences=10,
     reserve_top_corridor=False,
     order_strategy="score",
+    dynamic_compact_selection_enabled=False,
+    coverage_gain_enabled=True,
+    redundancy_penalty_enabled=True,
+    bridge_preserve_enabled=True,
+    path_preserve_enabled=True,
+    adaptive_stop_enabled=True,
+    max_render_topn=24,
+    min_render_topn=6,
+    target_prompt_tokens=600,
+    max_prompt_tokens=700,
+    coverage_gain_threshold=0.05,
+    bridge_score_threshold=0.35,
+    redundancy_threshold=0.62,
+    marginal_gain_threshold=0.08,
 ):
     mode = str(render_mode or "flat").strip().lower()
     rendered = None
@@ -2841,6 +2932,20 @@ def render_context(
             max_sentences=int(max_sentences),
             reserve_top_corridor=bool(reserve_top_corridor),
             order_strategy=order_strategy,
+            dynamic_compact_selection_enabled=bool(dynamic_compact_selection_enabled),
+            coverage_gain_enabled=bool(coverage_gain_enabled),
+            redundancy_penalty_enabled=bool(redundancy_penalty_enabled),
+            bridge_preserve_enabled=bool(bridge_preserve_enabled),
+            path_preserve_enabled=bool(path_preserve_enabled),
+            adaptive_stop_enabled=bool(adaptive_stop_enabled),
+            max_render_topn=int(max_render_topn),
+            min_render_topn=int(min_render_topn),
+            target_prompt_tokens=int(target_prompt_tokens),
+            max_prompt_tokens=int(max_prompt_tokens),
+            coverage_gain_threshold=float(coverage_gain_threshold),
+            bridge_score_threshold=float(bridge_score_threshold),
+            redundancy_threshold=float(redundancy_threshold),
+            marginal_gain_threshold=float(marginal_gain_threshold),
         )
     elif mode == "path_bundle":
         max_corridors = max(1, int(max_corridors_in_context))
