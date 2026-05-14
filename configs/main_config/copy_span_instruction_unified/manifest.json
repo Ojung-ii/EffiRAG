@@ -1,7 +1,7 @@
 {
   "profile_family": "copy_span_instruction_unified",
   "canonical_variant_name": "phase6_strict_unified_v1",
-  "updated_at_utc": "2026-05-14T10:50:30Z",
+  "updated_at_utc": "2026-05-14T11:36:13Z",
   "source_root": "/home/ojungii/EffiRAG/configs/SOTA_config/copy_span_instruction_4ds/on_the_fly",
   "dataset_order": [
     "hotpotqa",
