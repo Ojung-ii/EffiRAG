@@ -901,6 +901,7 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
     query_path = out_dir / "rag_query_results.jsonl"
     summary_path = out_dir / "rag_summary.json"
     selector_diagnostics_path = out_dir / "selector_diagnostics.jsonl"
+    render_diagnostics_path = out_dir / "render_diagnostics.jsonl"
     sf_debug_rows = []
     sf_debug_limit = max(0, int(getattr(cfg, "sf_debug_sample_limit", 0) or 0))
     sf_debug_enabled = bool(sf_debug_limit > 0)
@@ -908,6 +909,8 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
     query_path.write_text("", encoding="utf-8")
     if bool(getattr(cfg, "dynamic_compact_selection_enabled", False)):
         selector_diagnostics_path.write_text("", encoding="utf-8")
+    if bool(getattr(cfg, "selector_aware_render_enabled", False)):
+        render_diagnostics_path.write_text("", encoding="utf-8")
     render_mode_requested = str(cfg.render_mode or "").strip()
     resolved_render_mode = render_mode_requested or ("corridor_aware_flat" if cfg.method == "effirag" else "flat")
     retrieval_source_counts = {"precomputed": 0, "on_the_fly": 0}
@@ -1038,6 +1041,15 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     bridge_score_threshold=cfg.bridge_score_threshold,
                     redundancy_threshold=cfg.redundancy_threshold,
                     marginal_gain_threshold=cfg.marginal_gain_threshold,
+                    prompt_variant=cfg.prompt_variant,
+                    selector_aware_render_enabled=cfg.selector_aware_render_enabled,
+                    render_selected_only=cfg.render_selected_only,
+                    render_include_neighbor_sentences=cfg.render_include_neighbor_sentences,
+                    render_include_corridor_headers=cfg.render_include_corridor_headers,
+                    render_include_source_titles=cfg.render_include_source_titles,
+                    render_include_metadata=cfg.render_include_metadata,
+                    render_deduplicate_selected_text=cfg.render_deduplicate_selected_text,
+                    render_enforce_actual_prompt_budget=cfg.render_enforce_actual_prompt_budget,
                 )
                 meta = dict((rendered.metadata or {}))
                 meta["prompt_variant"] = str(getattr(cfg, "prompt_variant", "default") or "default")
@@ -1118,6 +1130,21 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             chunk_excerpt_avg_len = 0.0
             if chunk_excerpts_used > 0:
                 chunk_excerpt_avg_len = float(chunk_excerpt_sentence_count) / float(chunk_excerpts_used)
+            render_diag = dict(
+                rendered_meta.get("render_diagnostics", rendered_meta.get("compact_render", {})) or {}
+            )
+            if render_diag:
+                selector_prompt_tokens = _safe_int(render_diag.get("selector_prompt_tokens", 0), default=0)
+                actual_prompt_tokens = int(prompt_tokens)
+                render_diag["dataset"] = str(cfg.dataset)
+                render_diag["qid"] = str(sample.qid)
+                render_diag["sample_index"] = int(sample_index)
+                render_diag["actual_prompt_tokens"] = int(actual_prompt_tokens)
+                render_diag["extra_prompt_tokens_after_selector"] = int(
+                    max(0, actual_prompt_tokens - selector_prompt_tokens)
+                )
+                if "final_prompt_sentence_ids" not in render_diag:
+                    render_diag["final_prompt_sentence_ids"] = list(rendered.sentence_ids or [])
 
             recall = supporting_fact_recall(sample, retrieval)
             precision = supporting_fact_precision(sample, retrieval)
@@ -1232,6 +1259,23 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     "dynamic_compact_early_stop_reason": str(
                         rendered_meta.get("dynamic_compact_early_stop_reason", "") or ""
                     ),
+                    "selector_aware_render_enabled": bool(
+                        rendered_meta.get("selector_aware_render_enabled", False)
+                    ),
+                    "render_selected_only": bool(rendered_meta.get("render_selected_only", False)),
+                    "render_diagnostics": dict(render_diag),
+                    "selected_to_rendered_jaccard": float(
+                        render_diag.get("selected_to_rendered_jaccard", 0.0) or 0.0
+                    ),
+                    "selected_to_prompt_jaccard": float(
+                        render_diag.get("selected_to_prompt_jaccard", 0.0) or 0.0
+                    ),
+                    "extra_sentences_after_selector": int(
+                        _safe_int(render_diag.get("extra_sentences_after_selector", 0), 0)
+                    ),
+                    "extra_prompt_tokens_after_selector": int(
+                        _safe_int(render_diag.get("extra_prompt_tokens_after_selector", 0), 0)
+                    ),
                 },
                 "generation_diagnostics": {
                     "prompt_tokens": prompt_tokens,
@@ -1267,6 +1311,11 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     "dynamic_compact_early_stop_reason": str(
                         rendered_meta.get("dynamic_compact_early_stop_reason", "") or ""
                     ),
+                    "selector_aware_render_enabled": bool(
+                        rendered_meta.get("selector_aware_render_enabled", False)
+                    ),
+                    "render_selected_only": bool(rendered_meta.get("render_selected_only", False)),
+                    "render_diagnostics": dict(render_diag),
                 },
                 "retrieval_source": retrieval_source,
                 "oracle_support_injection_enabled": bool(getattr(cfg, "oracle_support_injection_enabled", False)),
@@ -1285,6 +1334,8 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     }
                 )
                 append_jsonl(selector_diagnostics_path, selector_diag)
+            if bool(getattr(cfg, "selector_aware_render_enabled", False)) and render_diag:
+                append_jsonl(render_diagnostics_path, render_diag)
             if sf_debug_enabled and len(sf_debug_rows) < sf_debug_limit:
                 sf_debug_rows.append(
                     build_support_fact_debug_payload(
@@ -1313,6 +1364,14 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             return float(rendering.get(key, default) or default)
         generation_diag = row.get("generation_diagnostics", {}) or {}
         return float(generation_diag.get(key, default) or default)
+
+    def _render_diag_from_row(row: dict) -> dict:
+        rendering = row.get("rendering", {}) or {}
+        diag = dict(rendering.get("render_diagnostics", {}) or {})
+        if diag:
+            return diag
+        generation_diag = row.get("generation_diagnostics", {}) or {}
+        return dict(generation_diag.get("render_diagnostics", {}) or {})
 
     summary = {
         "n_samples": float(len(rows)),
@@ -1446,6 +1505,31 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                 else 0.0
                 for r in rows
             ]
+        ),
+        "selector_aware_render_enabled": bool(getattr(cfg, "selector_aware_render_enabled", False)),
+        "render_diagnostics_path": str(render_diagnostics_path)
+        if bool(getattr(cfg, "selector_aware_render_enabled", False))
+        else "",
+        "selector_to_rendered_jaccard_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("selected_to_rendered_jaccard", 0.0) or 0.0) for r in rows]
+        ),
+        "selected_to_rendered_jaccard_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("selected_to_rendered_jaccard", 0.0) or 0.0) for r in rows]
+        ),
+        "selector_to_prompt_jaccard_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("selected_to_prompt_jaccard", 0.0) or 0.0) for r in rows]
+        ),
+        "selected_to_prompt_jaccard_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("selected_to_prompt_jaccard", 0.0) or 0.0) for r in rows]
+        ),
+        "extra_sentences_after_selector_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("extra_sentences_after_selector", 0.0) or 0.0) for r in rows]
+        ),
+        "extra_prompt_tokens_after_selector_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("extra_prompt_tokens_after_selector", 0.0) or 0.0) for r in rows]
+        ),
+        "selector_render_estimated_actual_prompt_tokens_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("estimated_actual_prompt_tokens", 0.0) or 0.0) for r in rows]
         ),
         "run_timestamp": run_stamp,
         "run_timestamp_utc": run_iso,
@@ -1614,6 +1698,14 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "bridge_score_threshold": cfg.bridge_score_threshold,
             "redundancy_threshold": cfg.redundancy_threshold,
             "marginal_gain_threshold": cfg.marginal_gain_threshold,
+            "selector_aware_render_enabled": cfg.selector_aware_render_enabled,
+            "render_selected_only": cfg.render_selected_only,
+            "render_include_neighbor_sentences": cfg.render_include_neighbor_sentences,
+            "render_include_corridor_headers": cfg.render_include_corridor_headers,
+            "render_include_source_titles": cfg.render_include_source_titles,
+            "render_include_metadata": cfg.render_include_metadata,
+            "render_deduplicate_selected_text": cfg.render_deduplicate_selected_text,
+            "render_enforce_actual_prompt_budget": cfg.render_enforce_actual_prompt_budget,
             "order_strategy": cfg.order_strategy,
         },
         "profile_config": {

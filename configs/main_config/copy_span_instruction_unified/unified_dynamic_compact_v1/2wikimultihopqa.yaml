@@ -292,3 +292,11 @@ coverage_gain_threshold: 0.05
 bridge_score_threshold: 0.35
 redundancy_threshold: 0.62
 marginal_gain_threshold: 0.08
+selector_aware_render_enabled: false
+render_selected_only: false
+render_include_neighbor_sentences: false
+render_include_corridor_headers: true
+render_include_source_titles: full
+render_include_metadata: full
+render_deduplicate_selected_text: false
+render_enforce_actual_prompt_budget: false

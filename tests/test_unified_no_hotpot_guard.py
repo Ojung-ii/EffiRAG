@@ -18,6 +18,7 @@ def test_hotpotqa_unified_profile_does_not_enable_hotpot_guard_at_runtime():
         "unified_large_lightsep_reorder_all",
         "unified_medium_lightsep_reorder_all",
         "unified_dynamic_compact_v1",
+        "unified_dynamic_compact_v2",
     ]
 
     for profile in profiles:
@@ -33,10 +34,13 @@ def test_hotpotqa_unified_profile_does_not_enable_hotpot_guard_at_runtime():
         assert cfg.corridor_answer_preserve_guarded_hotpot_enabled is False
         assert cfg.corridor_answer_preserve_enabled is False
         assert cfg.answer_support_pinning_enabled is False
-        if profile == "unified_dynamic_compact_v1":
+        if profile in {"unified_dynamic_compact_v1", "unified_dynamic_compact_v2"}:
             assert cfg.dynamic_compact_selection_enabled is True
             assert cfg.coverage_gain_enabled is True
             assert cfg.bridge_preserve_enabled is True
+        if profile == "unified_dynamic_compact_v2":
+            assert cfg.selector_aware_render_enabled is True
+            assert cfg.render_selected_only is True
         if "reorder_all" in profile:
             assert cfg.final_top_slice_reorder_enabled is True
         else:

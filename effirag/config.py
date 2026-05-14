@@ -368,6 +368,16 @@ class RagConfig(RetrievalConfig):
     bridge_score_threshold: float = 0.35
     redundancy_threshold: float = 0.62
     marginal_gain_threshold: float = 0.08
+    # Selector-aware compact rendering. These flags only affect the final
+    # prompt assembly path and do not alter retrieval or selector scoring.
+    selector_aware_render_enabled: bool = False
+    render_selected_only: bool = False
+    render_include_neighbor_sentences: bool = False
+    render_include_corridor_headers: bool = True
+    render_include_source_titles: str = "full"
+    render_include_metadata: str = "full"
+    render_deduplicate_selected_text: bool = False
+    render_enforce_actual_prompt_budget: bool = False
     # score | retrieval | corridor_rank | query_bridge_answer
     # corridor_aware_flat flags:
     # +raw_focus_front +raw_focus_dedup +raw_focus_scaffold_light +raw_focus_top1_bundle_only(+top2)
@@ -459,6 +469,12 @@ def apply_cli_overrides(config_dict, args_namespace):
         "bridge_preserve_enabled",
         "path_preserve_enabled",
         "adaptive_stop_enabled",
+        "selector_aware_render_enabled",
+        "render_selected_only",
+        "render_include_neighbor_sentences",
+        "render_include_corridor_headers",
+        "render_deduplicate_selected_text",
+        "render_enforce_actual_prompt_budget",
     ):
         if key in merged:
             merged[key] = parse_bool(merged[key])

@@ -1,6 +1,7 @@
 from .types import RenderedContext
 from .canonical_objective import is_canonical_copy_span_mode
 from .canonical_scoring import canonical_sentence_score
+from .compact_render import render_selected_only_context
 from .dynamic_compact_selector import select_dynamic_compact_evidence
 from .metrics import supporting_fact_match_details
 from .utils import content_tokens
@@ -2074,6 +2075,15 @@ def render_corridor_aware_flat_context(
     bridge_score_threshold=0.35,
     redundancy_threshold=0.62,
     marginal_gain_threshold=0.08,
+    prompt_variant="default",
+    selector_aware_render_enabled=False,
+    render_selected_only=False,
+    render_include_neighbor_sentences=False,
+    render_include_corridor_headers=True,
+    render_include_source_titles="full",
+    render_include_metadata="full",
+    render_deduplicate_selected_text=False,
+    render_enforce_actual_prompt_budget=False,
 ):
     diagnostics = (getattr(retrieval_result, "diagnostics", {}) or {})
     objective_mode = str(diagnostics.get("retrieval_objective_mode", "") or "").strip().lower()
@@ -2507,6 +2517,85 @@ def render_corridor_aware_flat_context(
                 if any(sid in selected_set for sid in sids)
             ]
 
+    if bool(selector_aware_render_enabled) and bool(render_selected_only):
+        compact = render_selected_only_context(
+            selected_ids=list(selected_ids),
+            candidate_text_map=candidate_text_map,
+            question_text=sample.question,
+            prompt_variant=prompt_variant,
+            min_render_topn=max(0, int(min_render_topn)),
+            max_render_topn=max(1, int(max_render_topn)),
+            max_prompt_tokens=max(1, int(max_prompt_tokens)),
+            selector_prompt_tokens=int(dynamic_selector_diag.get("prompt_tokens", 0) or 0),
+            render_include_source_titles=str(render_include_source_titles or "minimal"),
+            render_include_metadata=str(render_include_metadata or "minimal"),
+            render_deduplicate_selected_text=bool(render_deduplicate_selected_text),
+            render_enforce_actual_prompt_budget=bool(render_enforce_actual_prompt_budget),
+        )
+        compact_ids = list(compact.get("sentence_ids", []) or [])
+        compact_sentences = list(compact.get("sentences", []) or [])
+        compact_diag = dict(compact.get("diagnostics", {}) or {})
+        rendered_corridor_ids = _ordered_unique(
+            [cid for sid in compact_ids for cid in (features.get(sid, {}).get("corridor_ids", []) or [])]
+        )
+        truncated_corridors = max(0, len(all_corridor_ids) - len(rendered_corridor_ids))
+        truncated_sentences = max(0, len(candidate_ids) - len(compact_ids))
+        metadata = {
+            "selected_unit_type": _selected_unit_type(retrieval_result),
+            "render_variant": "selector_aware_compact_render",
+            "canonical_render_core_mode": bool(canonical_core_mode),
+            "final_order_strategy": str(strategy),
+            "strategy_flags": sorted(list(strategy_flags)),
+            "dynamic_compact_selection_enabled": bool(dynamic_compact_selection_enabled),
+            "dynamic_compact_selector": dict(dynamic_selector_diag),
+            "dynamic_compact_selected_count": int(dynamic_selector_diag.get("num_selected", 0) or 0),
+            "dynamic_compact_candidate_count": int(dynamic_selector_diag.get("num_candidates", 0) or 0),
+            "dynamic_compact_estimated_prompt_tokens": int(dynamic_selector_diag.get("prompt_tokens", 0) or 0),
+            "dynamic_compact_early_stop_reason": str(dynamic_selector_diag.get("early_stop_reason", "") or ""),
+            "dynamic_compact_coverage_gain_sum": float(dynamic_selector_diag.get("coverage_gain_sum", 0.0) or 0.0),
+            "dynamic_compact_redundancy_penalty_sum": float(dynamic_selector_diag.get("redundancy_penalty_sum", 0.0) or 0.0),
+            "dynamic_compact_bridge_preserved": bool(dynamic_selector_diag.get("bridge_preserved", False)),
+            "dynamic_compact_bridge_preserve_rate": float(dynamic_selector_diag.get("bridge_preserve_rate", 0.0) or 0.0),
+            "top_slice_reorder_applied": bool(top_slice_diag.get("applied", False)),
+            "top_slice_reorder_head_size": int(top_slice_diag.get("head_size", 0)),
+            "top_slice_reorder_reordered": int(top_slice_diag.get("reordered", 0)),
+            "answer_support_pinning_applied": bool(support_pin_diag.get("applied", False)),
+            "answer_support_pinning_target": int(support_pin_diag.get("target", 0)),
+            "answer_support_pinning_added": int(support_pin_diag.get("added", 0)),
+            "oracle_support_injection_applied": bool(oracle_injection_diag.get("applied", False)),
+            "oracle_support_injected": int(oracle_injection_diag.get("injected", 0)),
+            "selector_aware_render_enabled": True,
+            "render_selected_only": True,
+            "render_include_neighbor_sentences": bool(render_include_neighbor_sentences),
+            "render_include_corridor_headers": bool(render_include_corridor_headers),
+            "render_include_source_titles": str(render_include_source_titles or "minimal"),
+            "render_include_metadata": str(render_include_metadata or "minimal"),
+            "render_deduplicate_selected_text": bool(render_deduplicate_selected_text),
+            "render_enforce_actual_prompt_budget": bool(render_enforce_actual_prompt_budget),
+            "render_diagnostics": dict(compact_diag),
+            "compact_render": dict(compact_diag),
+            "selected_to_rendered_jaccard": float(compact_diag.get("selected_to_rendered_jaccard", 0.0) or 0.0),
+            "selected_to_prompt_jaccard": float(compact_diag.get("selected_to_prompt_jaccard", 0.0) or 0.0),
+            "extra_sentences_after_selector": int(compact_diag.get("extra_sentences_after_selector", 0) or 0),
+            "num_extra_sentences_after_selector": int(compact_diag.get("num_extra_sentences_after_selector", 0) or 0),
+            "extra_prompt_tokens_after_selector": int(compact_diag.get("extra_prompt_tokens_after_selector", 0) or 0),
+            "estimated_actual_prompt_tokens": int(compact_diag.get("estimated_actual_prompt_tokens", 0) or 0),
+        }
+        return RenderedContext(
+            sample_id=sample.qid,
+            method=retrieval_result.method,
+            text=str(compact.get("text", "") or ""),
+            sentences=compact_sentences,
+            sentence_ids=compact_ids,
+            truncated=(truncated_corridors > 0 or truncated_sentences > 0),
+            render_mode="corridor_aware_flat",
+            rendered_corridor_ids=rendered_corridor_ids,
+            truncated_corridor_count=truncated_corridors,
+            truncated_sentence_count=truncated_sentences,
+            retrieval_selected_sentence_ids=list(retrieval_result.selected_sentence_ids or []),
+            metadata=metadata,
+        )
+
     lines = []
     selected_sentences = []
     answer_cue_highlight_count = 0
@@ -2912,6 +3001,15 @@ def render_context(
     bridge_score_threshold=0.35,
     redundancy_threshold=0.62,
     marginal_gain_threshold=0.08,
+    prompt_variant="default",
+    selector_aware_render_enabled=False,
+    render_selected_only=False,
+    render_include_neighbor_sentences=False,
+    render_include_corridor_headers=True,
+    render_include_source_titles="full",
+    render_include_metadata="full",
+    render_deduplicate_selected_text=False,
+    render_enforce_actual_prompt_budget=False,
 ):
     mode = str(render_mode or "flat").strip().lower()
     rendered = None
@@ -2946,6 +3044,15 @@ def render_context(
             bridge_score_threshold=float(bridge_score_threshold),
             redundancy_threshold=float(redundancy_threshold),
             marginal_gain_threshold=float(marginal_gain_threshold),
+            prompt_variant=prompt_variant,
+            selector_aware_render_enabled=bool(selector_aware_render_enabled),
+            render_selected_only=bool(render_selected_only),
+            render_include_neighbor_sentences=bool(render_include_neighbor_sentences),
+            render_include_corridor_headers=bool(render_include_corridor_headers),
+            render_include_source_titles=str(render_include_source_titles or "full"),
+            render_include_metadata=str(render_include_metadata or "full"),
+            render_deduplicate_selected_text=bool(render_deduplicate_selected_text),
+            render_enforce_actual_prompt_budget=bool(render_enforce_actual_prompt_budget),
         )
     elif mode == "path_bundle":
         max_corridors = max(1, int(max_corridors_in_context))

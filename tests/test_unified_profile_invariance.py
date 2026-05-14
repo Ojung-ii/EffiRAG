@@ -20,6 +20,7 @@ PROFILES = [
     "unified_large_lightsep_reorder_all",
     "unified_medium_lightsep_reorder_all",
     "unified_dynamic_compact_v1",
+    "unified_dynamic_compact_v2",
 ]
 
 REORDER_ALL_PROFILES = {
@@ -36,6 +37,12 @@ LIGHTSEP_PROFILES = {
     "unified_large_lightsep_reorder_all",
     "unified_medium_lightsep_reorder_all",
     "unified_dynamic_compact_v1",
+    "unified_dynamic_compact_v2",
+}
+
+DYNAMIC_PROFILES = {
+    "unified_dynamic_compact_v1",
+    "unified_dynamic_compact_v2",
 }
 
 
@@ -81,6 +88,7 @@ def test_unified_budget_is_profile_selected_not_dataset_selected():
     assert observed_by_profile["unified_large_lightsep_reorder_all"] == (45, 24, 24)
     assert observed_by_profile["unified_medium_lightsep_reorder_all"] == (36, 18, 18)
     assert observed_by_profile["unified_dynamic_compact_v1"] == (45, 24, 24)
+    assert observed_by_profile["unified_dynamic_compact_v2"] == (45, 24, 24)
 
 
 def test_enhanced_profile_policy_flags_are_global():
@@ -97,6 +105,7 @@ def test_enhanced_profile_policy_flags_are_global():
     }.issubset(set(UNIFIED_CLEAN_PROFILE_NAMES))
     assert {
         "copy_span_instruction_unified_dynamic_compact_v1",
+        "copy_span_instruction_unified_dynamic_compact_v2",
     }.issubset(set(UNIFIED_DYNAMIC_PROFILE_NAMES))
 
     for profile in PROFILES:
@@ -113,8 +122,8 @@ def test_enhanced_profile_policy_flags_are_global():
             assert cfg["final_top_slice_reorder_enabled"] is _expected_reorder(profile)
             assert cfg["order_strategy"] == first["order_strategy"]
             assert cfg["prompt_variant"] == first["prompt_variant"]
-            assert cfg["dynamic_compact_selection_enabled"] is (profile == "unified_dynamic_compact_v1")
-            if profile == "unified_dynamic_compact_v1":
+            assert cfg["dynamic_compact_selection_enabled"] is (profile in DYNAMIC_PROFILES)
+            if profile in DYNAMIC_PROFILES:
                 assert cfg["coverage_gain_enabled"] is True
                 assert cfg["redundancy_penalty_enabled"] is True
                 assert cfg["bridge_preserve_enabled"] is True
@@ -122,8 +131,22 @@ def test_enhanced_profile_policy_flags_are_global():
                 assert cfg["adaptive_stop_enabled"] is True
                 assert cfg["min_render_topn"] == 6
                 assert cfg["max_render_topn"] == 24
+            if profile == "unified_dynamic_compact_v1":
                 assert cfg["target_prompt_tokens"] == 600
                 assert cfg["max_prompt_tokens"] == 700
+                assert cfg["selector_aware_render_enabled"] is False
+                assert cfg["render_selected_only"] is False
+            if profile == "unified_dynamic_compact_v2":
+                assert cfg["target_prompt_tokens"] == 550
+                assert cfg["max_prompt_tokens"] == 650
+                assert cfg["selector_aware_render_enabled"] is True
+                assert cfg["render_selected_only"] is True
+                assert cfg["render_include_neighbor_sentences"] is False
+                assert cfg["render_include_corridor_headers"] is False
+                assert cfg["render_include_source_titles"] == "minimal"
+                assert cfg["render_include_metadata"] == "minimal"
+                assert cfg["render_deduplicate_selected_text"] is True
+                assert cfg["render_enforce_actual_prompt_budget"] is True
 
 
 def test_enhanced_profile_interfaces_are_explicit():
@@ -138,11 +161,6 @@ def test_enhanced_profile_interfaces_are_explicit():
 
 
 def test_dynamic_compact_profile_has_no_dataset_specific_method_drift():
-    configs = {
-        dataset: apply_unified_profile({}, dataset, "unified_dynamic_compact_v1")
-        for dataset in DATASET_ORDER
-    }
-    first = configs[DATASET_ORDER[0]]
     forbidden_drift_keys = [
         "retrieval_objective_mode",
         "answer_support_pinning_enabled",
@@ -168,7 +186,21 @@ def test_dynamic_compact_profile_has_no_dataset_specific_method_drift():
         "top_corridors",
         "max_sentences",
         "max_context_sentences",
+        "selector_aware_render_enabled",
+        "render_selected_only",
+        "render_include_neighbor_sentences",
+        "render_include_corridor_headers",
+        "render_include_source_titles",
+        "render_include_metadata",
+        "render_deduplicate_selected_text",
+        "render_enforce_actual_prompt_budget",
     ]
-    for dataset, cfg in configs.items():
-        for key in forbidden_drift_keys:
-            assert cfg[key] == first[key], f"{key} drifted for {dataset}"
+    for profile in DYNAMIC_PROFILES:
+        configs = {
+            dataset: apply_unified_profile({}, dataset, profile)
+            for dataset in DATASET_ORDER
+        }
+        first = configs[DATASET_ORDER[0]]
+        for dataset, cfg in configs.items():
+            for key in forbidden_drift_keys:
+                assert cfg[key] == first[key], f"{profile}.{key} drifted for {dataset}"

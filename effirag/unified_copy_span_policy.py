@@ -24,6 +24,7 @@ COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_REORDER_ALL = "copy_span_instruction_unified
 COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP_REORDER_ALL = "copy_span_instruction_unified_large_lightsep_reorder_all"
 COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL = "copy_span_instruction_unified_medium_lightsep_reorder_all"
 COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1 = "copy_span_instruction_unified_dynamic_compact_v1"
+COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V2 = "copy_span_instruction_unified_dynamic_compact_v2"
 
 UNIFIED_CLEAN_PROFILE_NAMES = (
     COPY_SPAN_INSTRUCTION_UNIFIED_LARGE,
@@ -40,6 +41,7 @@ UNIFIED_ENHANCED_PROFILE_NAMES = (
 
 UNIFIED_DYNAMIC_PROFILE_NAMES = (
     COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1,
+    COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V2,
 )
 
 UNIFIED_PROFILE_NAMES = UNIFIED_CLEAN_PROFILE_NAMES + UNIFIED_ENHANCED_PROFILE_NAMES + UNIFIED_DYNAMIC_PROFILE_NAMES
@@ -69,6 +71,9 @@ UNIFIED_PROFILE_ALIASES = {
     "dynamic_compact_v1": COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1,
     "unified_dynamic_compact_v1": COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1,
     COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1: COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1,
+    "dynamic_compact_v2": COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V2,
+    "unified_dynamic_compact_v2": COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V2,
+    COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V2: COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V2,
 }
 
 UNIFIED_PROFILE_DIRS = {
@@ -80,6 +85,7 @@ UNIFIED_PROFILE_DIRS = {
     COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP_REORDER_ALL: "unified_large_lightsep_reorder_all",
     COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL: "unified_medium_lightsep_reorder_all",
     COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1: "unified_dynamic_compact_v1",
+    COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V2: "unified_dynamic_compact_v2",
 }
 
 UNIFIED_BUDGETS = {
@@ -119,6 +125,11 @@ UNIFIED_BUDGETS = {
         "render_topn": 18,
     },
     COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1: {
+        "seed_topn": 45,
+        "run_topn": 24,
+        "render_topn": 24,
+    },
+    COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V2: {
         "seed_topn": 45,
         "run_topn": 24,
         "render_topn": 24,
@@ -185,6 +196,14 @@ UNIFIED_METHOD_LOCK = {
     "bridge_score_threshold": 0.35,
     "redundancy_threshold": 0.62,
     "marginal_gain_threshold": 0.08,
+    "selector_aware_render_enabled": False,
+    "render_selected_only": False,
+    "render_include_neighbor_sentences": False,
+    "render_include_corridor_headers": True,
+    "render_include_source_titles": "full",
+    "render_include_metadata": "full",
+    "render_deduplicate_selected_text": False,
+    "render_enforce_actual_prompt_budget": False,
     **UNIFIED_RENDERING_LOCK,
 }
 
@@ -199,6 +218,7 @@ UNIFIED_PROFILE_INTERFACE_LOCKS = {
     COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP_REORDER_ALL: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
     COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
     COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V2: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
 }
 
 UNIFIED_PROFILE_METHOD_OVERRIDES = {
@@ -218,6 +238,34 @@ UNIFIED_PROFILE_METHOD_OVERRIDES = {
         "redundancy_threshold": 0.62,
         "marginal_gain_threshold": 0.08,
         # Let the dynamic selector see the large retrieved candidate pool.
+        "max_context_sentences": 24,
+        "max_sentences": 24,
+        "top_corridors": 0,
+    },
+    COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V2: {
+        "dynamic_compact_selection_enabled": True,
+        "coverage_gain_enabled": True,
+        "redundancy_penalty_enabled": True,
+        "bridge_preserve_enabled": True,
+        "path_preserve_enabled": True,
+        "adaptive_stop_enabled": True,
+        "max_render_topn": 24,
+        "min_render_topn": 6,
+        "target_prompt_tokens": 550,
+        "max_prompt_tokens": 650,
+        "coverage_gain_threshold": 0.05,
+        "bridge_score_threshold": 0.35,
+        "redundancy_threshold": 0.62,
+        "marginal_gain_threshold": 0.08,
+        "selector_aware_render_enabled": True,
+        "render_selected_only": True,
+        "render_include_neighbor_sentences": False,
+        "render_include_corridor_headers": False,
+        "render_include_source_titles": "minimal",
+        "render_include_metadata": "minimal",
+        "render_deduplicate_selected_text": True,
+        "render_enforce_actual_prompt_budget": True,
+        # Keep retrieval/selector candidate exposure identical to v1.
         "max_context_sentences": 24,
         "max_sentences": 24,
         "top_corridors": 0,
