@@ -372,12 +372,22 @@ class RagConfig(RetrievalConfig):
     # prompt assembly path and do not alter retrieval or selector scoring.
     selector_aware_render_enabled: bool = False
     render_selected_only: bool = False
+    render_selected_centered: bool = False
+    render_contextual_expansion_enabled: bool = False
+    render_conditional_neighbor_sentences: bool = False
+    render_bridge_context_enabled: bool = False
+    render_path_context_enabled: bool = False
     render_include_neighbor_sentences: bool = False
     render_include_corridor_headers: bool = True
     render_include_source_titles: str = "full"
     render_include_metadata: str = "full"
     render_deduplicate_selected_text: bool = False
+    render_deduplicate_context_text: bool = False
     render_enforce_actual_prompt_budget: bool = False
+    max_neighbors_per_selected: int = 1
+    max_context_sentences_per_selected: int = 1
+    max_bridge_context_sentences: int = 2
+    max_path_context_sentences: int = 2
     # score | retrieval | corridor_rank | query_bridge_answer
     # corridor_aware_flat flags:
     # +raw_focus_front +raw_focus_dedup +raw_focus_scaffold_light +raw_focus_top1_bundle_only(+top2)
@@ -471,9 +481,15 @@ def apply_cli_overrides(config_dict, args_namespace):
         "adaptive_stop_enabled",
         "selector_aware_render_enabled",
         "render_selected_only",
+        "render_selected_centered",
+        "render_contextual_expansion_enabled",
+        "render_conditional_neighbor_sentences",
+        "render_bridge_context_enabled",
+        "render_path_context_enabled",
         "render_include_neighbor_sentences",
         "render_include_corridor_headers",
         "render_deduplicate_selected_text",
+        "render_deduplicate_context_text",
         "render_enforce_actual_prompt_budget",
     ):
         if key in merged:

@@ -299,4 +299,14 @@ render_include_corridor_headers: true
 render_include_source_titles: full
 render_include_metadata: full
 render_deduplicate_selected_text: false
+render_deduplicate_context_text: false
 render_enforce_actual_prompt_budget: false
+render_selected_centered: false
+render_contextual_expansion_enabled: false
+render_conditional_neighbor_sentences: false
+render_bridge_context_enabled: false
+render_path_context_enabled: false
+max_neighbors_per_selected: 1
+max_context_sentences_per_selected: 1
+max_bridge_context_sentences: 2
+max_path_context_sentences: 2

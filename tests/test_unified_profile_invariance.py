@@ -21,6 +21,7 @@ PROFILES = [
     "unified_medium_lightsep_reorder_all",
     "unified_dynamic_compact_v1",
     "unified_dynamic_compact_v2",
+    "unified_dynamic_contextual_compact_v3",
 ]
 
 REORDER_ALL_PROFILES = {
@@ -38,11 +39,13 @@ LIGHTSEP_PROFILES = {
     "unified_medium_lightsep_reorder_all",
     "unified_dynamic_compact_v1",
     "unified_dynamic_compact_v2",
+    "unified_dynamic_contextual_compact_v3",
 }
 
 DYNAMIC_PROFILES = {
     "unified_dynamic_compact_v1",
     "unified_dynamic_compact_v2",
+    "unified_dynamic_contextual_compact_v3",
 }
 
 
@@ -89,6 +92,7 @@ def test_unified_budget_is_profile_selected_not_dataset_selected():
     assert observed_by_profile["unified_medium_lightsep_reorder_all"] == (36, 18, 18)
     assert observed_by_profile["unified_dynamic_compact_v1"] == (45, 24, 24)
     assert observed_by_profile["unified_dynamic_compact_v2"] == (45, 24, 24)
+    assert observed_by_profile["unified_dynamic_contextual_compact_v3"] == (45, 24, 24)
 
 
 def test_enhanced_profile_policy_flags_are_global():
@@ -106,6 +110,7 @@ def test_enhanced_profile_policy_flags_are_global():
     assert {
         "copy_span_instruction_unified_dynamic_compact_v1",
         "copy_span_instruction_unified_dynamic_compact_v2",
+        "copy_span_instruction_unified_dynamic_contextual_compact_v3",
     }.issubset(set(UNIFIED_DYNAMIC_PROFILE_NAMES))
 
     for profile in PROFILES:
@@ -129,14 +134,15 @@ def test_enhanced_profile_policy_flags_are_global():
                 assert cfg["bridge_preserve_enabled"] is True
                 assert cfg["path_preserve_enabled"] is True
                 assert cfg["adaptive_stop_enabled"] is True
-                assert cfg["min_render_topn"] == 6
                 assert cfg["max_render_topn"] == 24
             if profile == "unified_dynamic_compact_v1":
+                assert cfg["min_render_topn"] == 6
                 assert cfg["target_prompt_tokens"] == 600
                 assert cfg["max_prompt_tokens"] == 700
                 assert cfg["selector_aware_render_enabled"] is False
                 assert cfg["render_selected_only"] is False
             if profile == "unified_dynamic_compact_v2":
+                assert cfg["min_render_topn"] == 6
                 assert cfg["target_prompt_tokens"] == 550
                 assert cfg["max_prompt_tokens"] == 650
                 assert cfg["selector_aware_render_enabled"] is True
@@ -147,6 +153,26 @@ def test_enhanced_profile_policy_flags_are_global():
                 assert cfg["render_include_metadata"] == "minimal"
                 assert cfg["render_deduplicate_selected_text"] is True
                 assert cfg["render_enforce_actual_prompt_budget"] is True
+            if profile == "unified_dynamic_contextual_compact_v3":
+                assert cfg["min_render_topn"] == 8
+                assert cfg["target_prompt_tokens"] == 750
+                assert cfg["max_prompt_tokens"] == 850
+                assert cfg["selector_aware_render_enabled"] is True
+                assert cfg["render_selected_only"] is False
+                assert cfg["render_selected_centered"] is True
+                assert cfg["render_contextual_expansion_enabled"] is True
+                assert cfg["render_conditional_neighbor_sentences"] is True
+                assert cfg["render_bridge_context_enabled"] is True
+                assert cfg["render_path_context_enabled"] is True
+                assert cfg["render_include_source_titles"] == "minimal"
+                assert cfg["render_include_metadata"] == "minimal"
+                assert cfg["render_deduplicate_selected_text"] is True
+                assert cfg["render_deduplicate_context_text"] is True
+                assert cfg["render_enforce_actual_prompt_budget"] is True
+                assert cfg["max_neighbors_per_selected"] == 1
+                assert cfg["max_context_sentences_per_selected"] == 1
+                assert cfg["max_bridge_context_sentences"] == 2
+                assert cfg["max_path_context_sentences"] == 2
 
 
 def test_enhanced_profile_interfaces_are_explicit():
@@ -188,12 +214,22 @@ def test_dynamic_compact_profile_has_no_dataset_specific_method_drift():
         "max_context_sentences",
         "selector_aware_render_enabled",
         "render_selected_only",
+        "render_selected_centered",
+        "render_contextual_expansion_enabled",
+        "render_conditional_neighbor_sentences",
+        "render_bridge_context_enabled",
+        "render_path_context_enabled",
         "render_include_neighbor_sentences",
         "render_include_corridor_headers",
         "render_include_source_titles",
         "render_include_metadata",
         "render_deduplicate_selected_text",
+        "render_deduplicate_context_text",
         "render_enforce_actual_prompt_budget",
+        "max_neighbors_per_selected",
+        "max_context_sentences_per_selected",
+        "max_bridge_context_sentences",
+        "max_path_context_sentences",
     ]
     for profile in DYNAMIC_PROFILES:
         configs = {

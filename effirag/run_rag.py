@@ -902,6 +902,7 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
     summary_path = out_dir / "rag_summary.json"
     selector_diagnostics_path = out_dir / "selector_diagnostics.jsonl"
     render_diagnostics_path = out_dir / "render_diagnostics.jsonl"
+    contextual_render_diagnostics_path = out_dir / "contextual_render_diagnostics.jsonl"
     sf_debug_rows = []
     sf_debug_limit = max(0, int(getattr(cfg, "sf_debug_sample_limit", 0) or 0))
     sf_debug_enabled = bool(sf_debug_limit > 0)
@@ -911,6 +912,8 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         selector_diagnostics_path.write_text("", encoding="utf-8")
     if bool(getattr(cfg, "selector_aware_render_enabled", False)):
         render_diagnostics_path.write_text("", encoding="utf-8")
+    if bool(getattr(cfg, "render_selected_centered", False)):
+        contextual_render_diagnostics_path.write_text("", encoding="utf-8")
     render_mode_requested = str(cfg.render_mode or "").strip()
     resolved_render_mode = render_mode_requested or ("corridor_aware_flat" if cfg.method == "effirag" else "flat")
     retrieval_source_counts = {"precomputed": 0, "on_the_fly": 0}
@@ -1044,12 +1047,22 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     prompt_variant=cfg.prompt_variant,
                     selector_aware_render_enabled=cfg.selector_aware_render_enabled,
                     render_selected_only=cfg.render_selected_only,
+                    render_selected_centered=cfg.render_selected_centered,
+                    render_contextual_expansion_enabled=cfg.render_contextual_expansion_enabled,
+                    render_conditional_neighbor_sentences=cfg.render_conditional_neighbor_sentences,
+                    render_bridge_context_enabled=cfg.render_bridge_context_enabled,
+                    render_path_context_enabled=cfg.render_path_context_enabled,
                     render_include_neighbor_sentences=cfg.render_include_neighbor_sentences,
                     render_include_corridor_headers=cfg.render_include_corridor_headers,
                     render_include_source_titles=cfg.render_include_source_titles,
                     render_include_metadata=cfg.render_include_metadata,
                     render_deduplicate_selected_text=cfg.render_deduplicate_selected_text,
+                    render_deduplicate_context_text=cfg.render_deduplicate_context_text,
                     render_enforce_actual_prompt_budget=cfg.render_enforce_actual_prompt_budget,
+                    max_neighbors_per_selected=cfg.max_neighbors_per_selected,
+                    max_context_sentences_per_selected=cfg.max_context_sentences_per_selected,
+                    max_bridge_context_sentences=cfg.max_bridge_context_sentences,
+                    max_path_context_sentences=cfg.max_path_context_sentences,
                 )
                 meta = dict((rendered.metadata or {}))
                 meta["prompt_variant"] = str(getattr(cfg, "prompt_variant", "default") or "default")
@@ -1263,6 +1276,7 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                         rendered_meta.get("selector_aware_render_enabled", False)
                     ),
                     "render_selected_only": bool(rendered_meta.get("render_selected_only", False)),
+                    "render_selected_centered": bool(rendered_meta.get("render_selected_centered", False)),
                     "render_diagnostics": dict(render_diag),
                     "selected_to_rendered_jaccard": float(
                         render_diag.get("selected_to_rendered_jaccard", 0.0) or 0.0
@@ -1315,6 +1329,7 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                         rendered_meta.get("selector_aware_render_enabled", False)
                     ),
                     "render_selected_only": bool(rendered_meta.get("render_selected_only", False)),
+                    "render_selected_centered": bool(rendered_meta.get("render_selected_centered", False)),
                     "render_diagnostics": dict(render_diag),
                 },
                 "retrieval_source": retrieval_source,
@@ -1336,6 +1351,8 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                 append_jsonl(selector_diagnostics_path, selector_diag)
             if bool(getattr(cfg, "selector_aware_render_enabled", False)) and render_diag:
                 append_jsonl(render_diagnostics_path, render_diag)
+            if bool(getattr(cfg, "render_selected_centered", False)) and render_diag:
+                append_jsonl(contextual_render_diagnostics_path, render_diag)
             if sf_debug_enabled and len(sf_debug_rows) < sf_debug_limit:
                 sf_debug_rows.append(
                     build_support_fact_debug_payload(
@@ -1510,6 +1527,30 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         "render_diagnostics_path": str(render_diagnostics_path)
         if bool(getattr(cfg, "selector_aware_render_enabled", False))
         else "",
+        "contextual_render_diagnostics_path": str(contextual_render_diagnostics_path)
+        if bool(getattr(cfg, "render_selected_centered", False))
+        else "",
+        "selected_core_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("num_selected_core", 0.0) or 0.0) for r in rows]
+        ),
+        "context_sentences_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("num_context_sentences", 0.0) or 0.0) for r in rows]
+        ),
+        "bridge_context_sentences_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("num_bridge_context_sentences", 0.0) or 0.0) for r in rows]
+        ),
+        "path_context_sentences_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("num_path_context_sentences", 0.0) or 0.0) for r in rows]
+        ),
+        "context_expansion_rate_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("context_expansion_rate", 0.0) or 0.0) for r in rows]
+        ),
+        "bridge_context_rate": mean_or_zero(
+            [float(_render_diag_from_row(r).get("bridge_context_rate", 0.0) or 0.0) for r in rows]
+        ),
+        "budget_pruned_rate": mean_or_zero(
+            [float(_render_diag_from_row(r).get("budget_pruned_rate", 0.0) or 0.0) for r in rows]
+        ),
         "selector_to_rendered_jaccard_avg": mean_or_zero(
             [float(_render_diag_from_row(r).get("selected_to_rendered_jaccard", 0.0) or 0.0) for r in rows]
         ),
@@ -1700,12 +1741,22 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "marginal_gain_threshold": cfg.marginal_gain_threshold,
             "selector_aware_render_enabled": cfg.selector_aware_render_enabled,
             "render_selected_only": cfg.render_selected_only,
+            "render_selected_centered": cfg.render_selected_centered,
+            "render_contextual_expansion_enabled": cfg.render_contextual_expansion_enabled,
+            "render_conditional_neighbor_sentences": cfg.render_conditional_neighbor_sentences,
+            "render_bridge_context_enabled": cfg.render_bridge_context_enabled,
+            "render_path_context_enabled": cfg.render_path_context_enabled,
             "render_include_neighbor_sentences": cfg.render_include_neighbor_sentences,
             "render_include_corridor_headers": cfg.render_include_corridor_headers,
             "render_include_source_titles": cfg.render_include_source_titles,
             "render_include_metadata": cfg.render_include_metadata,
             "render_deduplicate_selected_text": cfg.render_deduplicate_selected_text,
+            "render_deduplicate_context_text": cfg.render_deduplicate_context_text,
             "render_enforce_actual_prompt_budget": cfg.render_enforce_actual_prompt_budget,
+            "max_neighbors_per_selected": cfg.max_neighbors_per_selected,
+            "max_context_sentences_per_selected": cfg.max_context_sentences_per_selected,
+            "max_bridge_context_sentences": cfg.max_bridge_context_sentences,
+            "max_path_context_sentences": cfg.max_path_context_sentences,
             "order_strategy": cfg.order_strategy,
         },
         "profile_config": {

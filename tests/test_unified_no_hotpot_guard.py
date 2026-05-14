@@ -19,6 +19,7 @@ def test_hotpotqa_unified_profile_does_not_enable_hotpot_guard_at_runtime():
         "unified_medium_lightsep_reorder_all",
         "unified_dynamic_compact_v1",
         "unified_dynamic_compact_v2",
+        "unified_dynamic_contextual_compact_v3",
     ]
 
     for profile in profiles:
@@ -41,6 +42,13 @@ def test_hotpotqa_unified_profile_does_not_enable_hotpot_guard_at_runtime():
         if profile == "unified_dynamic_compact_v2":
             assert cfg.selector_aware_render_enabled is True
             assert cfg.render_selected_only is True
+        if profile == "unified_dynamic_contextual_compact_v3":
+            assert cfg.selector_aware_render_enabled is True
+            assert cfg.render_selected_only is False
+            assert cfg.render_selected_centered is True
+            assert cfg.render_contextual_expansion_enabled is True
+            assert cfg.render_bridge_context_enabled is True
+            assert cfg.render_path_context_enabled is True
         if "reorder_all" in profile:
             assert cfg.final_top_slice_reorder_enabled is True
         else:
