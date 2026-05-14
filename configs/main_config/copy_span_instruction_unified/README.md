@@ -9,6 +9,10 @@ profiles do not use dataset-specific method toggles.
 - `unified_large/`: seed/run/render topn = `45/24/24`
 - `unified_medium/`: seed/run/render topn = `36/18/18`
 - `unified_compact/`: seed/run/render topn = `30/15/15`
+- `unified_large_lightsep/`: `45/24/24`, global light-separator copy-span interface
+- `unified_large_reorder_all/`: `45/24/24`, global final top-slice reorder
+- `unified_large_lightsep_reorder_all/`: `45/24/24`, global light-separator interface plus reorder
+- `unified_medium_lightsep_reorder_all/`: `36/18/18`, medium-budget global light-separator interface plus reorder
 
 `unified_medium` is the primary main-method candidate.
 
@@ -24,6 +28,10 @@ Every dataset in a profile uses the same method-level settings:
 - `oracle_support_injection_enabled: false`
 - `max_anchors: 4`
 - `samples_per_anchor: 4`
+
+Enhanced profiles may enable `final_top_slice_reorder_enabled: true`, but only
+globally for every dataset in the profile. HotpotQA-only guards/pinning and
+2Wiki-only reorder remain forbidden.
 
 Dataset names may select dataset files and corpus paths, but not method
 behavior.

@@ -9,16 +9,30 @@ def test_unified_resolver_ignores_hotpot_dataset_name():
 
 
 def test_hotpotqa_unified_profile_does_not_enable_hotpot_guard_at_runtime():
-    raw_cfg = apply_unified_profile({}, "hotpotqa", "unified_medium")
-    cfg = dataclass_from_dict(RagConfig, raw_cfg, warn_unknown_keys=False)
+    profiles = [
+        "unified_large",
+        "unified_medium",
+        "unified_compact",
+        "unified_large_lightsep",
+        "unified_large_reorder_all",
+        "unified_large_lightsep_reorder_all",
+        "unified_medium_lightsep_reorder_all",
+    ]
 
-    flags = _resolve_retrieval_objective_flags(cfg)
-    flags, diag = _apply_connector_objective_profile(cfg, flags)
+    for profile in profiles:
+        raw_cfg = apply_unified_profile({}, "hotpotqa", profile)
+        cfg = dataclass_from_dict(RagConfig, raw_cfg, warn_unknown_keys=False)
 
-    assert cfg.retrieval_objective_mode == "baseline"
-    assert diag["effective_mode"] == "baseline"
-    assert flags["corridor_answer_preserve_guarded_hotpot"] is False
-    assert cfg.corridor_answer_preserve_guarded_hotpot_enabled is False
-    assert cfg.corridor_answer_preserve_enabled is False
-    assert cfg.answer_support_pinning_enabled is False
-    assert cfg.final_top_slice_reorder_enabled is False
+        flags = _resolve_retrieval_objective_flags(cfg)
+        flags, diag = _apply_connector_objective_profile(cfg, flags)
+
+        assert cfg.retrieval_objective_mode == "baseline"
+        assert diag["effective_mode"] == "baseline"
+        assert flags["corridor_answer_preserve_guarded_hotpot"] is False
+        assert cfg.corridor_answer_preserve_guarded_hotpot_enabled is False
+        assert cfg.corridor_answer_preserve_enabled is False
+        assert cfg.answer_support_pinning_enabled is False
+        if "reorder_all" in profile:
+            assert cfg.final_top_slice_reorder_enabled is True
+        else:
+            assert cfg.final_top_slice_reorder_enabled is False

@@ -19,6 +19,25 @@ STRICT_UNIFIED_PROFILE_FAMILY = "copy_span_instruction_unified"
 COPY_SPAN_INSTRUCTION_UNIFIED_LARGE = "copy_span_instruction_unified_large"
 COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM = "copy_span_instruction_unified_medium"
 COPY_SPAN_INSTRUCTION_UNIFIED_COMPACT = "copy_span_instruction_unified_compact"
+COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP = "copy_span_instruction_unified_large_lightsep"
+COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_REORDER_ALL = "copy_span_instruction_unified_large_reorder_all"
+COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP_REORDER_ALL = "copy_span_instruction_unified_large_lightsep_reorder_all"
+COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL = "copy_span_instruction_unified_medium_lightsep_reorder_all"
+
+UNIFIED_CLEAN_PROFILE_NAMES = (
+    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE,
+    COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM,
+    COPY_SPAN_INSTRUCTION_UNIFIED_COMPACT,
+)
+
+UNIFIED_ENHANCED_PROFILE_NAMES = (
+    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP,
+    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_REORDER_ALL,
+    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP_REORDER_ALL,
+    COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL,
+)
+
+UNIFIED_PROFILE_NAMES = UNIFIED_CLEAN_PROFILE_NAMES + UNIFIED_ENHANCED_PROFILE_NAMES
 
 UNIFIED_PROFILE_ALIASES = {
     "large": COPY_SPAN_INSTRUCTION_UNIFIED_LARGE,
@@ -30,12 +49,28 @@ UNIFIED_PROFILE_ALIASES = {
     "compact": COPY_SPAN_INSTRUCTION_UNIFIED_COMPACT,
     "unified_compact": COPY_SPAN_INSTRUCTION_UNIFIED_COMPACT,
     COPY_SPAN_INSTRUCTION_UNIFIED_COMPACT: COPY_SPAN_INSTRUCTION_UNIFIED_COMPACT,
+    "large_lightsep": COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP,
+    "unified_large_lightsep": COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP,
+    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP: COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP,
+    "large_reorder_all": COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_REORDER_ALL,
+    "unified_large_reorder_all": COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_REORDER_ALL,
+    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_REORDER_ALL: COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_REORDER_ALL,
+    "large_lightsep_reorder_all": COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP_REORDER_ALL,
+    "unified_large_lightsep_reorder_all": COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP_REORDER_ALL,
+    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP_REORDER_ALL: COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP_REORDER_ALL,
+    "medium_lightsep_reorder_all": COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL,
+    "unified_medium_lightsep_reorder_all": COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL,
+    COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL: COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL,
 }
 
 UNIFIED_PROFILE_DIRS = {
     COPY_SPAN_INSTRUCTION_UNIFIED_LARGE: "unified_large",
     COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM: "unified_medium",
     COPY_SPAN_INSTRUCTION_UNIFIED_COMPACT: "unified_compact",
+    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP: "unified_large_lightsep",
+    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_REORDER_ALL: "unified_large_reorder_all",
+    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP_REORDER_ALL: "unified_large_lightsep_reorder_all",
+    COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL: "unified_medium_lightsep_reorder_all",
 }
 
 UNIFIED_BUDGETS = {
@@ -54,6 +89,26 @@ UNIFIED_BUDGETS = {
         "run_topn": 15,
         "render_topn": 15,
     },
+    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP: {
+        "seed_topn": 45,
+        "run_topn": 24,
+        "render_topn": 24,
+    },
+    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_REORDER_ALL: {
+        "seed_topn": 45,
+        "run_topn": 24,
+        "render_topn": 24,
+    },
+    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP_REORDER_ALL: {
+        "seed_topn": 45,
+        "run_topn": 24,
+        "render_topn": 24,
+    },
+    COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL: {
+        "seed_topn": 36,
+        "run_topn": 18,
+        "render_topn": 18,
+    },
 }
 
 UNIFIED_BUDGET_CONFIG_KEYS = (
@@ -70,6 +125,16 @@ UNIFIED_RENDERING_LOCK = {
     "corridor_answer_preserve_guarded_hotpot_enabled": False,
     "oracle_support_injection_enabled": False,
 }
+
+UNIFIED_DEFAULT_INTERFACE_LOCK = {
+    "order_strategy": "score",
+    "prompt_variant": "default",
+    "prompt_variant_label": "default",
+    "render_variant": "score_ordered_corridor_aware_flat",
+    "added_instruction": "none",
+}
+
+UNIFIED_LIGHTSEP_INTERFACE_LOCK = dict(INSTRUCTION_INTERFACE_CONTRACT)
 
 UNIFIED_METHOD_LOCK = {
     "retrieval_objective_mode": "baseline",
@@ -95,12 +160,41 @@ UNIFIED_METHOD_LOCK = {
     **UNIFIED_RENDERING_LOCK,
 }
 
+UNIFIED_PROFILE_INTERFACE_LOCKS = {
+    # Preserve the generated Phase-6 clean profile behavior that already uses
+    # the copy-span light-separator interface inherited from the SOTA source pack.
+    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_COMPACT: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_REORDER_ALL: UNIFIED_DEFAULT_INTERFACE_LOCK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP_REORDER_ALL: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
+}
+
+UNIFIED_PROFILE_RENDERING_OVERRIDES = {
+    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_REORDER_ALL: {
+        "final_top_slice_reorder_enabled": True,
+    },
+    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP_REORDER_ALL: {
+        "final_top_slice_reorder_enabled": True,
+    },
+    COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL: {
+        "final_top_slice_reorder_enabled": True,
+    },
+}
+
 UNIFIED_RUNTIME_DEFAULTS = {
     "precomputed_retrieval_path": "",
     "precomputed_retrieval_strict": False,
 }
 
-UNIFIED_METHOD_SETTING_KEYS = tuple(UNIFIED_METHOD_LOCK.keys())
+UNIFIED_INTERFACE_SETTING_KEYS = (
+    "order_strategy",
+    "prompt_variant",
+)
+
+UNIFIED_METHOD_SETTING_KEYS = tuple(UNIFIED_METHOD_LOCK.keys()) + UNIFIED_INTERFACE_SETTING_KEYS
 
 
 def normalize_dataset_name(dataset_name: str | None) -> str:
@@ -139,6 +233,16 @@ def unified_budget(profile_name: str | None) -> Dict[str, int]:
     return dict(UNIFIED_BUDGETS[normalized])
 
 
+def unified_interface_config(profile_name: str | None) -> Dict[str, Any]:
+    normalized = normalize_unified_profile_name(profile_name)
+    return dict(UNIFIED_PROFILE_INTERFACE_LOCKS[normalized])
+
+
+def unified_rendering_overrides(profile_name: str | None) -> Dict[str, Any]:
+    normalized = normalize_unified_profile_name(profile_name)
+    return dict(UNIFIED_PROFILE_RENDERING_OVERRIDES.get(normalized, {}))
+
+
 def unified_budget_config(profile_name: str | None) -> Dict[str, int]:
     budget = unified_budget(profile_name)
     return {
@@ -161,12 +265,13 @@ def apply_unified_profile(
     normalized_profile = normalize_unified_profile_name(profile_name)
     out = deepcopy(dict(cfg or {}))
     out["dataset"] = ds
-    out.update(INSTRUCTION_INTERFACE_CONTRACT)
     out.update(COPY_SPAN_RETRIEVAL_WEIGHTS)
     out.update(COPY_SPAN_RENDER_WEIGHTS)
     out.update(COPY_SPAN_DISABLED_MODULES)
     out.update(UNIFIED_METHOD_LOCK)
     out["retrieval_objective_mode"] = resolve_unified_copy_span_mode(ds)
+    out.update(unified_interface_config(normalized_profile))
+    out.update(unified_rendering_overrides(normalized_profile))
     out.update(unified_budget_config(normalized_profile))
     out.update(UNIFIED_RUNTIME_DEFAULTS)
     out.update(
@@ -210,6 +315,10 @@ def audit_unified_configs(configs: Mapping[str, Mapping[str, Any]]) -> Dict[str,
         if cfg.get("retrieval_objective_mode") not in {"baseline", "canonical_copy_span_unified"}:
             errors.append(f"unsupported unified objective for {dataset}: {cfg.get('retrieval_objective_mode')}")
         for key, expected in UNIFIED_RENDERING_LOCK.items():
+            if key == "final_top_slice_reorder_enabled":
+                # Reorder-all profiles may enable this globally. The signature
+                # comparison above ensures it cannot drift by dataset.
+                continue
             if bool(cfg.get(key)) is not bool(expected):
                 errors.append(f"unified rendering lock violated for {dataset}.{key}")
 

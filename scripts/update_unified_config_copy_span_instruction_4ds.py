@@ -27,12 +27,11 @@ if str(REPO_ROOT) not in sys.path:
 
 from effirag.config import RagConfig
 from effirag.unified_copy_span_policy import (
-    COPY_SPAN_INSTRUCTION_UNIFIED_COMPACT,
-    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE,
-    COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM,
     DATASET_ORDER,
     STRICT_UNIFIED_PROFILE_FAMILY,
     STRICT_UNIFIED_VARIANT_NAME,
+    UNIFIED_ENHANCED_PROFILE_NAMES,
+    UNIFIED_PROFILE_NAMES,
     UNIFIED_PROFILE_DIRS,
     apply_unified_profile,
     audit_unified_configs,
@@ -43,11 +42,7 @@ from effirag.unified_copy_span_policy import (
 )
 
 
-PROFILE_ORDER = (
-    COPY_SPAN_INSTRUCTION_UNIFIED_LARGE,
-    COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM,
-    COPY_SPAN_INSTRUCTION_UNIFIED_COMPACT,
-)
+PROFILE_ORDER = UNIFIED_PROFILE_NAMES
 
 
 def _rag_config_field_names() -> set[str]:
@@ -99,13 +94,16 @@ def build_unified_config_pack(profile_root: Path, source_root: Path) -> Path:
         "strict_unified_contract": {
             "retrieval_objective_mode": "baseline",
             "answer_support_pinning_enabled": False,
-            "final_top_slice_reorder_enabled": False,
             "corridor_answer_preserve_guarded_hotpot_enabled": False,
             "oracle_support_injection_enabled": False,
             "precomputed_retrieval_path": "",
             "precomputed_retrieval_strict": False,
             "dataset_specific_method_toggles_allowed": False,
         },
+        "enhanced_profiles": [
+            UNIFIED_PROFILE_DIRS[profile]
+            for profile in UNIFIED_ENHANCED_PROFILE_NAMES
+        ],
         "profiles": {},
     }
 

@@ -11,9 +11,18 @@ def test_precomputed_retrieval_strict_is_not_a_unified_method_lock():
 
 
 def test_runtime_precomputed_fields_do_not_change_unified_method_signature():
-    cfg_a = apply_unified_profile({}, "hotpotqa", "unified_medium")
-    cfg_b = dict(cfg_a)
-    cfg_b["precomputed_retrieval_path"] = "outputs/some/replayed/query_results.jsonl"
-    cfg_b["precomputed_retrieval_strict"] = True
+    profiles = [
+        "unified_medium",
+        "unified_large_lightsep",
+        "unified_large_reorder_all",
+        "unified_large_lightsep_reorder_all",
+        "unified_medium_lightsep_reorder_all",
+    ]
 
-    assert unified_method_signature(cfg_a) == unified_method_signature(cfg_b)
+    for profile in profiles:
+        cfg_a = apply_unified_profile({}, "hotpotqa", profile)
+        cfg_b = dict(cfg_a)
+        cfg_b["precomputed_retrieval_path"] = "outputs/some/replayed/query_results.jsonl"
+        cfg_b["precomputed_retrieval_strict"] = True
+
+        assert unified_method_signature(cfg_a) == unified_method_signature(cfg_b)
