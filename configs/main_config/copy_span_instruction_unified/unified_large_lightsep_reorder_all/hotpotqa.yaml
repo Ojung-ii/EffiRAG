@@ -278,6 +278,17 @@ profile_output: ''
 profile_limit: 0
 profile_query_indices: ''
 retrieval_only: false
+path_candidate_expansion_enabled: false
+anchor_expansion_enabled: false
+candidate_diversity_enabled: false
+entity_diversity_enabled: false
+source_diversity_enabled: false
+max_bridge_candidates: 24
+max_path_candidates: 24
+max_anchor_expansion_hops: 1
+max_expanded_candidates: 64
+candidate_dedup_enabled: true
+dataset_specific_branch_enabled: false
 dynamic_compact_selection_enabled: false
 coverage_gain_enabled: false
 redundancy_penalty_enabled: false

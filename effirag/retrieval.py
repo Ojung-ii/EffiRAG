@@ -26,6 +26,7 @@ from .canonical_scoring import (
     canonical_run_weight_bundle,
     canonical_seed_score_map,
 )
+from .candidate_recall_boost import apply_candidate_recall_boost
 from .config import RetrievalConfig
 from .embedding import cosine_similarity, encode_texts, rerank_sentences_by_embedding, topk_cosine_similarity
 from .global_index import load_or_build_global_index, load_semantic_index
@@ -5647,6 +5648,11 @@ def run_graphrag_core(
         "added_count": 0,
         "added_nodes": [],
     }
+    candidate_recall_boost_diag = {
+        "enabled": False,
+        "applied": False,
+        "reason": "disabled",
+    }
     graph_scope = "query_context"
     global_index_meta = {}
     g = None
@@ -5857,6 +5863,26 @@ def run_graphrag_core(
     else:
         proposal_diag["bridge_candidate_count"] = 0
 
+    (
+        proposal_by_anchor,
+        proposal_nodes,
+        proposal_scores,
+        semantic_scores,
+        candidate_recall_boost_diag,
+    ) = apply_candidate_recall_boost(
+        g=g,
+        anchors=anchors,
+        proposal_by_anchor=proposal_by_anchor,
+        proposal_nodes=proposal_nodes,
+        proposal_scores=proposal_scores,
+        semantic_scores=semantic_scores,
+        cfg=cfg,
+    )
+    proposal_diag["candidate_recall_boost_count"] = int(
+        (candidate_recall_boost_diag or {}).get("selected_boost_count", 0)
+    )
+    proposal_diag["union_candidate_count"] = int(len(proposal_nodes))
+
     stage_ms["proposal_union_ms"] = float((time.perf_counter() - proposal_union_start) * 1000.0)
     proposal_subgraph_start = time.perf_counter()
     reduced_graph, reduced_diag = _build_reduced_subgraph_from_proposals(
@@ -5899,9 +5925,11 @@ def run_graphrag_core(
     semantic_diag["proposal_high_confidence_count"] = int(proposal_diag.get("high_confidence_count", 0))
     semantic_diag["proposal_global_fallback_count"] = int(proposal_diag.get("global_fallback_count", 0))
     semantic_diag["proposal_bridge_candidate_count"] = int(proposal_diag.get("bridge_candidate_count", 0))
+    semantic_diag["proposal_candidate_recall_boost_count"] = int(proposal_diag.get("candidate_recall_boost_count", 0))
     semantic_diag["union_candidate_count"] = int(proposal_diag.get("union_candidate_count", len(proposal_nodes)))
     semantic_diag["hybrid_anchor_recall"] = dict(hybrid_anchor_diag or {})
     semantic_diag["bridge_candidate_induction"] = dict(bridge_induction_diag or {})
+    semantic_diag["candidate_recall_boost"] = dict(candidate_recall_boost_diag or {})
     semantic_diag["query_embedding_recomputed"] = bool(query_embedding_recomputed)
     semantic_diag["query_embedding_cache_hit"] = bool(query_embedding_cache_hit)
     semantic_diag["semantic_entity_lookup_mode"] = str(semantic_entity_lookup_mode)
@@ -6821,6 +6849,7 @@ def run_graphrag_core(
             "connector_objective_profile": dict(objective_profile_diag or {}),
             "hybrid_anchor_recall_diag": dict(hybrid_anchor_diag or {}),
             "bridge_candidate_induction_diag": dict(bridge_induction_diag or {}),
+            "candidate_recall_boost_diag": dict(candidate_recall_boost_diag or {}),
             "shared_budget_profile": str((shared_budget_diag or {}).get("resolved_profile", "off") or "off"),
             "shared_budget_proposal_step": int((shared_budget_diag or {}).get("proposal_step", 0)),
             "shared_budget_exploration_step": int((shared_budget_diag or {}).get("exploration_step", 0)),

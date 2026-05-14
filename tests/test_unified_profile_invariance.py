@@ -22,6 +22,8 @@ PROFILES = [
     "unified_dynamic_compact_v1",
     "unified_dynamic_compact_v2",
     "unified_dynamic_contextual_compact_v3",
+    "unified_candidate_recall_boost_v1",
+    "unified_candidate_recall_boost_dynamic_v1",
 ]
 
 REORDER_ALL_PROFILES = {
@@ -40,12 +42,20 @@ LIGHTSEP_PROFILES = {
     "unified_dynamic_compact_v1",
     "unified_dynamic_compact_v2",
     "unified_dynamic_contextual_compact_v3",
+    "unified_candidate_recall_boost_v1",
+    "unified_candidate_recall_boost_dynamic_v1",
 }
 
 DYNAMIC_PROFILES = {
     "unified_dynamic_compact_v1",
     "unified_dynamic_compact_v2",
     "unified_dynamic_contextual_compact_v3",
+    "unified_candidate_recall_boost_dynamic_v1",
+}
+
+CANDIDATE_RECALL_BOOST_PROFILES = {
+    "unified_candidate_recall_boost_v1",
+    "unified_candidate_recall_boost_dynamic_v1",
 }
 
 
@@ -93,6 +103,8 @@ def test_unified_budget_is_profile_selected_not_dataset_selected():
     assert observed_by_profile["unified_dynamic_compact_v1"] == (45, 24, 24)
     assert observed_by_profile["unified_dynamic_compact_v2"] == (45, 24, 24)
     assert observed_by_profile["unified_dynamic_contextual_compact_v3"] == (45, 24, 24)
+    assert observed_by_profile["unified_candidate_recall_boost_v1"] == (45, 24, 24)
+    assert observed_by_profile["unified_candidate_recall_boost_dynamic_v1"] == (45, 24, 24)
 
 
 def test_enhanced_profile_policy_flags_are_global():
@@ -101,6 +113,7 @@ def test_enhanced_profile_policy_flags_are_global():
         "copy_span_instruction_unified_large_reorder_all",
         "copy_span_instruction_unified_large_lightsep_reorder_all",
         "copy_span_instruction_unified_medium_lightsep_reorder_all",
+        "copy_span_instruction_unified_candidate_recall_boost_v1",
     }.issubset(set(UNIFIED_ENHANCED_PROFILE_NAMES))
     assert {
         "copy_span_instruction_unified_large",
@@ -111,6 +124,7 @@ def test_enhanced_profile_policy_flags_are_global():
         "copy_span_instruction_unified_dynamic_compact_v1",
         "copy_span_instruction_unified_dynamic_compact_v2",
         "copy_span_instruction_unified_dynamic_contextual_compact_v3",
+        "copy_span_instruction_unified_candidate_recall_boost_dynamic_v1",
     }.issubset(set(UNIFIED_DYNAMIC_PROFILE_NAMES))
 
     for profile in PROFILES:
@@ -128,6 +142,19 @@ def test_enhanced_profile_policy_flags_are_global():
             assert cfg["order_strategy"] == first["order_strategy"]
             assert cfg["prompt_variant"] == first["prompt_variant"]
             assert cfg["dynamic_compact_selection_enabled"] is (profile in DYNAMIC_PROFILES)
+            if profile in CANDIDATE_RECALL_BOOST_PROFILES:
+                assert cfg["bridge_candidate_induction_enabled"] is True
+                assert cfg["path_candidate_expansion_enabled"] is True
+                assert cfg["anchor_expansion_enabled"] is True
+                assert cfg["candidate_diversity_enabled"] is True
+                assert cfg["entity_diversity_enabled"] is True
+                assert cfg["source_diversity_enabled"] is True
+                assert cfg["max_bridge_candidates"] == 24
+                assert cfg["max_path_candidates"] == 24
+                assert cfg["max_anchor_expansion_hops"] == 1
+                assert cfg["max_expanded_candidates"] == 64
+                assert cfg["candidate_dedup_enabled"] is True
+                assert cfg["dataset_specific_branch_enabled"] is False
             if profile in DYNAMIC_PROFILES:
                 assert cfg["coverage_gain_enabled"] is True
                 assert cfg["redundancy_penalty_enabled"] is True
@@ -173,6 +200,12 @@ def test_enhanced_profile_policy_flags_are_global():
                 assert cfg["max_context_sentences_per_selected"] == 1
                 assert cfg["max_bridge_context_sentences"] == 2
                 assert cfg["max_path_context_sentences"] == 2
+            if profile == "unified_candidate_recall_boost_dynamic_v1":
+                assert cfg["min_render_topn"] == 6
+                assert cfg["target_prompt_tokens"] == 600
+                assert cfg["max_prompt_tokens"] == 700
+                assert cfg["selector_aware_render_enabled"] is False
+                assert cfg["render_selected_only"] is False
 
 
 def test_enhanced_profile_interfaces_are_explicit():
@@ -189,6 +222,18 @@ def test_enhanced_profile_interfaces_are_explicit():
 def test_dynamic_compact_profile_has_no_dataset_specific_method_drift():
     forbidden_drift_keys = [
         "retrieval_objective_mode",
+        "bridge_candidate_induction_enabled",
+        "path_candidate_expansion_enabled",
+        "anchor_expansion_enabled",
+        "candidate_diversity_enabled",
+        "entity_diversity_enabled",
+        "source_diversity_enabled",
+        "max_bridge_candidates",
+        "max_path_candidates",
+        "max_anchor_expansion_hops",
+        "max_expanded_candidates",
+        "candidate_dedup_enabled",
+        "dataset_specific_branch_enabled",
         "answer_support_pinning_enabled",
         "final_top_slice_reorder_enabled",
         "corridor_answer_preserve_guarded_hotpot_enabled",

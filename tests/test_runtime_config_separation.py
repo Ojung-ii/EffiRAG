@@ -20,6 +20,8 @@ def test_runtime_precomputed_fields_do_not_change_unified_method_signature():
         "unified_dynamic_compact_v1",
         "unified_dynamic_compact_v2",
         "unified_dynamic_contextual_compact_v3",
+        "unified_candidate_recall_boost_v1",
+        "unified_candidate_recall_boost_dynamic_v1",
     ]
 
     for profile in profiles:

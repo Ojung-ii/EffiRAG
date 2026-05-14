@@ -126,6 +126,17 @@ class RetrievalConfig:
     bridge_candidate_semantic_weight: float = 0.45
     bridge_candidate_path_weight: float = 0.35
     bridge_candidate_degree_weight: float = 0.20
+    path_candidate_expansion_enabled: bool = False
+    anchor_expansion_enabled: bool = False
+    candidate_diversity_enabled: bool = False
+    entity_diversity_enabled: bool = False
+    source_diversity_enabled: bool = False
+    max_bridge_candidates: int = 24
+    max_path_candidates: int = 24
+    max_anchor_expansion_hops: int = 1
+    max_expanded_candidates: int = 64
+    candidate_dedup_enabled: bool = True
+    dataset_specific_branch_enabled: bool = False
     role_aware_chunk_scoring_enabled: bool = False
     role_chunk_weight_anchor_match: float = 0.30
     role_chunk_weight_bridge_support: float = 0.30
@@ -544,6 +555,20 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["hybrid_anchor_recall_enabled"] = parse_bool(merged["hybrid_anchor_recall_enabled"])
     if "bridge_candidate_induction_enabled" in merged:
         merged["bridge_candidate_induction_enabled"] = parse_bool(merged["bridge_candidate_induction_enabled"])
+    if "path_candidate_expansion_enabled" in merged:
+        merged["path_candidate_expansion_enabled"] = parse_bool(merged["path_candidate_expansion_enabled"])
+    if "anchor_expansion_enabled" in merged:
+        merged["anchor_expansion_enabled"] = parse_bool(merged["anchor_expansion_enabled"])
+    if "candidate_diversity_enabled" in merged:
+        merged["candidate_diversity_enabled"] = parse_bool(merged["candidate_diversity_enabled"])
+    if "entity_diversity_enabled" in merged:
+        merged["entity_diversity_enabled"] = parse_bool(merged["entity_diversity_enabled"])
+    if "source_diversity_enabled" in merged:
+        merged["source_diversity_enabled"] = parse_bool(merged["source_diversity_enabled"])
+    if "candidate_dedup_enabled" in merged:
+        merged["candidate_dedup_enabled"] = parse_bool(merged["candidate_dedup_enabled"])
+    if "dataset_specific_branch_enabled" in merged:
+        merged["dataset_specific_branch_enabled"] = parse_bool(merged["dataset_specific_branch_enabled"])
     if "role_aware_chunk_scoring_enabled" in merged:
         merged["role_aware_chunk_scoring_enabled"] = parse_bool(merged["role_aware_chunk_scoring_enabled"])
     if "coverage_selection_enabled" in merged:

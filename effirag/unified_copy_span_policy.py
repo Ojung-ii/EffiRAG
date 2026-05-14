@@ -26,6 +26,10 @@ COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL = "copy_span_instructi
 COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1 = "copy_span_instruction_unified_dynamic_compact_v1"
 COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V2 = "copy_span_instruction_unified_dynamic_compact_v2"
 COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_CONTEXTUAL_COMPACT_V3 = "copy_span_instruction_unified_dynamic_contextual_compact_v3"
+COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_V1 = "copy_span_instruction_unified_candidate_recall_boost_v1"
+COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DYNAMIC_V1 = (
+    "copy_span_instruction_unified_candidate_recall_boost_dynamic_v1"
+)
 
 UNIFIED_CLEAN_PROFILE_NAMES = (
     COPY_SPAN_INSTRUCTION_UNIFIED_LARGE,
@@ -38,12 +42,14 @@ UNIFIED_ENHANCED_PROFILE_NAMES = (
     COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_REORDER_ALL,
     COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_LIGHTSEP_REORDER_ALL,
     COPY_SPAN_INSTRUCTION_UNIFIED_MEDIUM_LIGHTSEP_REORDER_ALL,
+    COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_V1,
 )
 
 UNIFIED_DYNAMIC_PROFILE_NAMES = (
     COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1,
     COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V2,
     COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_CONTEXTUAL_COMPACT_V3,
+    COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DYNAMIC_V1,
 )
 
 UNIFIED_PROFILE_NAMES = UNIFIED_CLEAN_PROFILE_NAMES + UNIFIED_ENHANCED_PROFILE_NAMES + UNIFIED_DYNAMIC_PROFILE_NAMES
@@ -79,6 +85,12 @@ UNIFIED_PROFILE_ALIASES = {
     "dynamic_contextual_compact_v3": COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_CONTEXTUAL_COMPACT_V3,
     "unified_dynamic_contextual_compact_v3": COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_CONTEXTUAL_COMPACT_V3,
     COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_CONTEXTUAL_COMPACT_V3: COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_CONTEXTUAL_COMPACT_V3,
+    "candidate_recall_boost_v1": COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_V1,
+    "unified_candidate_recall_boost_v1": COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_V1,
+    COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_V1: COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_V1,
+    "candidate_recall_boost_dynamic_v1": COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DYNAMIC_V1,
+    "unified_candidate_recall_boost_dynamic_v1": COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DYNAMIC_V1,
+    COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DYNAMIC_V1: COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DYNAMIC_V1,
 }
 
 UNIFIED_PROFILE_DIRS = {
@@ -92,6 +104,8 @@ UNIFIED_PROFILE_DIRS = {
     COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1: "unified_dynamic_compact_v1",
     COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V2: "unified_dynamic_compact_v2",
     COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_CONTEXTUAL_COMPACT_V3: "unified_dynamic_contextual_compact_v3",
+    COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_V1: "unified_candidate_recall_boost_v1",
+    COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DYNAMIC_V1: "unified_candidate_recall_boost_dynamic_v1",
 }
 
 UNIFIED_BUDGETS = {
@@ -145,6 +159,16 @@ UNIFIED_BUDGETS = {
         "run_topn": 24,
         "render_topn": 24,
     },
+    COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_V1: {
+        "seed_topn": 45,
+        "run_topn": 24,
+        "render_topn": 24,
+    },
+    COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DYNAMIC_V1: {
+        "seed_topn": 45,
+        "run_topn": 24,
+        "render_topn": 24,
+    },
 }
 
 UNIFIED_BUDGET_CONFIG_KEYS = (
@@ -180,6 +204,17 @@ UNIFIED_METHOD_LOCK = {
     "samples_per_anchor": 4,
     "hybrid_anchor_recall_enabled": False,
     "bridge_candidate_induction_enabled": False,
+    "path_candidate_expansion_enabled": False,
+    "anchor_expansion_enabled": False,
+    "candidate_diversity_enabled": False,
+    "entity_diversity_enabled": False,
+    "source_diversity_enabled": False,
+    "max_bridge_candidates": 24,
+    "max_path_candidates": 24,
+    "max_anchor_expansion_hops": 1,
+    "max_expanded_candidates": 64,
+    "candidate_dedup_enabled": True,
+    "dataset_specific_branch_enabled": False,
     "role_aware_chunk_scoring_enabled": False,
     "coverage_selection_enabled": False,
     "corridor_compact_shaping_enabled": False,
@@ -241,6 +276,8 @@ UNIFIED_PROFILE_INTERFACE_LOCKS = {
     COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V1: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
     COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_COMPACT_V2: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
     COPY_SPAN_INSTRUCTION_UNIFIED_DYNAMIC_CONTEXTUAL_COMPACT_V3: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_V1: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DYNAMIC_V1: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
 }
 
 UNIFIED_PROFILE_METHOD_OVERRIDES = {
@@ -326,6 +363,51 @@ UNIFIED_PROFILE_METHOD_OVERRIDES = {
         "max_bridge_context_sentences": 2,
         "max_path_context_sentences": 2,
         # Keep retrieval/selector candidate exposure fixed.
+        "max_context_sentences": 24,
+        "max_sentences": 24,
+        "top_corridors": 0,
+    },
+    COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_V1: {
+        "bridge_candidate_induction_enabled": True,
+        "path_candidate_expansion_enabled": True,
+        "anchor_expansion_enabled": True,
+        "candidate_diversity_enabled": True,
+        "entity_diversity_enabled": True,
+        "source_diversity_enabled": True,
+        "max_bridge_candidates": 24,
+        "max_path_candidates": 24,
+        "max_anchor_expansion_hops": 1,
+        "max_expanded_candidates": 64,
+        "candidate_dedup_enabled": True,
+        "dataset_specific_branch_enabled": False,
+    },
+    COPY_SPAN_INSTRUCTION_UNIFIED_CANDIDATE_RECALL_BOOST_DYNAMIC_V1: {
+        "bridge_candidate_induction_enabled": True,
+        "path_candidate_expansion_enabled": True,
+        "anchor_expansion_enabled": True,
+        "candidate_diversity_enabled": True,
+        "entity_diversity_enabled": True,
+        "source_diversity_enabled": True,
+        "max_bridge_candidates": 24,
+        "max_path_candidates": 24,
+        "max_anchor_expansion_hops": 1,
+        "max_expanded_candidates": 64,
+        "candidate_dedup_enabled": True,
+        "dataset_specific_branch_enabled": False,
+        "dynamic_compact_selection_enabled": True,
+        "coverage_gain_enabled": True,
+        "redundancy_penalty_enabled": True,
+        "bridge_preserve_enabled": True,
+        "path_preserve_enabled": True,
+        "adaptive_stop_enabled": True,
+        "max_render_topn": 24,
+        "min_render_topn": 6,
+        "target_prompt_tokens": 600,
+        "max_prompt_tokens": 700,
+        "coverage_gain_threshold": 0.05,
+        "bridge_score_threshold": 0.35,
+        "redundancy_threshold": 0.62,
+        "marginal_gain_threshold": 0.08,
         "max_context_sentences": 24,
         "max_sentences": 24,
         "top_corridors": 0,
