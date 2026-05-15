@@ -7,6 +7,8 @@ PYTHON="${PYTHON:-/home/ojungii/miniconda3/envs/effirag/bin/python}"
 PYTHONPATH_ENV="${PYTHONPATH_ENV:-.}"
 OUT_ROOT="${OUT_ROOT:-outputs/phase6j_champion_bottleneck_audit}"
 DATASETS="${DATASETS:-hotpotqa 2wikimultihopqa}"
+CUDA_DEVICE_A="${CUDA_DEVICE_A:-0}"
+CUDA_DEVICE_B="${CUDA_DEVICE_B:-1}"
 
 mkdir -p "${OUT_ROOT}/logs"
 mkdir -p "${OUT_ROOT}/shards"
@@ -39,13 +41,14 @@ echo "DATASETS=${DATASETS}"
 run_worker() {
   local worker_name="$1"
   local worker_out="$2"
-  shift 2
+  local cuda_device="$3"
+  shift 3
   local worker_profiles=("$@")
 
   mkdir -p "${worker_out}/logs"
-  echo "[${worker_name}] profiles: ${worker_profiles[*]}"
+  echo "[${worker_name}] cuda=${cuda_device} profiles: ${worker_profiles[*]}"
 
-  PYTHONPATH="${PYTHONPATH_ENV}" "${PYTHON}" scripts/audit_champion_bottlenecks.py \
+  CUDA_VISIBLE_DEVICES="${cuda_device}" PYTHONPATH="${PYTHONPATH_ENV}" "${PYTHON}" scripts/audit_champion_bottlenecks.py \
     --datasets ${DATASETS} \
     --profiles "${worker_profiles[@]}" \
     --roots "${ROOT_ARGS[@]}" \
@@ -59,13 +62,13 @@ W2_OUT="${OUT_ROOT}/shards/w2"
 W3_OUT="${OUT_ROOT}/shards/w3"
 W4_OUT="${OUT_ROOT}/shards/w4"
 
-run_worker w1 "${W1_OUT}" legacy_sota unified_large &
+run_worker w1 "${W1_OUT}" "${CUDA_DEVICE_A}" legacy_sota unified_large &
 PID1=$!
-run_worker w2 "${W2_OUT}" legacy_sota unified_candidate_recall_boost_v1 unified_candidate_recall_boost_density_rerank_v1 &
+run_worker w2 "${W2_OUT}" "${CUDA_DEVICE_A}" legacy_sota unified_candidate_recall_boost_v1 unified_candidate_recall_boost_density_rerank_v1 &
 PID2=$!
-run_worker w3 "${W3_OUT}" legacy_sota unified_gl_rcedr_v1 &
+run_worker w3 "${W3_OUT}" "${CUDA_DEVICE_B}" legacy_sota unified_gl_rcedr_v1 &
 PID3=$!
-run_worker w4 "${W4_OUT}" legacy_sota unified_gl_rcedr_v2 &
+run_worker w4 "${W4_OUT}" "${CUDA_DEVICE_B}" legacy_sota unified_gl_rcedr_v2 &
 PID4=$!
 
 FAIL=0

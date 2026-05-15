@@ -7,6 +7,12 @@ PYTHON="${PYTHON:-/home/ojungii/miniconda3/envs/effirag/bin/python}"
 PYTHONPATH_ENV="${PYTHONPATH_ENV:-.}"
 OUT_ROOT="${OUT_ROOT:-outputs/phase6j_champion_bottleneck_audit}"
 DATASETS="${DATASETS:-hotpotqa 2wikimultihopqa}"
+GPU_PARALLEL_4WAY="${GPU_PARALLEL_4WAY:-false}"
+
+if [[ "${GPU_PARALLEL_4WAY}" == "true" ]]; then
+  echo "GPU_PARALLEL_4WAY=true -> delegating to 4-way runner"
+  exec ./scripts/run_phase6j_champion_bottleneck_audit_4way.sh
+fi
 
 mkdir -p "${OUT_ROOT}/logs"
 
