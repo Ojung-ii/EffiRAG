@@ -133,6 +133,8 @@ def _build_query_row(
 
     decomp = token_decomposition_from_row(row)
     unit = unit_contract_from_row(row)
+    rendered = dict((row.get("rendered", {}) or {}))
+    rendered_meta = dict((rendered.get("metadata", {}) or {}))
     density = density_metrics_from_row(
         row,
         prompt_tokens=int(decomp.get("prompt_tokens", 0)),
@@ -204,6 +206,15 @@ def _build_query_row(
         "QA_F1": float(_safe_float(metrics.get("f1", metrics.get("F1", 0.0)), 0.0)),
         "completion_tokens": int(_safe_int(generation_diag.get("completion_tokens", 0), 0)),
         "answer_error_type_if_available": str(generation_diag.get("answer_error_type", "")),
+        "sentence_contract_render_enabled": bool(rendered_meta.get("sentence_contract_render_enabled", False)),
+        "selected_item_count": int(_safe_int(rendered_meta.get("selected_item_count", selected_stage.get("count", 0)), 0)),
+        "rendered_item_count": int(_safe_int(rendered_meta.get("rendered_item_count", rendered_stage.get("count", 0)), 0)),
+        "selected_to_rendered_preservation_rate": float(
+            _safe_float(rendered_meta.get("selected_to_rendered_preservation_rate", 0.0), 0.0)
+        ),
+        "render_drop_rate": float(_safe_float(rendered_meta.get("render_drop_rate", 0.0), 0.0)),
+        "truncated_item_rate": float(_safe_float(rendered_meta.get("truncated_item_rate", 0.0), 0.0)),
+        "minimal_span_fallback_rate": float(_safe_float(rendered_meta.get("minimal_span_fallback_rate", 0.0), 0.0)),
         "candidate_contains_legacy_evidence": False,
         "legacy_candidate_overlap": 0.0,
         "legacy_selected_overlap": 0.0,
@@ -400,6 +411,36 @@ def main() -> None:
     )
 
     write_jsonl(output_dir / "query_level_bottlenecks.jsonl", query_rows)
+    sentence_contract_rows: List[Dict[str, Any]] = []
+    for row in query_rows:
+        if not bool(row.get("sentence_contract_render_enabled", False)):
+            continue
+        sentence_contract_rows.append(
+            {
+                "dataset": str(row.get("dataset", "")),
+                "qid": str(row.get("qid", "")),
+                "profile": str(row.get("profile", "")),
+                "selected_item_count": int(_safe_int(row.get("selected_item_count", 0), 0)),
+                "rendered_item_count": int(_safe_int(row.get("rendered_item_count", row.get("rendered_count", 0)), 0)),
+                "render_drop_rate": float(_safe_float(row.get("render_drop_rate", 0.0), 0.0)),
+                "selected_to_rendered_preservation_rate": float(
+                    _safe_float(row.get("selected_to_rendered_preservation_rate", 0.0), 0.0)
+                ),
+                "avg_item_tokens": float(_safe_float(row.get("avg_tokens_per_item", 0.0), 0.0)),
+                "max_item_tokens": int(_safe_int(row.get("max_item_tokens", 0), 0)),
+                "chunk_like_rate": float(_safe_float(row.get("chunk_like_rate", 0.0), 0.0)),
+                "sentence_level_rate": float(
+                    _safe_float(row.get("sentence_level_rate", 1.0 - _safe_float(row.get("chunk_like_rate", 0.0), 0.0)), 0.0)
+                ),
+                "metadata_tokens": int(_safe_int(row.get("metadata_tokens", 0), 0)),
+                "evidence_text_tokens": int(_safe_int(row.get("evidence_tokens", 0), 0)),
+                "separator_tokens": int(_safe_int(row.get("separator_tokens", 0), 0)),
+                "truncated_item_rate": float(_safe_float(row.get("truncated_item_rate", 0.0), 0.0)),
+                "minimal_span_fallback_rate": float(_safe_float(row.get("minimal_span_fallback_rate", 0.0), 0.0)),
+            }
+        )
+    if sentence_contract_rows:
+        write_jsonl(output_dir / "query_level_sentence_contract.jsonl", sentence_contract_rows)
     write_csv(
         output_dir / "aggregate_by_profile_dataset.csv",
         aggregate_rows,

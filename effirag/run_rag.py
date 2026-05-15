@@ -1065,6 +1065,13 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     max_context_sentences_per_selected=cfg.max_context_sentences_per_selected,
                     max_bridge_context_sentences=cfg.max_bridge_context_sentences,
                     max_path_context_sentences=cfg.max_path_context_sentences,
+                    sentence_contract_render_enabled=cfg.sentence_contract_render_enabled,
+                    sentence_contract_max_item_tokens=cfg.sentence_contract_max_item_tokens,
+                    sentence_contract_metadata_pruning=cfg.sentence_contract_metadata_pruning,
+                    sentence_contract_chunk_expansion_allowed=cfg.sentence_contract_chunk_expansion_allowed,
+                    sentence_contract_preserve_selected_items=cfg.sentence_contract_preserve_selected_items,
+                    sentence_contract_minimal_span_fallback=cfg.sentence_contract_minimal_span_fallback,
+                    sentence_contract_log_diagnostics=cfg.sentence_contract_log_diagnostics,
                 )
                 meta = dict((rendered.metadata or {}))
                 meta["prompt_variant"] = str(getattr(cfg, "prompt_variant", "default") or "default")
@@ -1279,6 +1286,24 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     ),
                     "render_selected_only": bool(rendered_meta.get("render_selected_only", False)),
                     "render_selected_centered": bool(rendered_meta.get("render_selected_centered", False)),
+                    "sentence_contract_render_enabled": bool(
+                        rendered_meta.get("sentence_contract_render_enabled", False)
+                    ),
+                    "sentence_contract_max_item_tokens": rendered_meta.get("sentence_contract_max_item_tokens", None),
+                    "selected_to_rendered_preservation_rate": float(
+                        rendered_meta.get("selected_to_rendered_preservation_rate", 0.0) or 0.0
+                    ),
+                    "render_drop_rate": float(rendered_meta.get("render_drop_rate", 0.0) or 0.0),
+                    "chunk_like_rate": float(rendered_meta.get("chunk_like_rate", 0.0) or 0.0),
+                    "sentence_level_rate": float(rendered_meta.get("sentence_level_rate", 0.0) or 0.0),
+                    "avg_item_tokens": float(rendered_meta.get("avg_item_tokens", 0.0) or 0.0),
+                    "truncated_item_rate": float(rendered_meta.get("truncated_item_rate", 0.0) or 0.0),
+                    "minimal_span_fallback_rate": float(
+                        rendered_meta.get("minimal_span_fallback_rate", 0.0) or 0.0
+                    ),
+                    "metadata_tokens": int(_safe_int(rendered_meta.get("metadata_tokens", 0), 0)),
+                    "evidence_text_tokens": int(_safe_int(rendered_meta.get("evidence_text_tokens", 0), 0)),
+                    "separator_tokens": int(_safe_int(rendered_meta.get("separator_tokens", 0), 0)),
                     "render_diagnostics": dict(render_diag),
                     "selected_to_rendered_jaccard": float(
                         render_diag.get("selected_to_rendered_jaccard", 0.0) or 0.0
@@ -1332,6 +1357,21 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     ),
                     "render_selected_only": bool(rendered_meta.get("render_selected_only", False)),
                     "render_selected_centered": bool(rendered_meta.get("render_selected_centered", False)),
+                    "sentence_contract_render_enabled": bool(
+                        rendered_meta.get("sentence_contract_render_enabled", False)
+                    ),
+                    "sentence_contract_max_item_tokens": rendered_meta.get("sentence_contract_max_item_tokens", None),
+                    "selected_to_rendered_preservation_rate": float(
+                        rendered_meta.get("selected_to_rendered_preservation_rate", 0.0) or 0.0
+                    ),
+                    "render_drop_rate": float(rendered_meta.get("render_drop_rate", 0.0) or 0.0),
+                    "chunk_like_rate": float(rendered_meta.get("chunk_like_rate", 0.0) or 0.0),
+                    "sentence_level_rate": float(rendered_meta.get("sentence_level_rate", 0.0) or 0.0),
+                    "avg_item_tokens": float(rendered_meta.get("avg_item_tokens", 0.0) or 0.0),
+                    "truncated_item_rate": float(rendered_meta.get("truncated_item_rate", 0.0) or 0.0),
+                    "minimal_span_fallback_rate": float(
+                        rendered_meta.get("minimal_span_fallback_rate", 0.0) or 0.0
+                    ),
                     "render_diagnostics": dict(render_diag),
                 },
                 "retrieval_source": retrieval_source,
@@ -1571,6 +1611,34 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         "extra_prompt_tokens_after_selector_avg": mean_or_zero(
             [float(_render_diag_from_row(r).get("extra_prompt_tokens_after_selector", 0.0) or 0.0) for r in rows]
         ),
+        "sentence_contract_render_enabled": bool(getattr(cfg, "sentence_contract_render_enabled", False)),
+        "sentence_contract_preservation_rate_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("selected_to_rendered_preservation_rate", 0.0) or 0.0) for r in rows]
+        ),
+        "sentence_contract_render_drop_rate_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("render_drop_rate", 0.0) or 0.0) for r in rows]
+        ),
+        "sentence_contract_chunk_like_rate_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("chunk_like_rate", 0.0) or 0.0) for r in rows]
+        ),
+        "sentence_contract_sentence_level_rate_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("sentence_level_rate", 0.0) or 0.0) for r in rows]
+        ),
+        "sentence_contract_avg_item_tokens_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("avg_item_tokens", 0.0) or 0.0) for r in rows]
+        ),
+        "sentence_contract_truncated_item_rate_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("truncated_item_rate", 0.0) or 0.0) for r in rows]
+        ),
+        "sentence_contract_minimal_span_fallback_rate_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("minimal_span_fallback_rate", 0.0) or 0.0) for r in rows]
+        ),
+        "sentence_contract_metadata_tokens_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("metadata_tokens", 0.0) or 0.0) for r in rows]
+        ),
+        "sentence_contract_evidence_text_tokens_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("evidence_text_tokens", 0.0) or 0.0) for r in rows]
+        ),
         "selector_render_estimated_actual_prompt_tokens_avg": mean_or_zero(
             [float(_render_diag_from_row(r).get("estimated_actual_prompt_tokens", 0.0) or 0.0) for r in rows]
         ),
@@ -1759,6 +1827,13 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "max_context_sentences_per_selected": cfg.max_context_sentences_per_selected,
             "max_bridge_context_sentences": cfg.max_bridge_context_sentences,
             "max_path_context_sentences": cfg.max_path_context_sentences,
+            "sentence_contract_render_enabled": cfg.sentence_contract_render_enabled,
+            "sentence_contract_max_item_tokens": cfg.sentence_contract_max_item_tokens,
+            "sentence_contract_metadata_pruning": cfg.sentence_contract_metadata_pruning,
+            "sentence_contract_chunk_expansion_allowed": cfg.sentence_contract_chunk_expansion_allowed,
+            "sentence_contract_preserve_selected_items": cfg.sentence_contract_preserve_selected_items,
+            "sentence_contract_minimal_span_fallback": cfg.sentence_contract_minimal_span_fallback,
+            "sentence_contract_log_diagnostics": cfg.sentence_contract_log_diagnostics,
             "order_strategy": cfg.order_strategy,
         },
         "profile_config": {

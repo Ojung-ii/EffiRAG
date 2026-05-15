@@ -177,13 +177,10 @@ def token_decomposition_from_row(row: Mapping[str, Any]) -> Dict[str, Any]:
     sentence_ids = [str(x or "") for x in list(row.get("rendered_sentence_ids", []) or rendered.get("sentence_ids", []) or [])]
     titles = [parse_sentence_id_title(sid) for sid in sentence_ids if parse_sentence_id_title(sid)]
 
-    evidence_tokens = token_count_for_texts(sentences)
-    metadata_tokens = token_count_for_texts(titles)
+    evidence_tokens = _safe_int(metadata.get("evidence_text_tokens", token_count_for_texts(sentences)), 0)
+    metadata_tokens = _safe_int(metadata.get("metadata_tokens", token_count_for_texts(titles)), 0)
     separator_line_count = _safe_int(
-        metadata.get(
-            "separator_line_count",
-            diagnostics.get("separator_line_count", 0),
-        ),
+        metadata.get("separator_tokens", metadata.get("separator_line_count", diagnostics.get("separator_line_count", 0))),
         0,
     )
     separator_tokens = max(separator_line_count, max(0, len(sentences) - 1))
@@ -239,8 +236,21 @@ def unit_contract_from_row(row: Mapping[str, Any]) -> Dict[str, Any]:
     ]
     item_count = max(len(sentences), len(sentence_ids))
     chunk_like_count = int(sum(1 for x in chunk_like_flags if x))
-    chunk_like_rate = float(safe_div(float(chunk_like_count), float(max(1, item_count))))
+    chunk_like_rate = float(
+        _safe_float(
+            metadata.get("chunk_like_rate", safe_div(float(chunk_like_count), float(max(1, item_count)))),
+            safe_div(float(chunk_like_count), float(max(1, item_count))),
+        )
+    )
     avg_tokens = float(mean_or_zero(token_counts))
+    if "avg_item_tokens" in metadata:
+        avg_tokens = float(_safe_float(metadata.get("avg_item_tokens", avg_tokens), avg_tokens))
+    max_tokens = int(max(token_counts) if token_counts else 0)
+    if "max_item_tokens" in metadata:
+        max_tokens = int(_safe_int(metadata.get("max_item_tokens", max_tokens), max_tokens))
+    sentence_level = bool(chunk_like_rate < 0.5)
+    if "sentence_level_rate" in metadata:
+        sentence_level = bool(_safe_float(metadata.get("sentence_level_rate", 0.0), 0.0) >= 0.5)
     rendered_unit_type = _safe_text(metadata.get("selected_unit_type", ""))
     if not rendered_unit_type:
         rendered_unit_type = "chunk" if chunk_like_rate >= 0.5 else "sentence"
@@ -249,13 +259,13 @@ def unit_contract_from_row(row: Mapping[str, Any]) -> Dict[str, Any]:
 
     return {
         "rendered_unit_type": rendered_unit_type,
-        "is_sentence_level": bool(rendered_unit_type == "sentence"),
+        "is_sentence_level": bool(sentence_level),
         "is_chunk_like": bool(chunk_like_rate >= 0.5),
         "rendered_sentence_count": int(item_count),
         "chunk_like_rate": float(chunk_like_rate),
         "avg_tokens_per_rendered_item": float(avg_tokens),
         "avg_tokens_per_item": float(avg_tokens),
-        "max_item_tokens": int(max(token_counts) if token_counts else 0),
+        "max_item_tokens": int(max_tokens),
     }
 
 

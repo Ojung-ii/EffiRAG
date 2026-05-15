@@ -24,6 +24,10 @@ def test_hotpotqa_unified_profile_does_not_enable_hotpot_guard_at_runtime():
         "unified_candidate_recall_boost_dynamic_v1",
         "unified_candidate_recall_boost_density_rerank_v1",
         "unified_gl_rcedr_v1",
+        "unified_gl_rcedr_v1_sentence_contract",
+        "unified_gl_rcedr_v1_sentence_contract_no_item_cap",
+        "unified_gl_rcedr_v1_sentence_contract_metadata_on",
+        "unified_gl_rcedr_v1_sentence_contract_span40",
         "unified_gl_rcedr_no_dynamic_control",
         "unified_gl_rcedr_no_stability",
         "unified_gl_rcedr_no_bridge_path",
@@ -61,6 +65,10 @@ def test_hotpotqa_unified_profile_does_not_enable_hotpot_guard_at_runtime():
             "unified_candidate_recall_boost_dynamic_v1",
             "unified_candidate_recall_boost_density_rerank_v1",
             "unified_gl_rcedr_v1",
+            "unified_gl_rcedr_v1_sentence_contract",
+            "unified_gl_rcedr_v1_sentence_contract_no_item_cap",
+            "unified_gl_rcedr_v1_sentence_contract_metadata_on",
+            "unified_gl_rcedr_v1_sentence_contract_span40",
             "unified_gl_rcedr_no_dynamic_control",
             "unified_gl_rcedr_no_stability",
             "unified_gl_rcedr_no_bridge_path",
@@ -80,6 +88,10 @@ def test_hotpotqa_unified_profile_does_not_enable_hotpot_guard_at_runtime():
             assert cfg.dataset_specific_branch_enabled is False
         if profile in {
             "unified_gl_rcedr_v1",
+            "unified_gl_rcedr_v1_sentence_contract",
+            "unified_gl_rcedr_v1_sentence_contract_no_item_cap",
+            "unified_gl_rcedr_v1_sentence_contract_metadata_on",
+            "unified_gl_rcedr_v1_sentence_contract_span40",
             "unified_gl_rcedr_no_dynamic_control",
             "unified_gl_rcedr_no_stability",
             "unified_gl_rcedr_no_bridge_path",
@@ -140,6 +152,30 @@ def test_hotpotqa_unified_profile_does_not_enable_hotpot_guard_at_runtime():
             assert cfg.gl_rcedr_stability_enabled is True
             assert cfg.gl_rcedr_bridge_path_enabled is True
             assert cfg.gl_rcedr_density_first_ablation_enabled is False
+        if profile == "unified_gl_rcedr_v1_sentence_contract":
+            assert cfg.sentence_contract_render_enabled is True
+            assert cfg.sentence_contract_max_item_tokens == 32
+            assert cfg.sentence_contract_metadata_pruning is True
+            assert cfg.sentence_contract_chunk_expansion_allowed is False
+            assert cfg.sentence_contract_preserve_selected_items is True
+        if profile == "unified_gl_rcedr_v1_sentence_contract_no_item_cap":
+            assert cfg.sentence_contract_render_enabled is True
+            assert cfg.sentence_contract_max_item_tokens is None
+            assert cfg.sentence_contract_metadata_pruning is True
+            assert cfg.sentence_contract_chunk_expansion_allowed is False
+            assert cfg.sentence_contract_preserve_selected_items is True
+        if profile == "unified_gl_rcedr_v1_sentence_contract_metadata_on":
+            assert cfg.sentence_contract_render_enabled is True
+            assert cfg.sentence_contract_max_item_tokens == 32
+            assert cfg.sentence_contract_metadata_pruning is False
+            assert cfg.sentence_contract_chunk_expansion_allowed is False
+            assert cfg.sentence_contract_preserve_selected_items is True
+        if profile == "unified_gl_rcedr_v1_sentence_contract_span40":
+            assert cfg.sentence_contract_render_enabled is True
+            assert cfg.sentence_contract_max_item_tokens == 40
+            assert cfg.sentence_contract_metadata_pruning is True
+            assert cfg.sentence_contract_chunk_expansion_allowed is False
+            assert cfg.sentence_contract_preserve_selected_items is True
         if profile == "unified_gl_rcedr_no_dynamic_control":
             assert cfg.gl_rcedr_dynamic_control_enabled is False
             assert cfg.gl_rcedr_stability_enabled is True

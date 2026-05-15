@@ -372,3 +372,10 @@ max_neighbors_per_selected: 1
 max_context_sentences_per_selected: 1
 max_bridge_context_sentences: 2
 max_path_context_sentences: 2
+sentence_contract_render_enabled: false
+sentence_contract_max_item_tokens: null
+sentence_contract_metadata_pruning: true
+sentence_contract_chunk_expansion_allowed: false
+sentence_contract_preserve_selected_items: true
+sentence_contract_minimal_span_fallback: true
+sentence_contract_log_diagnostics: true

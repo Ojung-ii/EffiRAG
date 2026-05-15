@@ -26,6 +26,10 @@ PROFILES = [
     "unified_candidate_recall_boost_dynamic_v1",
     "unified_candidate_recall_boost_density_rerank_v1",
     "unified_gl_rcedr_v1",
+    "unified_gl_rcedr_v1_sentence_contract",
+    "unified_gl_rcedr_v1_sentence_contract_no_item_cap",
+    "unified_gl_rcedr_v1_sentence_contract_metadata_on",
+    "unified_gl_rcedr_v1_sentence_contract_span40",
     "unified_gl_rcedr_no_dynamic_control",
     "unified_gl_rcedr_no_stability",
     "unified_gl_rcedr_no_bridge_path",
@@ -57,6 +61,10 @@ LIGHTSEP_PROFILES = {
     "unified_candidate_recall_boost_dynamic_v1",
     "unified_candidate_recall_boost_density_rerank_v1",
     "unified_gl_rcedr_v1",
+    "unified_gl_rcedr_v1_sentence_contract",
+    "unified_gl_rcedr_v1_sentence_contract_no_item_cap",
+    "unified_gl_rcedr_v1_sentence_contract_metadata_on",
+    "unified_gl_rcedr_v1_sentence_contract_span40",
     "unified_gl_rcedr_no_dynamic_control",
     "unified_gl_rcedr_no_stability",
     "unified_gl_rcedr_no_bridge_path",
@@ -80,6 +88,10 @@ CANDIDATE_RECALL_BOOST_PROFILES = {
     "unified_candidate_recall_boost_dynamic_v1",
     "unified_candidate_recall_boost_density_rerank_v1",
     "unified_gl_rcedr_v1",
+    "unified_gl_rcedr_v1_sentence_contract",
+    "unified_gl_rcedr_v1_sentence_contract_no_item_cap",
+    "unified_gl_rcedr_v1_sentence_contract_metadata_on",
+    "unified_gl_rcedr_v1_sentence_contract_span40",
     "unified_gl_rcedr_no_dynamic_control",
     "unified_gl_rcedr_no_stability",
     "unified_gl_rcedr_no_bridge_path",
@@ -93,6 +105,10 @@ CANDIDATE_RECALL_BOOST_PROFILES = {
 
 GL_RCEDR_PROFILES = {
     "unified_gl_rcedr_v1",
+    "unified_gl_rcedr_v1_sentence_contract",
+    "unified_gl_rcedr_v1_sentence_contract_no_item_cap",
+    "unified_gl_rcedr_v1_sentence_contract_metadata_on",
+    "unified_gl_rcedr_v1_sentence_contract_span40",
     "unified_gl_rcedr_no_dynamic_control",
     "unified_gl_rcedr_no_stability",
     "unified_gl_rcedr_no_bridge_path",
@@ -161,6 +177,10 @@ def test_unified_budget_is_profile_selected_not_dataset_selected():
     assert observed_by_profile["unified_candidate_recall_boost_dynamic_v1"] == (45, 24, 24)
     assert observed_by_profile["unified_candidate_recall_boost_density_rerank_v1"] == (45, 24, 24)
     assert observed_by_profile["unified_gl_rcedr_v1"] == (45, 24, 24)
+    assert observed_by_profile["unified_gl_rcedr_v1_sentence_contract"] == (45, 24, 24)
+    assert observed_by_profile["unified_gl_rcedr_v1_sentence_contract_no_item_cap"] == (45, 24, 24)
+    assert observed_by_profile["unified_gl_rcedr_v1_sentence_contract_metadata_on"] == (45, 24, 24)
+    assert observed_by_profile["unified_gl_rcedr_v1_sentence_contract_span40"] == (45, 24, 24)
     assert observed_by_profile["unified_gl_rcedr_no_dynamic_control"] == (45, 24, 24)
     assert observed_by_profile["unified_gl_rcedr_no_stability"] == (45, 24, 24)
     assert observed_by_profile["unified_gl_rcedr_no_bridge_path"] == (45, 24, 24)
@@ -192,6 +212,10 @@ def test_enhanced_profile_policy_flags_are_global():
         "copy_span_instruction_unified_dynamic_contextual_compact_v3",
         "copy_span_instruction_unified_candidate_recall_boost_dynamic_v1",
         "copy_span_instruction_unified_gl_rcedr_v1",
+        "copy_span_instruction_unified_gl_rcedr_v1_sentence_contract",
+        "copy_span_instruction_unified_gl_rcedr_v1_sentence_contract_no_item_cap",
+        "copy_span_instruction_unified_gl_rcedr_v1_sentence_contract_metadata_on",
+        "copy_span_instruction_unified_gl_rcedr_v1_sentence_contract_span40",
         "copy_span_instruction_unified_gl_rcedr_no_dynamic_control",
         "copy_span_instruction_unified_gl_rcedr_no_stability",
         "copy_span_instruction_unified_gl_rcedr_no_bridge_path",
@@ -257,6 +281,39 @@ def test_enhanced_profile_policy_flags_are_global():
                 assert cfg["gl_rcedr_stability_enabled"] is True
                 assert cfg["gl_rcedr_bridge_path_enabled"] is True
                 assert cfg["gl_rcedr_density_first_ablation_enabled"] is False
+            if profile == "unified_gl_rcedr_v1_sentence_contract":
+                assert cfg["gl_rcedr_dynamic_control_enabled"] is True
+                assert cfg["gl_rcedr_stability_enabled"] is True
+                assert cfg["gl_rcedr_bridge_path_enabled"] is True
+                assert cfg["gl_rcedr_density_first_ablation_enabled"] is False
+                assert cfg["sentence_contract_render_enabled"] is True
+                assert cfg["sentence_contract_max_item_tokens"] == 32
+                assert cfg["sentence_contract_metadata_pruning"] is True
+                assert cfg["sentence_contract_chunk_expansion_allowed"] is False
+                assert cfg["sentence_contract_preserve_selected_items"] is True
+                assert cfg["sentence_contract_minimal_span_fallback"] is True
+                assert cfg["sentence_contract_log_diagnostics"] is True
+            if profile == "unified_gl_rcedr_v1_sentence_contract_no_item_cap":
+                assert cfg["sentence_contract_render_enabled"] is True
+                assert cfg["sentence_contract_max_item_tokens"] is None
+                assert cfg["sentence_contract_metadata_pruning"] is True
+                assert cfg["sentence_contract_chunk_expansion_allowed"] is False
+                assert cfg["sentence_contract_preserve_selected_items"] is True
+                assert cfg["sentence_contract_minimal_span_fallback"] is True
+            if profile == "unified_gl_rcedr_v1_sentence_contract_metadata_on":
+                assert cfg["sentence_contract_render_enabled"] is True
+                assert cfg["sentence_contract_max_item_tokens"] == 32
+                assert cfg["sentence_contract_metadata_pruning"] is False
+                assert cfg["sentence_contract_chunk_expansion_allowed"] is False
+                assert cfg["sentence_contract_preserve_selected_items"] is True
+                assert cfg["sentence_contract_minimal_span_fallback"] is True
+            if profile == "unified_gl_rcedr_v1_sentence_contract_span40":
+                assert cfg["sentence_contract_render_enabled"] is True
+                assert cfg["sentence_contract_max_item_tokens"] == 40
+                assert cfg["sentence_contract_metadata_pruning"] is True
+                assert cfg["sentence_contract_chunk_expansion_allowed"] is False
+                assert cfg["sentence_contract_preserve_selected_items"] is True
+                assert cfg["sentence_contract_minimal_span_fallback"] is True
             if profile == "unified_gl_rcedr_no_dynamic_control":
                 assert cfg["gl_rcedr_dynamic_control_enabled"] is False
                 assert cfg["gl_rcedr_stability_enabled"] is True

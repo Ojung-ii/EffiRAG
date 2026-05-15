@@ -4,6 +4,7 @@ from .canonical_scoring import canonical_sentence_score
 from .compact_render import render_selected_centered_contextual_context, render_selected_only_context
 from .dynamic_compact_selector import select_dynamic_compact_evidence
 from .metrics import supporting_fact_match_details
+from .sentence_contract_render import apply_sentence_level_evidence_contract
 from .utils import content_tokens
 
 
@@ -3133,6 +3134,13 @@ def render_context(
     max_context_sentences_per_selected=1,
     max_bridge_context_sentences=2,
     max_path_context_sentences=2,
+    sentence_contract_render_enabled=False,
+    sentence_contract_max_item_tokens=None,
+    sentence_contract_metadata_pruning=True,
+    sentence_contract_chunk_expansion_allowed=False,
+    sentence_contract_preserve_selected_items=True,
+    sentence_contract_minimal_span_fallback=True,
+    sentence_contract_log_diagnostics=True,
 ):
     mode = str(render_mode or "flat").strip().lower()
     rendered = None
@@ -3235,28 +3243,38 @@ def render_context(
             "native_chunk_context": bool(_selected_unit_type(retrieval_result) == "chunk"),
         })
         rendered.metadata = meta
-        return _attach_stagewise_render_diagnostics(sample=sample, retrieval_result=retrieval_result, rendered=rendered)
+    else:
+        if bool(chunk_grounding_enabled):
+            rendered = _apply_chunk_grounding(
+                sample=sample,
+                retrieval_result=retrieval_result,
+                rendered=rendered,
+                max_context_sentences=max_context_sentences,
+                chunk_grounding_mode=chunk_grounding_mode,
+                chunk_excerpt_max_per_corridor=chunk_excerpt_max_per_corridor,
+                chunk_excerpt_window_sentences_before=chunk_excerpt_window_sentences_before,
+                chunk_excerpt_window_sentences_after=chunk_excerpt_window_sentences_after,
+                chunk_excerpt_max_total_sentences=chunk_excerpt_max_total_sentences,
+                chunk_excerpt_dedup_enabled=chunk_excerpt_dedup_enabled,
+                chunk_grounding_top_corridor_chunks=chunk_grounding_top_corridor_chunks,
+                chunk_grounding_top_k_packages=chunk_grounding_top_k_packages,
+                package_score_answer_weight=package_score_answer_weight,
+                package_score_bridge_weight=package_score_bridge_weight,
+                package_score_support_weight=package_score_support_weight,
+                package_score_chunk_grounding_weight=package_score_chunk_grounding_weight,
+                package_score_redundancy_weight=package_score_redundancy_weight,
+            )
 
-    if not bool(chunk_grounding_enabled):
-        return _attach_stagewise_render_diagnostics(sample=sample, retrieval_result=retrieval_result, rendered=rendered)
-
-    rendered = _apply_chunk_grounding(
+    rendered = apply_sentence_level_evidence_contract(
         sample=sample,
         retrieval_result=retrieval_result,
         rendered=rendered,
-        max_context_sentences=max_context_sentences,
-        chunk_grounding_mode=chunk_grounding_mode,
-        chunk_excerpt_max_per_corridor=chunk_excerpt_max_per_corridor,
-        chunk_excerpt_window_sentences_before=chunk_excerpt_window_sentences_before,
-        chunk_excerpt_window_sentences_after=chunk_excerpt_window_sentences_after,
-        chunk_excerpt_max_total_sentences=chunk_excerpt_max_total_sentences,
-        chunk_excerpt_dedup_enabled=chunk_excerpt_dedup_enabled,
-        chunk_grounding_top_corridor_chunks=chunk_grounding_top_corridor_chunks,
-        chunk_grounding_top_k_packages=chunk_grounding_top_k_packages,
-        package_score_answer_weight=package_score_answer_weight,
-        package_score_bridge_weight=package_score_bridge_weight,
-        package_score_support_weight=package_score_support_weight,
-        package_score_chunk_grounding_weight=package_score_chunk_grounding_weight,
-        package_score_redundancy_weight=package_score_redundancy_weight,
+        sentence_contract_render_enabled=bool(sentence_contract_render_enabled),
+        sentence_contract_max_item_tokens=sentence_contract_max_item_tokens,
+        sentence_contract_metadata_pruning=bool(sentence_contract_metadata_pruning),
+        sentence_contract_chunk_expansion_allowed=bool(sentence_contract_chunk_expansion_allowed),
+        sentence_contract_preserve_selected_items=bool(sentence_contract_preserve_selected_items),
+        sentence_contract_minimal_span_fallback=bool(sentence_contract_minimal_span_fallback),
+        sentence_contract_log_diagnostics=bool(sentence_contract_log_diagnostics),
     )
     return _attach_stagewise_render_diagnostics(sample=sample, retrieval_result=retrieval_result, rendered=rendered)

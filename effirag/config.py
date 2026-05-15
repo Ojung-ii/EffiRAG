@@ -453,6 +453,14 @@ class RagConfig(RetrievalConfig):
     max_context_sentences_per_selected: int = 1
     max_bridge_context_sentences: int = 2
     max_path_context_sentences: int = 2
+    # Sentence-level evidence contract (render-only; retrieval/selection invariance).
+    sentence_contract_render_enabled: bool = False
+    sentence_contract_max_item_tokens: int | None = None
+    sentence_contract_metadata_pruning: bool = True
+    sentence_contract_chunk_expansion_allowed: bool = False
+    sentence_contract_preserve_selected_items: bool = True
+    sentence_contract_minimal_span_fallback: bool = True
+    sentence_contract_log_diagnostics: bool = True
     # score | retrieval | corridor_rank | query_bridge_answer
     # corridor_aware_flat flags:
     # +raw_focus_front +raw_focus_dedup +raw_focus_scaffold_light +raw_focus_top1_bundle_only(+top2)
@@ -570,6 +578,12 @@ def apply_cli_overrides(config_dict, args_namespace):
         "render_deduplicate_selected_text",
         "render_deduplicate_context_text",
         "render_enforce_actual_prompt_budget",
+        "sentence_contract_render_enabled",
+        "sentence_contract_metadata_pruning",
+        "sentence_contract_chunk_expansion_allowed",
+        "sentence_contract_preserve_selected_items",
+        "sentence_contract_minimal_span_fallback",
+        "sentence_contract_log_diagnostics",
     ):
         if key in merged:
             merged[key] = parse_bool(merged[key])
