@@ -4,6 +4,7 @@ set -euo pipefail
 cd /home/ojungii/EffiRAG
 
 PYTHON="${PYTHON:-/home/ojungii/miniconda3/envs/effirag/bin/python}"
+PYTHONPATH_ENV="${PYTHONPATH_ENV:-.}"
 OUT_ROOT="${OUT_ROOT:-outputs/phase6j_champion_bottleneck_audit}"
 DATASETS="${DATASETS:-hotpotqa 2wikimultihopqa}"
 
@@ -25,7 +26,7 @@ echo "=== Phase-6J Champion Bottleneck Audit ==="
 echo "OUT_ROOT=${OUT_ROOT}"
 echo "DATASETS=${DATASETS}"
 
-"${PYTHON}" scripts/audit_champion_bottlenecks.py \
+PYTHONPATH="${PYTHONPATH_ENV}" "${PYTHON}" scripts/audit_champion_bottlenecks.py \
   --datasets ${DATASETS} \
   --profiles \
     legacy_sota \
@@ -49,4 +50,3 @@ echo "DATASETS=${DATASETS}"
 
 echo "=== done ==="
 echo "Report expected at: ${OUT_ROOT}/PHASE6J_CHAMPION_BOTTLENECK_AUDIT.md"
-
