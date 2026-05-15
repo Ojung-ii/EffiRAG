@@ -3,6 +3,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Dict, Iterable, List, Mapping, Sequence, Set, Tuple
 
+from .marginal_evidence_utility import (
+    MarginalUtilityWeights,
+    marginal_evidence_utility,
+    resolve_adaptive_bridge_lambda,
+)
 from .utils import content_tokens
 
 
@@ -154,6 +159,75 @@ def select_best_seed_set(
     return best, score_map
 
 
+def score_seed_set_v2(
+    seed_set: SeedSetCandidate,
+    *,
+    weights: MarginalUtilityWeights,
+    bridge_lambda: float,
+    seed_stability_weight: float,
+    seed_diversity_weight: float,
+    use_stability: bool,
+    use_bridge_path: bool,
+    redundancy_enabled: bool,
+    cost_enabled: bool,
+    density_first: bool,
+) -> float:
+    evidence_gain = float(seed_set.recall_proxy) + float(seed_diversity_weight) * float(seed_set.diversity_proxy)
+    if use_stability:
+        evidence_gain += float(seed_stability_weight) * float(seed_set.stability_proxy)
+    evidence_gain = float(max(0.0, min(1.0, evidence_gain)))
+    bridge_gain = float(seed_set.bridge_path_proxy) if use_bridge_path else 0.0
+    return marginal_evidence_utility(
+        evidence_gain=evidence_gain,
+        bridge_gain=bridge_gain,
+        redundancy=float(seed_set.redundancy_penalty),
+        token_cost=float(seed_set.compactness_penalty),
+        weights=weights,
+        bridge_lambda=float(bridge_lambda),
+        redundancy_enabled=bool(redundancy_enabled),
+        cost_enabled=bool(cost_enabled),
+        density_first=bool(density_first),
+    )
+
+
+def select_best_seed_set_v2(
+    seed_sets: Sequence[SeedSetCandidate],
+    *,
+    weights: MarginalUtilityWeights,
+    bridge_lambda: float,
+    seed_stability_weight: float,
+    seed_diversity_weight: float,
+    use_stability: bool,
+    use_bridge_path: bool,
+    redundancy_enabled: bool,
+    cost_enabled: bool,
+    density_first: bool,
+) -> Tuple[SeedSetCandidate | None, Dict[str, float]]:
+    if not seed_sets:
+        return None, {}
+    score_map: Dict[str, float] = {}
+    best = None
+    best_score = float("-inf")
+    for item in list(seed_sets):
+        sc = score_seed_set_v2(
+            item,
+            weights=weights,
+            bridge_lambda=bridge_lambda,
+            seed_stability_weight=seed_stability_weight,
+            seed_diversity_weight=seed_diversity_weight,
+            use_stability=use_stability,
+            use_bridge_path=use_bridge_path,
+            redundancy_enabled=redundancy_enabled,
+            cost_enabled=cost_enabled,
+            density_first=density_first,
+        )
+        score_map[item.seed_set_id] = float(sc)
+        if sc > best_score:
+            best_score = float(sc)
+            best = item
+    return best, score_map
+
+
 def _safe_slice(nodes: Sequence[str], k: int) -> List[str]:
     return [str(x) for x in list(nodes or [])[: max(1, int(k))]]
 
@@ -292,6 +366,269 @@ def _build_seed_set_candidates(
     return out
 
 
+def _apply_gl_rcedr_v2(
+    *,
+    question_text: str,
+    selected_sentence_ids: Sequence[str],
+    selected_sentences: Sequence[str],
+    sentence_feature_table: Mapping[str, Mapping[str, Any]] | None,
+    cfg: Any,
+) -> Tuple[List[str], List[str], Dict[str, Any]]:
+    base_ids, base_texts = _ordered_unique(list(selected_sentence_ids or []), list(selected_sentences or []))
+    if not base_ids:
+        return list(base_ids), list(base_texts), {
+            "enabled": True,
+            "applied": False,
+            "reason": "empty",
+            "version": "v2",
+        }
+
+    feature_table = dict(sentence_feature_table or {})
+    text_map = {sid: txt for sid, txt in zip(base_ids, base_texts)}
+    token_map = {sid: set(content_tokens(text_map.get(sid, ""))) for sid in base_ids}
+    token_count_map = {sid: len(token_map.get(sid, set())) for sid in base_ids}
+    source_map = {sid: _source_key(sid) for sid in base_ids}
+    question_tokens = set(content_tokens(str(question_text or "")))
+
+    semantic_raw = {sid: float((feature_table.get(sid, {}) or {}).get("base_retrieval_score", 0.0)) for sid in base_ids}
+    semantic_norm = _normalize(semantic_raw)
+
+    bridge_path_enabled = bool(getattr(cfg, "gl_rcedr_bridge_path_enabled", True))
+    bridge_path_scores = {
+        sid: _bridge_path_utility(dict(feature_table.get(sid, {}) or {}), bridge_path_enabled)
+        for sid in base_ids
+    }
+
+    corridor_groups: List[str] = []
+    for sid in base_ids:
+        feat = dict(feature_table.get(sid, {}) or {})
+        corridor_groups.extend([str(cid) for cid in list(feat.get("corridor_ids", []) or []) if str(cid)])
+    graph_dispersion = float(len(set(corridor_groups)) / float(max(1, len(base_ids))))
+
+    coverage_saturation = 0.0
+    if question_tokens:
+        top_semantic = sorted(base_ids, key=lambda x: float(semantic_norm.get(x, 0.0)), reverse=True)[
+            : max(4, int(len(base_ids) * 0.4))
+        ]
+        covered_q = set()
+        for sid in top_semantic:
+            covered_q.update(token_map.get(sid, set()).intersection(question_tokens))
+        coverage_saturation = float(len(covered_q) / float(max(1, len(question_tokens))))
+
+    redundancy_vals: List[float] = []
+    ranked_for_overlap = sorted(base_ids, key=lambda x: float(semantic_norm.get(x, 0.0)), reverse=True)
+    for i in range(len(ranked_for_overlap)):
+        a = ranked_for_overlap[i]
+        for j in range(i + 1, min(len(ranked_for_overlap), i + 4)):
+            b = ranked_for_overlap[j]
+            redundancy_vals.append(_jaccard(token_map.get(a, set()), token_map.get(b, set())))
+    redundancy_ratio = float(sum(redundancy_vals) / float(max(1, len(redundancy_vals))))
+
+    weights = MarginalUtilityWeights(
+        evidence_gain=float(getattr(cfg, "gl_rcedr_v2_evidence_gain_weight", 0.52)),
+        bridge_gain=float(getattr(cfg, "gl_rcedr_v2_bridge_gain_weight", 0.28)),
+        redundancy=float(getattr(cfg, "gl_rcedr_v2_redundancy_weight", 0.22)),
+        token_cost=float(getattr(cfg, "gl_rcedr_v2_cost_weight", 0.14)),
+    )
+    adaptive_bridge_enabled = bool(getattr(cfg, "gl_rcedr_v2_adaptive_bridge_enabled", True))
+    bridge_lambda = resolve_adaptive_bridge_lambda(
+        graph_dispersion=graph_dispersion,
+        base=float(getattr(cfg, "gl_rcedr_v2_bridge_lambda_base", 1.0)),
+        alpha=float(getattr(cfg, "gl_rcedr_v2_bridge_lambda_alpha", 0.30)),
+        minimum=float(getattr(cfg, "gl_rcedr_v2_bridge_lambda_min", 0.85)),
+        maximum=float(getattr(cfg, "gl_rcedr_v2_bridge_lambda_max", 1.35)),
+        adaptive_enabled=adaptive_bridge_enabled,
+    )
+    stability_enabled = bool(getattr(cfg, "gl_rcedr_stability_enabled", True))
+    redundancy_enabled = bool(getattr(cfg, "gl_rcedr_v2_redundancy_enabled", True))
+    cost_enabled = bool(getattr(cfg, "gl_rcedr_v2_cost_enabled", True))
+    density_first = bool(getattr(cfg, "gl_rcedr_v2_density_first_enabled", False))
+
+    seed_topk = max(2, int(getattr(cfg, "gl_rcedr_seed_topk", 6)))
+    seed_sets = _build_seed_set_candidates(
+        sentence_ids=base_ids,
+        question_tokens=question_tokens,
+        token_map=token_map,
+        token_count_map=token_count_map,
+        source_map=source_map,
+        semantic_norm=semantic_norm,
+        bridge_path_scores=bridge_path_scores,
+        feature_table=feature_table,
+        seed_topk=seed_topk,
+        bridge_path_enabled=bridge_path_enabled,
+        stability_enabled=stability_enabled,
+    )
+    best_seed_set, seed_scores = select_best_seed_set_v2(
+        seed_sets,
+        weights=weights,
+        bridge_lambda=bridge_lambda,
+        seed_stability_weight=float(getattr(cfg, "gl_rcedr_v2_seed_stability_weight", 0.15)),
+        seed_diversity_weight=float(getattr(cfg, "gl_rcedr_v2_seed_diversity_weight", 0.15)),
+        use_stability=stability_enabled,
+        use_bridge_path=bridge_path_enabled,
+        redundancy_enabled=redundancy_enabled,
+        cost_enabled=cost_enabled,
+        density_first=density_first,
+    )
+
+    max_selected = max(1, int(getattr(cfg, "gl_rcedr_v2_max_selected_candidates", 24)))
+    max_rendered = max(1, int(getattr(cfg, "gl_rcedr_v2_max_rendered_candidates", 24)))
+    max_count = min(max_selected, max_rendered, len(base_ids))
+    max_tokens = max(1, int(getattr(cfg, "gl_rcedr_v2_max_rendered_tokens", 360)))
+    min_keep = max(1, int(getattr(cfg, "min_render_topn", 6)))
+    core_preserve_threshold = float(getattr(cfg, "gl_rcedr_v2_core_preserve_threshold", 0.56))
+    bridge_preserve_threshold = float(getattr(cfg, "gl_rcedr_v2_bridge_preserve_threshold", 0.46))
+
+    ranked_ids = sorted(base_ids, key=lambda sid: float(semantic_norm.get(sid, 0.0)), reverse=True)
+    seed_boost = set(best_seed_set.sentence_ids if best_seed_set is not None else ())
+    selected: List[str] = []
+    selected_tokens = 0
+    selected_sources: Set[str] = set()
+    covered_q_terms: Set[str] = set()
+    covered_content_terms: Set[str] = set()
+
+    preserve_scores: Dict[str, float] = {}
+    for sid in ranked_ids:
+        q_gain = float(len(token_map.get(sid, set()).intersection(question_tokens))) / float(max(1, len(question_tokens)))
+        core_gain = float(0.60 * float(semantic_norm.get(sid, 0.0)) + 0.25 * q_gain + 0.15 * float(bridge_path_scores.get(sid, 0.0)))
+        if sid in seed_boost:
+            core_gain = float(min(1.0, core_gain + 0.08))
+        preserve_scores[sid] = core_gain
+
+    core_ids: List[str] = []
+    if not density_first:
+        for sid in ranked_ids:
+            if sid in seed_boost:
+                core_ids.append(sid)
+                continue
+            if float(preserve_scores.get(sid, 0.0)) >= core_preserve_threshold:
+                core_ids.append(sid)
+                continue
+            if float(bridge_path_scores.get(sid, 0.0)) >= bridge_preserve_threshold:
+                core_ids.append(sid)
+                continue
+
+    for sid in core_ids:
+        if sid in selected:
+            continue
+        tok = int(token_count_map.get(sid, 0))
+        if selected_tokens + tok > max_tokens and len(selected) >= min_keep:
+            continue
+        selected.append(sid)
+        selected_tokens += tok
+        skey = str(source_map.get(sid, "") or "")
+        if skey:
+            selected_sources.add(skey)
+        covered_q_terms.update(token_map.get(sid, set()).intersection(question_tokens))
+        covered_content_terms.update(token_map.get(sid, set()))
+        if len(selected) >= max_count:
+            break
+
+    remaining = [sid for sid in ranked_ids if sid not in selected]
+    score_trace: Dict[str, Dict[str, float]] = {}
+    while remaining and len(selected) < max_count:
+        best_sid = None
+        best_score = float("-inf")
+        best_components: Dict[str, float] = {}
+        for sid in list(remaining):
+            sent_terms = token_map.get(sid, set())
+            sent_tok = int(token_count_map.get(sid, 0))
+            if selected_tokens + sent_tok > max_tokens and len(selected) >= min_keep:
+                continue
+
+            query_gain = float(len((sent_terms.intersection(question_tokens)) - covered_q_terms)) / float(max(1, len(question_tokens)))
+            lexical_gain = float(len([tok for tok in sent_terms if len(tok) >= 4 and tok not in covered_content_terms])) / float(
+                max(1, min(8, len(sent_terms) or 1))
+            )
+            evidence_gain = float(min(1.0, 0.55 * float(preserve_scores.get(sid, 0.0)) + 0.45 * min(1.0, 0.60 * query_gain + 0.40 * lexical_gain)))
+            bridge_gain = float(bridge_path_scores.get(sid, 0.0)) if bridge_path_enabled else 0.0
+            redundancy = 0.0
+            if selected:
+                redundancy = max(_jaccard(sent_terms, token_map.get(prev, set())) for prev in selected)
+                if str(source_map.get(sid, "") or "") in selected_sources:
+                    redundancy = min(1.0, redundancy + 0.12)
+            token_cost = _token_penalty(sent_tok)
+
+            score = marginal_evidence_utility(
+                evidence_gain=evidence_gain,
+                bridge_gain=bridge_gain,
+                redundancy=redundancy,
+                token_cost=token_cost,
+                weights=weights,
+                bridge_lambda=bridge_lambda,
+                redundancy_enabled=redundancy_enabled,
+                cost_enabled=cost_enabled,
+                density_first=density_first,
+            )
+            if score > best_score:
+                best_score = float(score)
+                best_sid = sid
+                best_components = {
+                    "evidence_gain": float(evidence_gain),
+                    "bridge_gain": float(bridge_gain),
+                    "redundancy": float(redundancy),
+                    "token_cost": float(token_cost),
+                    "bridge_lambda": float(bridge_lambda),
+                    "score": float(score),
+                }
+        if best_sid is None:
+            break
+        remaining.remove(best_sid)
+        selected.append(best_sid)
+        selected_tokens += int(token_count_map.get(best_sid, 0))
+        skey = str(source_map.get(best_sid, "") or "")
+        if skey:
+            selected_sources.add(skey)
+        covered_q_terms.update(token_map.get(best_sid, set()).intersection(question_tokens))
+        covered_content_terms.update(token_map.get(best_sid, set()))
+        score_trace[best_sid] = dict(best_components)
+
+    selected = selected[:max_count]
+    selected_texts = [text_map.get(sid, "") for sid in selected]
+    selected_set = set(selected)
+    diagnostics = {
+        "enabled": True,
+        "applied": bool(selected != base_ids),
+        "reason": "ok",
+        "version": "v2",
+        "candidate_count_before": int(len(base_ids)),
+        "selected_count_after": int(len(selected)),
+        "selected_core_count": int(len([sid for sid in selected if sid in set(core_ids)])),
+        "tokens_after": int(sum(int(token_count_map.get(sid, 0)) for sid in selected)),
+        "max_rendered_tokens": int(max_tokens),
+        "query_state": {
+            "graph_dispersion": float(graph_dispersion),
+            "coverage_saturation": float(coverage_saturation),
+            "redundancy_ratio": float(redundancy_ratio),
+        },
+        "unified_marginal_utility_enabled": True,
+        "adaptive_bridge_enabled": bool(adaptive_bridge_enabled),
+        "bridge_lambda": float(bridge_lambda),
+        "stability_enabled": bool(stability_enabled),
+        "bridge_path_enabled": bool(bridge_path_enabled),
+        "density_first_ablation_enabled": bool(density_first),
+        "redundancy_enabled": bool(redundancy_enabled),
+        "cost_enabled": bool(cost_enabled),
+        "weights": {
+            "evidence_gain": float(weights.evidence_gain),
+            "bridge_gain": float(weights.bridge_gain),
+            "redundancy": float(weights.redundancy),
+            "token_cost": float(weights.token_cost),
+        },
+        "seed_set_candidates": int(len(seed_sets)),
+        "selected_seed_set_id": str(best_seed_set.seed_set_id) if best_seed_set is not None else "",
+        "selected_seed_set": list(best_seed_set.sentence_ids) if best_seed_set is not None else [],
+        "seed_set_scores": dict(seed_scores),
+        "core_preserve_threshold": float(core_preserve_threshold),
+        "bridge_preserve_threshold": float(bridge_preserve_threshold),
+        "max_selected_candidates": int(max_selected),
+        "max_rendered_candidates": int(max_rendered),
+        "score_trace": dict(score_trace),
+        "core_sentence_ids": sorted([sid for sid in selected_set if sid in set(core_ids)]),
+    }
+    return selected, selected_texts, diagnostics
+
+
 def apply_gl_rcedr(
     *,
     question_text: str,
@@ -308,6 +645,15 @@ def apply_gl_rcedr(
             "applied": False,
             "reason": "disabled_or_empty",
         }
+
+    if bool(getattr(cfg, "unified_marginal_utility_enabled", False)):
+        return _apply_gl_rcedr_v2(
+            question_text=question_text,
+            selected_sentence_ids=base_ids,
+            selected_sentences=base_texts,
+            sentence_feature_table=sentence_feature_table,
+            cfg=cfg,
+        )
 
     feature_table = dict(sentence_feature_table or {})
     text_map = {sid: txt for sid, txt in zip(base_ids, base_texts)}

@@ -28,6 +28,11 @@ def test_hotpotqa_unified_profile_does_not_enable_hotpot_guard_at_runtime():
         "unified_gl_rcedr_no_stability",
         "unified_gl_rcedr_no_bridge_path",
         "unified_gl_rcedr_density_first_ablation",
+        "unified_gl_rcedr_v2",
+        "unified_gl_rcedr_v2_no_adaptive_bridge",
+        "unified_gl_rcedr_v2_no_cost",
+        "unified_gl_rcedr_v2_no_redundancy",
+        "unified_gl_rcedr_v2_density_first",
     ]
 
     for profile in profiles:
@@ -60,6 +65,11 @@ def test_hotpotqa_unified_profile_does_not_enable_hotpot_guard_at_runtime():
             "unified_gl_rcedr_no_stability",
             "unified_gl_rcedr_no_bridge_path",
             "unified_gl_rcedr_density_first_ablation",
+            "unified_gl_rcedr_v2",
+            "unified_gl_rcedr_v2_no_adaptive_bridge",
+            "unified_gl_rcedr_v2_no_cost",
+            "unified_gl_rcedr_v2_no_redundancy",
+            "unified_gl_rcedr_v2_density_first",
         }:
             assert cfg.bridge_candidate_induction_enabled is True
             assert cfg.path_candidate_expansion_enabled is True
@@ -74,12 +84,57 @@ def test_hotpotqa_unified_profile_does_not_enable_hotpot_guard_at_runtime():
             "unified_gl_rcedr_no_stability",
             "unified_gl_rcedr_no_bridge_path",
             "unified_gl_rcedr_density_first_ablation",
+            "unified_gl_rcedr_v2",
+            "unified_gl_rcedr_v2_no_adaptive_bridge",
+            "unified_gl_rcedr_v2_no_cost",
+            "unified_gl_rcedr_v2_no_redundancy",
+            "unified_gl_rcedr_v2_density_first",
         }:
             assert cfg.gl_rcedr_enabled is True
             assert cfg.answer_support_pinning_enabled is False
             assert cfg.corridor_answer_preserve_guarded_hotpot_enabled is False
             assert cfg.oracle_support_injection_enabled is False
             assert cfg.dataset_specific_branch_enabled is False
+        if profile in {
+            "unified_gl_rcedr_v2",
+            "unified_gl_rcedr_v2_no_adaptive_bridge",
+            "unified_gl_rcedr_v2_no_cost",
+            "unified_gl_rcedr_v2_no_redundancy",
+            "unified_gl_rcedr_v2_density_first",
+        }:
+            assert cfg.unified_marginal_utility_enabled is True
+            assert cfg.gl_rcedr_v2_evidence_gain_weight == 0.52
+            assert cfg.gl_rcedr_v2_bridge_gain_weight == 0.28
+            assert cfg.gl_rcedr_v2_redundancy_weight == 0.22
+            assert cfg.gl_rcedr_v2_cost_weight == 0.14
+            assert cfg.gl_rcedr_v2_max_selected_candidates == 24
+            assert cfg.gl_rcedr_v2_max_rendered_candidates == 24
+            assert cfg.gl_rcedr_v2_max_rendered_tokens == 360
+        if profile == "unified_gl_rcedr_v2":
+            assert cfg.gl_rcedr_v2_adaptive_bridge_enabled is True
+            assert cfg.gl_rcedr_v2_cost_enabled is True
+            assert cfg.gl_rcedr_v2_redundancy_enabled is True
+            assert cfg.gl_rcedr_v2_density_first_enabled is False
+        if profile == "unified_gl_rcedr_v2_no_adaptive_bridge":
+            assert cfg.gl_rcedr_v2_adaptive_bridge_enabled is False
+            assert cfg.gl_rcedr_v2_cost_enabled is True
+            assert cfg.gl_rcedr_v2_redundancy_enabled is True
+            assert cfg.gl_rcedr_v2_density_first_enabled is False
+        if profile == "unified_gl_rcedr_v2_no_cost":
+            assert cfg.gl_rcedr_v2_adaptive_bridge_enabled is True
+            assert cfg.gl_rcedr_v2_cost_enabled is False
+            assert cfg.gl_rcedr_v2_redundancy_enabled is True
+            assert cfg.gl_rcedr_v2_density_first_enabled is False
+        if profile == "unified_gl_rcedr_v2_no_redundancy":
+            assert cfg.gl_rcedr_v2_adaptive_bridge_enabled is True
+            assert cfg.gl_rcedr_v2_cost_enabled is True
+            assert cfg.gl_rcedr_v2_redundancy_enabled is False
+            assert cfg.gl_rcedr_v2_density_first_enabled is False
+        if profile == "unified_gl_rcedr_v2_density_first":
+            assert cfg.gl_rcedr_v2_adaptive_bridge_enabled is True
+            assert cfg.gl_rcedr_v2_cost_enabled is True
+            assert cfg.gl_rcedr_v2_redundancy_enabled is True
+            assert cfg.gl_rcedr_v2_density_first_enabled is True
         if profile == "unified_gl_rcedr_v1":
             assert cfg.gl_rcedr_dynamic_control_enabled is True
             assert cfg.gl_rcedr_stability_enabled is True

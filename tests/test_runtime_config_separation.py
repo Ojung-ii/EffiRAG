@@ -28,6 +28,11 @@ def test_runtime_precomputed_fields_do_not_change_unified_method_signature():
         "unified_gl_rcedr_no_stability",
         "unified_gl_rcedr_no_bridge_path",
         "unified_gl_rcedr_density_first_ablation",
+        "unified_gl_rcedr_v2",
+        "unified_gl_rcedr_v2_no_adaptive_bridge",
+        "unified_gl_rcedr_v2_no_cost",
+        "unified_gl_rcedr_v2_no_redundancy",
+        "unified_gl_rcedr_v2_density_first",
     ]
 
     for profile in profiles:

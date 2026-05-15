@@ -412,6 +412,27 @@ class RagConfig(RetrievalConfig):
     gl_rcedr_core_preserve_threshold: float = 0.56
     gl_rcedr_bridge_preserve_threshold: float = 0.46
     gl_rcedr_coverage_preserve_threshold: float = 0.38
+    # GL-RCEDR v2: unified marginal evidence utility.
+    unified_marginal_utility_enabled: bool = False
+    gl_rcedr_v2_adaptive_bridge_enabled: bool = True
+    gl_rcedr_v2_cost_enabled: bool = True
+    gl_rcedr_v2_redundancy_enabled: bool = True
+    gl_rcedr_v2_density_first_enabled: bool = False
+    gl_rcedr_v2_evidence_gain_weight: float = 0.52
+    gl_rcedr_v2_bridge_gain_weight: float = 0.28
+    gl_rcedr_v2_redundancy_weight: float = 0.22
+    gl_rcedr_v2_cost_weight: float = 0.14
+    gl_rcedr_v2_seed_stability_weight: float = 0.15
+    gl_rcedr_v2_seed_diversity_weight: float = 0.15
+    gl_rcedr_v2_bridge_lambda_base: float = 1.0
+    gl_rcedr_v2_bridge_lambda_alpha: float = 0.30
+    gl_rcedr_v2_bridge_lambda_min: float = 0.85
+    gl_rcedr_v2_bridge_lambda_max: float = 1.35
+    gl_rcedr_v2_max_selected_candidates: int = 24
+    gl_rcedr_v2_max_rendered_candidates: int = 24
+    gl_rcedr_v2_max_rendered_tokens: int = 360
+    gl_rcedr_v2_core_preserve_threshold: float = 0.56
+    gl_rcedr_v2_bridge_preserve_threshold: float = 0.46
     # Selector-aware compact rendering. These flags only affect the final
     # prompt assembly path and do not alter retrieval or selector scoring.
     selector_aware_render_enabled: bool = False
@@ -532,6 +553,11 @@ def apply_cli_overrides(config_dict, args_namespace):
         "gl_rcedr_stability_enabled",
         "gl_rcedr_bridge_path_enabled",
         "gl_rcedr_density_first_ablation_enabled",
+        "unified_marginal_utility_enabled",
+        "gl_rcedr_v2_adaptive_bridge_enabled",
+        "gl_rcedr_v2_cost_enabled",
+        "gl_rcedr_v2_redundancy_enabled",
+        "gl_rcedr_v2_density_first_enabled",
         "selector_aware_render_enabled",
         "render_selected_only",
         "render_selected_centered",
