@@ -94,3 +94,89 @@ def test_incomplete_metrics_handled_gracefully():
     )
     target = [r for r in frontier_rows if r["frontier_name"] == "qa_f1_vs_prompt_tokens"][0]
     assert target["pareto_status"] == "incomplete_metrics"
+
+
+def test_candidate_compression_summary_prioritizes_primary_baseline_gates():
+    mod = _load_module()
+    rows = [
+        {
+            "dataset": "hotpotqa",
+            "profile": "unified_large",
+            "qa_available": True,
+            "retrieval_available": True,
+            "F1": 0.40,
+            "prompt_tokens_avg": 700.0,
+            "rendered_tokens": 240.0,
+        },
+        {
+            "dataset": "2wikimultihopqa",
+            "profile": "unified_large",
+            "qa_available": True,
+            "retrieval_available": True,
+            "F1": 0.30,
+            "prompt_tokens_avg": 680.0,
+            "rendered_tokens": 230.0,
+        },
+        {
+            "dataset": "hotpotqa",
+            "profile": "candidate_good",
+            "qa_available": True,
+            "retrieval_available": True,
+            "F1": 0.41,
+            "prompt_tokens_avg": 650.0,
+            "rendered_tokens": 210.0,
+        },
+        {
+            "dataset": "2wikimultihopqa",
+            "profile": "candidate_good",
+            "qa_available": True,
+            "retrieval_available": True,
+            "F1": 0.31,
+            "prompt_tokens_avg": 640.0,
+            "rendered_tokens": 200.0,
+        },
+        {
+            "dataset": "hotpotqa",
+            "profile": "candidate_bad",
+            "qa_available": True,
+            "retrieval_available": True,
+            "F1": 0.35,
+            "prompt_tokens_avg": 760.0,
+            "rendered_tokens": 280.0,
+        },
+        {
+            "dataset": "2wikimultihopqa",
+            "profile": "candidate_bad",
+            "qa_available": True,
+            "retrieval_available": True,
+            "F1": 0.28,
+            "prompt_tokens_avg": 740.0,
+            "rendered_tokens": 260.0,
+        },
+    ]
+    mod._annotate_baseline_deltas(
+        rows=rows,
+        datasets=["hotpotqa", "2wikimultihopqa"],
+        primary_baseline_profile="unified_large",
+        teacher_reference_profile="legacy_sota",
+        external_baseline_profile="unified_gl_rcedr_v1",
+    )
+
+    frontier_rows = [
+        {"dataset": "hotpotqa", "profile": "candidate_good", "frontier_name": "qa_f1_vs_prompt_tokens", "pareto_status": "pareto"},
+        {"dataset": "2wikimultihopqa", "profile": "candidate_good", "frontier_name": "qa_f1_vs_prompt_tokens", "pareto_status": "pareto"},
+        {"dataset": "hotpotqa", "profile": "candidate_good", "frontier_name": "qa_f1_vs_rendered_tokens", "pareto_status": "pareto"},
+        {"dataset": "2wikimultihopqa", "profile": "candidate_good", "frontier_name": "qa_f1_vs_rendered_tokens", "pareto_status": "pareto"},
+    ]
+    summary = mod._build_candidate_compression_summary(
+        rows=rows,
+        frontier_rows=frontier_rows,
+        datasets=["hotpotqa", "2wikimultihopqa"],
+        primary_baseline_profile="unified_large",
+        teacher_reference_profile="legacy_sota",
+        external_baseline_profile="unified_gl_rcedr_v1",
+    )
+
+    assert summary
+    assert summary[0]["profile"] == "candidate_good"
+    assert bool(summary[0]["primary_gate_all"]) is True

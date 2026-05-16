@@ -284,6 +284,8 @@ def _build_markdown(
     lines.append("")
     lines.append("## 5. Recommendation")
     lines.append("")
+    lines.append("- Treat `legacy_sota` as teacher/reference, not a direct optimization target.")
+    lines.append("- Evaluate primary success against `unified_large` QA-token Pareto and additional external baseline comparisons.")
     lines.append("- Preserve dataset-agnostic query/evidence-adaptive framing.")
     lines.append("- Restrict main text to 1-2 primary candidates and report the rest as ablations.")
     lines.append("- Use QA-aware Pareto evidence for final method choice, not retrieval-only metrics alone.")

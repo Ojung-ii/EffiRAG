@@ -9,6 +9,9 @@ DATASETS="${DATASETS:-hotpotqa 2wikimultihopqa}"
 
 RETRIEVAL_AUDIT_ROOT="${RETRIEVAL_AUDIT_ROOT:-outputs/phase6m_adaptive_support_span_n100/audit}"
 QA_ROOT="${QA_ROOT:-outputs/phase6n_qa_pareto_validation_4way/qa_runs}"
+PRIMARY_BASELINE_PROFILE="${PRIMARY_BASELINE_PROFILE:-unified_large}"
+TEACHER_REFERENCE_PROFILE="${TEACHER_REFERENCE_PROFILE:-legacy_sota}"
+EXTERNAL_BASELINE_PROFILE="${EXTERNAL_BASELINE_PROFILE:-unified_gl_rcedr_v1}"
 
 mkdir -p "${OUT_ROOT}/logs"
 
@@ -20,10 +23,16 @@ PYTHONPATH=. "${PYTHON}" scripts/audit_method_complexity.py \
   2>&1 | tee "${OUT_ROOT}/logs/audit_method_complexity.log"
 
 echo "=== Phase-6O QA-aware Bottleneck Audit ==="
+echo "PRIMARY_BASELINE_PROFILE=${PRIMARY_BASELINE_PROFILE}"
+echo "TEACHER_REFERENCE_PROFILE=${TEACHER_REFERENCE_PROFILE}"
+echo "EXTERNAL_BASELINE_PROFILE=${EXTERNAL_BASELINE_PROFILE}"
 PYTHONPATH=. "${PYTHON}" scripts/audit_qa_aware_bottlenecks.py \
   --datasets ${DATASETS} \
   --qa-root "${QA_ROOT}" \
   --retrieval-audit-root "${RETRIEVAL_AUDIT_ROOT}" \
+  --primary-baseline-profile "${PRIMARY_BASELINE_PROFILE}" \
+  --teacher-reference-profile "${TEACHER_REFERENCE_PROFILE}" \
+  --external-baseline-profile "${EXTERNAL_BASELINE_PROFILE}" \
   --profiles \
     legacy_sota \
     unified_large \

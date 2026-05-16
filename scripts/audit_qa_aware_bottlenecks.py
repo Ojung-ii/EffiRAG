@@ -25,6 +25,9 @@ DEFAULT_PROFILES = [
     "unified_gl_rcedr_v1_adaptive_support_span_span40",
 ]
 REFERENCE_PROFILES = {"legacy_sota", "unified_large", "unified_gl_rcedr_v1"}
+PRIMARY_BASELINE_PROFILE_DEFAULT = "unified_large"
+TEACHER_REFERENCE_PROFILE_DEFAULT = "legacy_sota"
+EXTERNAL_BASELINE_PROFILE_DEFAULT = "unified_gl_rcedr_v1"
 
 
 def _safe_text(value: Any) -> str:
@@ -294,6 +297,170 @@ def _merge_qa_and_retrieval(
     return out
 
 
+def _annotate_baseline_deltas(
+    *,
+    rows: Sequence[Dict[str, Any]],
+    datasets: Sequence[str],
+    primary_baseline_profile: str,
+    teacher_reference_profile: str,
+    external_baseline_profile: str,
+) -> None:
+    index = {(_safe_text(r.get("dataset")), _safe_text(r.get("profile"))): r for r in rows}
+    for dataset in datasets:
+        primary = dict(index.get((dataset, primary_baseline_profile), {}) or {})
+        teacher = dict(index.get((dataset, teacher_reference_profile), {}) or {})
+        external = dict(index.get((dataset, external_baseline_profile), {}) or {})
+
+        for row in rows:
+            if _safe_text(row.get("dataset")) != dataset:
+                continue
+            f1 = _safe_float(row.get("F1", 0.0), 0.0)
+            prompt = _safe_float(row.get("prompt_tokens_avg", 0.0), 0.0)
+            rendered = _safe_float(row.get("rendered_tokens", 0.0), 0.0)
+
+            p_f1 = _safe_float(primary.get("F1", 0.0), 0.0)
+            p_prompt = _safe_float(primary.get("prompt_tokens_avg", 0.0), 0.0)
+            p_rendered = _safe_float(primary.get("rendered_tokens", 0.0), 0.0)
+            row["delta_F1_vs_primary_baseline"] = f1 - p_f1
+            row["delta_prompt_tokens_vs_primary_baseline"] = prompt - p_prompt
+            row["delta_rendered_tokens_vs_primary_baseline"] = rendered - p_rendered
+
+            t_f1 = _safe_float(teacher.get("F1", 0.0), 0.0)
+            t_prompt = _safe_float(teacher.get("prompt_tokens_avg", 0.0), 0.0)
+            t_rendered = _safe_float(teacher.get("rendered_tokens", 0.0), 0.0)
+            row["delta_F1_vs_teacher_reference"] = f1 - t_f1
+            row["delta_prompt_tokens_vs_teacher_reference"] = prompt - t_prompt
+            row["delta_rendered_tokens_vs_teacher_reference"] = rendered - t_rendered
+
+            e_f1 = _safe_float(external.get("F1", 0.0), 0.0)
+            e_prompt = _safe_float(external.get("prompt_tokens_avg", 0.0), 0.0)
+            e_rendered = _safe_float(external.get("rendered_tokens", 0.0), 0.0)
+            row["delta_F1_vs_external_baseline"] = f1 - e_f1
+            row["delta_prompt_tokens_vs_external_baseline"] = prompt - e_prompt
+            row["delta_rendered_tokens_vs_external_baseline"] = rendered - e_rendered
+
+            row["primary_baseline_profile"] = primary_baseline_profile
+            row["teacher_reference_profile"] = teacher_reference_profile
+            row["external_baseline_profile"] = external_baseline_profile
+
+
+def _build_candidate_compression_summary(
+    *,
+    rows: Sequence[Mapping[str, Any]],
+    frontier_rows: Sequence[Mapping[str, Any]],
+    datasets: Sequence[str],
+    primary_baseline_profile: str,
+    teacher_reference_profile: str,
+    external_baseline_profile: str,
+) -> List[Dict[str, Any]]:
+    _ = frontier_rows  # frontier CSV is still exported; summary computes target-aware non-domination directly.
+
+    def _non_dominated_status(
+        *,
+        dataset: str,
+        target_profile: str,
+        maximize: Sequence[str],
+        minimize: Sequence[str],
+    ) -> bool:
+        pool = [
+            r
+            for r in rows
+            if _safe_text(r.get("dataset")) == dataset
+            and _safe_text(r.get("profile")) != teacher_reference_profile
+            and bool(r.get("qa_available", False))
+            and bool(r.get("retrieval_available", False))
+        ]
+        target = None
+        for row in pool:
+            if _safe_text(row.get("profile")) == target_profile:
+                target = row
+                break
+        if target is None:
+            return False
+        for other in pool:
+            if _safe_text(other.get("profile")) == target_profile:
+                continue
+            if _dominates(other, target, maximize=maximize, minimize=minimize):
+                return False
+        return True
+
+    profiles = sorted({_safe_text(r.get("profile")) for r in rows if _safe_text(r.get("profile"))})
+    excluded = {primary_baseline_profile, teacher_reference_profile, external_baseline_profile}
+    summary: List[Dict[str, Any]] = []
+    for profile in profiles:
+        if profile in excluded:
+            continue
+        ds_rows = [r for r in rows if _safe_text(r.get("profile")) == profile and _safe_text(r.get("dataset")) in datasets]
+        if not ds_rows:
+            continue
+        primary_gate_pass = 0
+        prompt_pareto = 0
+        rendered_pareto = 0
+        f1_deltas: List[float] = []
+        prompt_reductions: List[float] = []
+        rendered_reductions: List[float] = []
+        for row in ds_rows:
+            dataset = _safe_text(row.get("dataset"))
+            f1_delta = _safe_float(row.get("delta_F1_vs_primary_baseline", 0.0), 0.0)
+            prompt_delta = _safe_float(row.get("delta_prompt_tokens_vs_primary_baseline", 0.0), 0.0)
+            rendered_delta = _safe_float(row.get("delta_rendered_tokens_vs_primary_baseline", 0.0), 0.0)
+            qa_ok = bool(row.get("qa_available", False))
+            retrieval_ok = bool(row.get("retrieval_available", False))
+            if qa_ok and retrieval_ok and f1_delta >= 0.0 and prompt_delta <= 0.0 and rendered_delta <= 0.0:
+                primary_gate_pass += 1
+            if _non_dominated_status(
+                dataset=dataset,
+                target_profile=profile,
+                maximize=["F1"],
+                minimize=["prompt_tokens_avg"],
+            ):
+                prompt_pareto += 1
+            if _non_dominated_status(
+                dataset=dataset,
+                target_profile=profile,
+                maximize=["F1"],
+                minimize=["rendered_tokens"],
+            ):
+                rendered_pareto += 1
+            f1_deltas.append(f1_delta)
+            prompt_reductions.append(-prompt_delta)
+            rendered_reductions.append(-rendered_delta)
+
+        dataset_count = len(ds_rows)
+        summary.append(
+            {
+                "profile": profile,
+                "dataset_count": dataset_count,
+                "primary_gate_pass_count": primary_gate_pass,
+                "primary_gate_all": primary_gate_pass == dataset_count and dataset_count > 0,
+                "qa_prompt_pareto_count": prompt_pareto,
+                "qa_rendered_pareto_count": rendered_pareto,
+                "qa_prompt_pareto_all": prompt_pareto == dataset_count and dataset_count > 0,
+                "qa_rendered_pareto_all": rendered_pareto == dataset_count and dataset_count > 0,
+                "mean_delta_F1_vs_primary_baseline": float(sum(f1_deltas) / max(1, len(f1_deltas))),
+                "mean_prompt_token_reduction_vs_primary_baseline": float(
+                    sum(prompt_reductions) / max(1, len(prompt_reductions))
+                ),
+                "mean_rendered_token_reduction_vs_primary_baseline": float(
+                    sum(rendered_reductions) / max(1, len(rendered_reductions))
+                ),
+            }
+        )
+
+    summary.sort(
+        key=lambda x: (
+            -_safe_int(x.get("primary_gate_pass_count", 0), 0),
+            -_safe_int(x.get("qa_prompt_pareto_count", 0), 0),
+            -_safe_int(x.get("qa_rendered_pareto_count", 0), 0),
+            -_safe_float(x.get("mean_delta_F1_vs_primary_baseline", 0.0), 0.0),
+            -_safe_float(x.get("mean_prompt_token_reduction_vs_primary_baseline", 0.0), 0.0),
+            -_safe_float(x.get("mean_rendered_token_reduction_vs_primary_baseline", 0.0), 0.0),
+            _safe_text(x.get("profile")),
+        )
+    )
+    return summary
+
+
 def _dominates(a: Mapping[str, Any], b: Mapping[str, Any], maximize: Sequence[str], minimize: Sequence[str]) -> bool:
     ge_all = True
     better_any = False
@@ -532,6 +699,10 @@ def _build_phase6o_markdown(
     taxonomy_rows: Sequence[Mapping[str, Any]],
     complexity_scan_rows: Sequence[Mapping[str, Any]],
     complexity_profile_rows: Sequence[Mapping[str, Any]],
+    primary_baseline_profile: str,
+    teacher_reference_profile: str,
+    external_baseline_profile: str,
+    candidate_summary_rows: Sequence[Mapping[str, Any]],
     decision_lines: Sequence[str],
 ) -> str:
     joined_index = {(_safe_text(r.get("dataset")), _safe_text(r.get("profile"))): dict(r) for r in joined_rows}
@@ -551,9 +722,15 @@ def _build_phase6o_markdown(
     lines.append("")
     lines.append("## 1. Purpose")
     lines.append("")
+    lines.append("1. `legacy_sota` is treated as teacher/reference, not a direct optimization target.")
     lines.append(
-        "This phase evaluates current GL-RCEDR/span profiles using QA F1, token efficiency, and retrieval evidence density jointly. It also audits whether the method has become dataset-specific or overly complex."
+        f"2. Primary target is QA-token Pareto improvement versus `{primary_baseline_profile}` and external baseline `{external_baseline_profile}`."
     )
+    lines.append(
+        "3. Evaluate whether GL-RCEDR/adaptive-support-span variants are Pareto-superior on QA F1, prompt tokens, rendered tokens, and evidence density."
+    )
+    lines.append("4. Audit risk that method appears dataset-specific or profile-engineered.")
+    lines.append("5. Provide evidence to compress main method candidates to 1-2 profiles.")
     lines.append("")
 
     lines.append("## 2. Method Complexity and Heuristic Risk")
@@ -562,7 +739,7 @@ def _build_phase6o_markdown(
     lines.append("|---|---|---|---|")
     lines.append(
         f"| dataset-specific branch scan | {len(complexity_scan_rows)} matches, high-risk={len(high_scan)} | "
-        f"{'high' if len(high_scan) > 0 else 'low'} | keep dataset-independent method logic and isolate legacy locked behavior |"
+        f"{'high' if len(high_scan) > 0 else 'low'} | keep dataset-independent method logic; keep `{teacher_reference_profile}` as reference only |"
     )
     lines.append(
         f"| unified profile complexity | profiles={len(complexity_profile_rows)}, high-complexity={len(high_complexity_profiles)} | "
@@ -571,6 +748,27 @@ def _build_phase6o_markdown(
     lines.append(
         "| reviewer framing | many similarly named variants can look like heuristic search | medium | emphasize query/evidence-adaptive signals with fixed global rules |"
     )
+    lines.append("")
+
+    lines.append("## 2.1 Candidate Compression Summary")
+    lines.append("")
+    lines.append(
+        f"| profile | primary_gate_pass_count | qa_prompt_pareto_count | qa_rendered_pareto_count | mean_delta_F1_vs_{primary_baseline_profile} | mean_prompt_token_reduction_vs_{primary_baseline_profile} | mean_rendered_token_reduction_vs_{primary_baseline_profile} |"
+    )
+    lines.append("|---|---:|---:|---:|---:|---:|---:|")
+    for row in candidate_summary_rows:
+        profile = _safe_text(row.get("profile"))
+        lines.append(
+            "| {} | {} | {} | {} | {} | {} | {} |".format(
+                profile,
+                _safe_int(row.get("primary_gate_pass_count", 0), 0),
+                _safe_int(row.get("qa_prompt_pareto_count", 0), 0),
+                _safe_int(row.get("qa_rendered_pareto_count", 0), 0),
+                _fmt(row.get("mean_delta_F1_vs_primary_baseline", 0.0)),
+                _fmt(row.get("mean_prompt_token_reduction_vs_primary_baseline", 0.0), 1),
+                _fmt(row.get("mean_rendered_token_reduction_vs_primary_baseline", 0.0), 1),
+            )
+        )
     lines.append("")
 
     lines.append("## 3. Joined QA + Retrieval Metrics")
@@ -596,6 +794,10 @@ def _build_phase6o_markdown(
     lines.append("")
 
     lines.append("## 4. Pareto Frontier")
+    lines.append("")
+    lines.append(
+        f"Note: global frontier includes reference profiles (teacher `{teacher_reference_profile}` and baselines). Main decision uses Section 2.1 primary-target gate."
+    )
     lines.append("")
     lines.append("| dataset | profile | F1 | prompt_tokens | rendered_tokens | pareto_status | note |")
     lines.append("|---|---|---:|---:|---:|---|---|")
@@ -667,6 +869,9 @@ def _build_phase6o_markdown(
     lines.append("## 8. Recommendation")
     lines.append("")
     lines.append("- Use QA-aware Pareto status plus mismatch taxonomy as the primary decision signal.")
+    lines.append(
+        f"- Optimize for Pareto superiority against `{primary_baseline_profile}`; use `{teacher_reference_profile}` only as teacher/reference context."
+    )
     lines.append("- Treat retrieval-only density gains as supportive, not decisive, when QA diverges.")
     lines.append("")
     return "\n".join(lines)
@@ -677,80 +882,46 @@ def _decision_recommendation(
     datasets: Sequence[str],
     joined_rows: Sequence[Mapping[str, Any]],
     frontier_rows: Sequence[Mapping[str, Any]],
+    candidate_summary_rows: Sequence[Mapping[str, Any]],
+    primary_baseline_profile: str,
+    teacher_reference_profile: str,
+    external_baseline_profile: str,
     high_risk_dataset_branch_count: int,
 ) -> List[str]:
-    joined_index = {(_safe_text(r.get("dataset")), _safe_text(r.get("profile"))): dict(r) for r in joined_rows}
-    frontier_index = {
-        (_safe_text(r.get("dataset")), _safe_text(r.get("profile")), _safe_text(r.get("frontier_name"))): dict(r)
-        for r in frontier_rows
-    }
-
-    def _frontier_status(dataset: str, profile: str, frontier: str) -> str:
-        row = frontier_index.get((dataset, profile, frontier), {})
-        return _safe_text(row.get("pareto_status", "incomplete_metrics"))
-
-    def _f1(dataset: str, profile: str) -> float:
-        return _safe_float(joined_index.get((dataset, profile), {}).get("F1", 0.0), 0.0)
-
-    def _tokens(dataset: str, profile: str, key: str) -> float:
-        return _safe_float(joined_index.get((dataset, profile), {}).get(key, 0.0), 0.0)
-
-    adaptive_ok_all = True
-    for ds in datasets:
-        adaptive_status = _frontier_status(ds, "unified_gl_rcedr_v1_adaptive_support_span", "qa_f1_vs_prompt_tokens")
-        if adaptive_status != "pareto":
-            adaptive_ok_all = False
-            break
-        if _f1(ds, "unified_gl_rcedr_v1_adaptive_support_span") < _f1(ds, "unified_large"):
-            adaptive_ok_all = False
-            break
-        if _tokens(ds, "unified_gl_rcedr_v1_adaptive_support_span", "prompt_tokens_avg") >= _tokens(ds, "unified_gl_rcedr_v1", "prompt_tokens_avg"):
-            adaptive_ok_all = False
-            break
-        if _tokens(ds, "unified_gl_rcedr_v1_adaptive_support_span", "rendered_tokens") >= _tokens(ds, "unified_gl_rcedr_v1", "rendered_tokens"):
-            adaptive_ok_all = False
-            break
-    if high_risk_dataset_branch_count > 0:
-        adaptive_ok_all = False
-
     lines: List[str] = []
-    if adaptive_ok_all:
-        lines.append("Case A: adaptive_support_span satisfies QA-token Pareto with baseline-safe QA and lower token cost.")
-        lines.append("Proceed with minimal refinement and keep profile set compact.")
-        return lines
+    best_rows = list(candidate_summary_rows[:2])
+    if best_rows:
+        shortlist = ", ".join(_safe_text(r.get("profile")) for r in best_rows if _safe_text(r.get("profile")))
+    else:
+        shortlist = ""
 
-    # Case C guard: if span-family is consistently below unified_large.
-    span_profiles = [
-        "unified_gl_rcedr_v1_support_span_contract",
-        "unified_gl_rcedr_v1_support_span_contract_no_cap",
-        "unified_gl_rcedr_v1_adaptive_support_span",
-        "unified_gl_rcedr_v1_adaptive_support_span_no_bridge",
-        "unified_gl_rcedr_v1_adaptive_support_span_no_length_penalty",
-        "unified_gl_rcedr_v1_adaptive_support_span_span40",
-    ]
-    span_below_unified_large = True
-    for ds in datasets:
-        baseline = _f1(ds, "unified_large")
-        if any(_f1(ds, p) >= baseline for p in span_profiles):
-            span_below_unified_large = False
-            break
-    if span_below_unified_large:
-        lines.append("Case C: span profiles remain below unified_large QA across datasets.")
-        lines.append("Return to local selection/global seed selection bottleneck redesign.")
-        return lines
+    if best_rows and bool(best_rows[0].get("primary_gate_all", False)):
+        lines.append(
+            f"Primary target met: at least one non-reference profile achieves QA-token Pareto gains vs `{primary_baseline_profile}` across datasets."
+        )
+        lines.append(
+            f"Compress main method candidates to 1-2 profiles: {shortlist}."
+        )
+    else:
+        lines.append(
+            f"No candidate consistently satisfies QA+token superiority over `{primary_baseline_profile}` across datasets."
+        )
+        lines.append("Prioritize bottleneck-focused refinement before adding new profile variants.")
 
-    # Case B heuristic: retrieval strong but QA weak appears often.
-    mismatch_count = 0
-    for row in joined_rows:
-        if _safe_text(row.get("retrieval_QA_mismatch_type")) == "retrieval_strong_qa_weak":
-            mismatch_count += 1
+    mismatch_count = sum(
+        1 for row in joined_rows if _safe_text(row.get("retrieval_QA_mismatch_type")) == "retrieval_strong_qa_weak"
+    )
     if mismatch_count >= max(2, len(datasets)):
-        lines.append("Case B: retrieval-side looks viable but QA remains weak for multiple profiles.")
-        lines.append("Shift next step to prompt/evidence ordering and answer instruction diagnostics.")
-        return lines
+        lines.append("Observed retrieval-QA mismatch indicates prompt/evidence ordering or answer instruction bottleneck.")
 
-    lines.append("Case D / mixed: no single variant dominates consistently and complexity risk grows.")
-    lines.append("Stop profile proliferation and simplify to a small, reviewer-safe candidate set.")
+    if high_risk_dataset_branch_count > 0:
+        lines.append("Dataset-conditional branch risk detected; remove or isolate to keep reviewer-safe framing.")
+    else:
+        lines.append("No high-risk dataset-specific branch in audited scope; method remains dataset-agnostic.")
+
+    lines.append(
+        f"`{teacher_reference_profile}` remains teacher/reference only, while `{external_baseline_profile}` is used for contextual comparison."
+    )
     return lines
 
 
@@ -760,6 +931,21 @@ def main() -> None:
     parser.add_argument("--qa-root", required=True, help="Path to QA runs root (contains */run_manifest.json)")
     parser.add_argument("--retrieval-audit-root", required=True, help="Path to retrieval audit root")
     parser.add_argument("--profiles", nargs="+", default=DEFAULT_PROFILES)
+    parser.add_argument(
+        "--primary-baseline-profile",
+        default=PRIMARY_BASELINE_PROFILE_DEFAULT,
+        help="Primary optimization baseline profile (default: unified_large).",
+    )
+    parser.add_argument(
+        "--teacher-reference-profile",
+        default=TEACHER_REFERENCE_PROFILE_DEFAULT,
+        help="Teacher/reference profile (default: legacy_sota).",
+    )
+    parser.add_argument(
+        "--external-baseline-profile",
+        default=EXTERNAL_BASELINE_PROFILE_DEFAULT,
+        help="External comparison baseline profile (default: unified_gl_rcedr_v1).",
+    )
     parser.add_argument("--method-complexity-dir", required=True, help="Path from audit_method_complexity.py outputs")
     parser.add_argument("--output-dir", required=True)
     args = parser.parse_args()
@@ -770,6 +956,9 @@ def main() -> None:
     retrieval_root = Path(args.retrieval_audit_root).resolve()
     method_complexity_dir = Path(args.method_complexity_dir).resolve()
     output_dir = Path(args.output_dir).resolve()
+    primary_baseline_profile = _safe_text(args.primary_baseline_profile) or PRIMARY_BASELINE_PROFILE_DEFAULT
+    teacher_reference_profile = _safe_text(args.teacher_reference_profile) or TEACHER_REFERENCE_PROFILE_DEFAULT
+    external_baseline_profile = _safe_text(args.external_baseline_profile) or EXTERNAL_BASELINE_PROFILE_DEFAULT
     output_dir.mkdir(parents=True, exist_ok=True)
 
     qa_raw_rows = _collect_qa_summary_rows(qa_root, datasets)
@@ -778,6 +967,13 @@ def main() -> None:
     retrieval_rows = _read_csv(retrieval_csv)
     retrieval_index = _prepare_retrieval_index(retrieval_rows)
     merged_rows = _merge_qa_and_retrieval(qa_rows=qa_rows, retrieval_index=retrieval_index)
+    _annotate_baseline_deltas(
+        rows=merged_rows,
+        datasets=datasets,
+        primary_baseline_profile=primary_baseline_profile,
+        teacher_reference_profile=teacher_reference_profile,
+        external_baseline_profile=external_baseline_profile,
+    )
 
     # Add mismatch + taxonomy annotations.
     medians_by_dataset = {dataset: _dataset_medians(merged_rows, dataset) for dataset in datasets}
@@ -809,6 +1005,14 @@ def main() -> None:
         profiles=profiles,
         reference_profiles=tuple(REFERENCE_PROFILES),
     )
+    candidate_summary_rows = _build_candidate_compression_summary(
+        rows=merged_rows,
+        frontier_rows=frontier_rows,
+        datasets=datasets,
+        primary_baseline_profile=primary_baseline_profile,
+        teacher_reference_profile=teacher_reference_profile,
+        external_baseline_profile=external_baseline_profile,
+    )
     frontier_lookup = {
         (_safe_text(r.get("dataset")), _safe_text(r.get("profile")), _safe_text(r.get("frontier_name"))): _safe_text(
             r.get("pareto_status", "incomplete_metrics")
@@ -834,6 +1038,10 @@ def main() -> None:
         datasets=datasets,
         joined_rows=merged_rows,
         frontier_rows=frontier_rows,
+        candidate_summary_rows=candidate_summary_rows,
+        primary_baseline_profile=primary_baseline_profile,
+        teacher_reference_profile=teacher_reference_profile,
+        external_baseline_profile=external_baseline_profile,
         high_risk_dataset_branch_count=sum(
             1 for row in dataset_branch_scan_rows if _safe_text(row.get("risk_level", "")) == "high"
         ),
@@ -842,6 +1050,7 @@ def main() -> None:
     joined_csv = output_dir / "qa_retrieval_joined_metrics.csv"
     frontier_csv = output_dir / "qa_pareto_frontier.csv"
     taxonomy_csv = output_dir / "bottleneck_taxonomy.csv"
+    candidate_summary_csv = output_dir / "candidate_compression_summary.csv"
     report_md = output_dir / "PHASE6O_QA_AWARE_BOTTLENECK_AUDIT.md"
 
     _write_csv(
@@ -879,6 +1088,18 @@ def main() -> None:
             "retrieval_QA_mismatch_type",
             "dominant_bottleneck",
             "bottleneck_evidence",
+            "primary_baseline_profile",
+            "teacher_reference_profile",
+            "external_baseline_profile",
+            "delta_F1_vs_primary_baseline",
+            "delta_prompt_tokens_vs_primary_baseline",
+            "delta_rendered_tokens_vs_primary_baseline",
+            "delta_F1_vs_teacher_reference",
+            "delta_prompt_tokens_vs_teacher_reference",
+            "delta_rendered_tokens_vs_teacher_reference",
+            "delta_F1_vs_external_baseline",
+            "delta_prompt_tokens_vs_external_baseline",
+            "delta_rendered_tokens_vs_external_baseline",
         ],
     )
     _write_csv(
@@ -905,6 +1126,23 @@ def main() -> None:
         taxonomy_rows,
         ["dataset", "profile", "dominant_bottleneck", "evidence", "retrieval_QA_mismatch_type"],
     )
+    _write_csv(
+        candidate_summary_csv,
+        candidate_summary_rows,
+        [
+            "profile",
+            "dataset_count",
+            "primary_gate_pass_count",
+            "primary_gate_all",
+            "qa_prompt_pareto_count",
+            "qa_rendered_pareto_count",
+            "qa_prompt_pareto_all",
+            "qa_rendered_pareto_all",
+            "mean_delta_F1_vs_primary_baseline",
+            "mean_prompt_token_reduction_vs_primary_baseline",
+            "mean_rendered_token_reduction_vs_primary_baseline",
+        ],
+    )
 
     report_md.write_text(
         _build_phase6o_markdown(
@@ -915,6 +1153,10 @@ def main() -> None:
             taxonomy_rows=taxonomy_rows,
             complexity_scan_rows=dataset_branch_scan_rows,
             complexity_profile_rows=profile_complexity_rows,
+            primary_baseline_profile=primary_baseline_profile,
+            teacher_reference_profile=teacher_reference_profile,
+            external_baseline_profile=external_baseline_profile,
+            candidate_summary_rows=candidate_summary_rows,
             decision_lines=decision_lines,
         )
         + "\n",
@@ -929,10 +1171,14 @@ def main() -> None:
         "retrieval_aggregate_csv": str(retrieval_csv),
         "method_complexity_dir": str(method_complexity_dir),
         "output_dir": str(output_dir),
+        "primary_baseline_profile": primary_baseline_profile,
+        "teacher_reference_profile": teacher_reference_profile,
+        "external_baseline_profile": external_baseline_profile,
         "num_qa_rows_raw": len(qa_raw_rows),
         "num_joined_rows": len(merged_rows),
         "num_frontier_rows": len(frontier_rows),
         "num_taxonomy_rows": len(taxonomy_rows),
+        "num_candidate_summary_rows": len(candidate_summary_rows),
     }
     (output_dir / "phase6o_qa_aware_audit_manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
