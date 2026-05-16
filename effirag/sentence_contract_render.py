@@ -203,6 +203,13 @@ def _parse_sentence_id(sentence_id: str) -> Tuple[str, int | None]:
     return title, int(maybe_idx)
 
 
+def _normalize_bridge_mode(value: Any) -> str:
+    mode = str(value or "").strip().lower()
+    if mode not in {"weak", "conditional"}:
+        return "conditional"
+    return mode
+
+
 def _support_span_score(
     *,
     sentence: str,
@@ -354,7 +361,150 @@ def _pick_support_span(
         "query_hit": float(best_feats.get("query_hit", 0.0)),
         "anchor_hit": float(best_feats.get("anchor_hit", 0.0)),
         "bridge_hit": float(best_feats.get("bridge_hit", 0.0)),
+        "length_penalty": float(best_feats.get("length_penalty", 0.0)),
         "adjacent_used": float(adjacent_used),
+    }
+
+
+def _adaptive_support_span_score(
+    *,
+    span_text: str,
+    query_tokens: set[str],
+    anchor_tokens: set[str],
+    bridge_tokens: set[str],
+    use_query_signal: bool,
+    use_anchor_signal: bool,
+    use_bridge_signal: bool,
+    bridge_mode: str,
+    soft_length_penalty_enabled: bool,
+    rank_index: int,
+    total_items: int,
+) -> Tuple[float, Dict[str, float]]:
+    tokens = {str(tok) for tok in content_tokens(str(span_text or ""))}
+    query_hit = float(len(tokens.intersection(query_tokens))) if use_query_signal else 0.0
+    anchor_hit = float(len(tokens.intersection(anchor_tokens))) if use_anchor_signal else 0.0
+    bridge_hit = float(len(tokens.intersection(bridge_tokens))) if use_bridge_signal else 0.0
+    rel_score = float((1.8 * query_hit) + (1.3 * anchor_hit))
+
+    normalized_bridge_mode = _normalize_bridge_mode(bridge_mode)
+    bridge_bonus = 0.0
+    if use_bridge_signal:
+        if normalized_bridge_mode == "conditional":
+            if bridge_hit > 0.0 and (query_hit + anchor_hit) > 0.0:
+                bridge_bonus = float(0.45 * bridge_hit)
+        else:
+            bridge_bonus = float(0.35 * bridge_hit)
+
+    view_signal = float(safe_div(float(max(0, total_items - rank_index)), float(max(1, total_items))))
+    length_penalty = 0.0
+    if soft_length_penalty_enabled:
+        length_penalty = float(0.05 * float(max(0, _token_count(span_text) - 18)))
+
+    score = float(rel_score + bridge_bonus + (0.35 * view_signal) - length_penalty)
+    return score, {
+        "query_hit": float(query_hit),
+        "anchor_hit": float(anchor_hit),
+        "bridge_hit": float(bridge_hit),
+        "rel_score": float(rel_score),
+        "bridge_bonus": float(bridge_bonus),
+        "view_signal": float(view_signal),
+        "length_penalty": float(length_penalty),
+    }
+
+
+def _pick_adaptive_support_span(
+    *,
+    text: str,
+    query_tokens: set[str],
+    anchor_tokens: set[str],
+    bridge_tokens: set[str],
+    hard_cap_enabled: bool,
+    max_item_tokens: int | None,
+    soft_length_penalty_enabled: bool,
+    use_query_signal: bool,
+    use_anchor_signal: bool,
+    use_bridge_signal: bool,
+    bridge_mode: str,
+    rank_index: int,
+    total_items: int,
+) -> Tuple[str, Dict[str, float]]:
+    sentences = _split_sentences(text)
+    if not sentences:
+        sentences = [_normalize_space(text)]
+
+    cap = None
+    if hard_cap_enabled and max_item_tokens is not None:
+        cap = int(max(1, int(max_item_tokens)))
+
+    span_candidates: List[Tuple[int, int, str]] = []
+    max_span_sentences = 3
+    for start in range(len(sentences)):
+        for end in range(start, min(len(sentences), start + max_span_sentences)):
+            span_text = _normalize_space(" ".join(sentences[start : end + 1]))
+            if not span_text:
+                continue
+            span_candidates.append((start, end, span_text))
+
+    if not span_candidates:
+        span_candidates = [(0, 0, _normalize_space(text))]
+
+    scored: List[Tuple[float, int, int, int, str, Dict[str, float]]] = []
+    for start, end, span_text in span_candidates:
+        tok_count = _token_count(span_text)
+        if cap is not None and tok_count > cap:
+            continue
+        score, feats = _adaptive_support_span_score(
+            span_text=span_text,
+            query_tokens=query_tokens,
+            anchor_tokens=anchor_tokens,
+            bridge_tokens=bridge_tokens,
+            use_query_signal=use_query_signal,
+            use_anchor_signal=use_anchor_signal,
+            use_bridge_signal=use_bridge_signal,
+            bridge_mode=bridge_mode,
+            soft_length_penalty_enabled=soft_length_penalty_enabled,
+            rank_index=rank_index,
+            total_items=total_items,
+        )
+        scored.append((float(score), int(tok_count), int(start), int(end), span_text, feats))
+
+    if not scored:
+        for start, end, span_text in span_candidates:
+            score, feats = _adaptive_support_span_score(
+                span_text=span_text,
+                query_tokens=query_tokens,
+                anchor_tokens=anchor_tokens,
+                bridge_tokens=bridge_tokens,
+                use_query_signal=use_query_signal,
+                use_anchor_signal=use_anchor_signal,
+                use_bridge_signal=use_bridge_signal,
+                bridge_mode=bridge_mode,
+                soft_length_penalty_enabled=soft_length_penalty_enabled,
+                rank_index=rank_index,
+                total_items=total_items,
+            )
+            scored.append((float(score), int(_token_count(span_text)), int(start), int(end), span_text, feats))
+
+    scored.sort(
+        key=lambda item: (
+            item[0],
+            -float((item[5] or {}).get("length_penalty", 0.0)),
+            float((item[5] or {}).get("bridge_bonus", 0.0)),
+            -item[1],
+            -item[2],
+        ),
+        reverse=True,
+    )
+    best_score, best_tokens, best_start, best_end, best_text, best_feats = scored[0]
+    return _normalize_space(best_text), {
+        "support_span_score": float(best_score),
+        "query_hit": float(best_feats.get("query_hit", 0.0)),
+        "anchor_hit": float(best_feats.get("anchor_hit", 0.0)),
+        "bridge_hit": float(best_feats.get("bridge_hit", 0.0)),
+        "bridge_bonus": float(best_feats.get("bridge_bonus", 0.0)),
+        "length_penalty": float(best_feats.get("length_penalty", 0.0)),
+        "adjacent_used": float(max(0, best_end - best_start)),
+        "token_count": float(best_tokens),
     }
 
 
@@ -476,6 +626,15 @@ def _contract_single_item(
     support_span_length_penalty_enabled: bool,
     support_span_adjacent_sentence_enabled: bool,
     support_span_adjacent_sentence_max_count: int,
+    adaptive_support_span_enabled: bool,
+    adaptive_support_span_hard_cap_enabled: bool,
+    adaptive_support_span_max_item_tokens: int | None,
+    adaptive_support_span_soft_length_penalty_enabled: bool,
+    adaptive_support_span_use_query_entity_signal: bool,
+    adaptive_support_span_use_anchor_entity_signal: bool,
+    adaptive_support_span_use_bridge_signal: bool,
+    adaptive_support_span_bridge_mode: str,
+    adaptive_support_span_metadata_pruning: bool,
 ) -> Dict[str, Any]:
     raw = _normalize_space(text)
     metadata_removed_tokens = 0
@@ -488,8 +647,26 @@ def _contract_single_item(
         "anchor_hit": 0.0,
         "bridge_hit": 0.0,
         "adjacent_used": 0.0,
+        "length_penalty": 0.0,
+        "bridge_bonus": 0.0,
     }
-    if bool(support_span_contract_enabled):
+    if bool(adaptive_support_span_enabled):
+        chosen, support_diag = _pick_adaptive_support_span(
+            text=raw,
+            query_tokens=query_tokens,
+            anchor_tokens=anchor_tokens,
+            bridge_tokens=bridge_tokens,
+            hard_cap_enabled=bool(adaptive_support_span_hard_cap_enabled),
+            max_item_tokens=adaptive_support_span_max_item_tokens,
+            soft_length_penalty_enabled=bool(adaptive_support_span_soft_length_penalty_enabled),
+            use_query_signal=bool(adaptive_support_span_use_query_entity_signal),
+            use_anchor_signal=bool(adaptive_support_span_use_anchor_entity_signal),
+            use_bridge_signal=bool(adaptive_support_span_use_bridge_signal),
+            bridge_mode=str(adaptive_support_span_bridge_mode or "conditional"),
+            rank_index=int(max(0, item_rank)),
+            total_items=int(max(1, total_items)),
+        )
+    elif bool(support_span_contract_enabled):
         chosen, support_diag = _pick_support_span(
             text=raw,
             unit_id=unit_id,
@@ -514,7 +691,13 @@ def _contract_single_item(
     minimal_span_used = False
     fallback_truncation_used = False
 
-    cap = None if max_item_tokens is None else int(max(1, int(max_item_tokens)))
+    cap = None
+    if bool(adaptive_support_span_enabled):
+        if bool(adaptive_support_span_hard_cap_enabled) and adaptive_support_span_max_item_tokens is not None:
+            cap = int(max(1, int(adaptive_support_span_max_item_tokens)))
+    else:
+        cap = None if max_item_tokens is None else int(max(1, int(max_item_tokens)))
+
     if cap is not None and _token_count(chosen) > cap:
         if bool(minimal_span_fallback):
             minimal = _extract_minimal_span(chosen, question, cap)
@@ -541,6 +724,8 @@ def _contract_single_item(
         "query_hit": float(support_diag.get("query_hit", 0.0)),
         "anchor_hit": float(support_diag.get("anchor_hit", 0.0)),
         "bridge_hit": float(support_diag.get("bridge_hit", 0.0)),
+        "bridge_bonus": float(support_diag.get("bridge_bonus", 0.0)),
+        "length_penalty": float(support_diag.get("length_penalty", 0.0)),
         "adjacent_used": float(support_diag.get("adjacent_used", 0.0)),
     }
 
@@ -570,8 +755,23 @@ def apply_sentence_level_evidence_contract(
     support_span_chunk_expansion_allowed: bool = False,
     support_span_preserve_selected_items: bool = True,
     support_span_log_diagnostics: bool = True,
+    adaptive_support_span_enabled: bool = False,
+    adaptive_support_span_hard_cap_enabled: bool = False,
+    adaptive_support_span_max_item_tokens: int | None = 40,
+    adaptive_support_span_soft_length_penalty_enabled: bool = True,
+    adaptive_support_span_use_query_entity_signal: bool = True,
+    adaptive_support_span_use_anchor_entity_signal: bool = True,
+    adaptive_support_span_use_bridge_signal: bool = True,
+    adaptive_support_span_bridge_mode: str = "conditional",
+    adaptive_support_span_metadata_pruning: bool = True,
+    adaptive_support_span_preserve_selected_items: bool = True,
+    adaptive_support_span_log_diagnostics: bool = True,
 ) -> RenderedContext:
-    render_contract_enabled = bool(sentence_contract_render_enabled) or bool(support_span_contract_enabled)
+    render_contract_enabled = (
+        bool(sentence_contract_render_enabled)
+        or bool(support_span_contract_enabled)
+        or bool(adaptive_support_span_enabled)
+    )
     if not render_contract_enabled:
         return rendered
 
@@ -592,11 +792,21 @@ def apply_sentence_level_evidence_contract(
 
     source_ids: List[str] = []
     preserve_selected_items = _safe_bool(
-        support_span_preserve_selected_items if support_span_contract_enabled else sentence_contract_preserve_selected_items,
+        adaptive_support_span_preserve_selected_items
+        if adaptive_support_span_enabled
+        else (
+            support_span_preserve_selected_items
+            if support_span_contract_enabled
+            else sentence_contract_preserve_selected_items
+        ),
         True,
     )
     chunk_expansion_allowed = _safe_bool(
-        support_span_chunk_expansion_allowed if support_span_contract_enabled else sentence_contract_chunk_expansion_allowed,
+        False if adaptive_support_span_enabled else (
+            support_span_chunk_expansion_allowed
+            if support_span_contract_enabled
+            else sentence_contract_chunk_expansion_allowed
+        ),
         False,
     )
 
@@ -621,6 +831,8 @@ def apply_sentence_level_evidence_contract(
     evidence_tokens = 0
     item_token_counts: List[int] = []
     support_span_score_sum = 0.0
+    length_penalty_sum = 0.0
+    bridge_bonus_sum = 0.0
     query_hit_item_count = 0
     anchor_hit_item_count = 0
     bridge_hit_item_count = 0
@@ -638,8 +850,12 @@ def apply_sentence_level_evidence_contract(
         if not raw_text:
             raw_text = unit_id
 
-        max_item_tokens = support_span_max_item_tokens if support_span_contract_enabled else sentence_contract_max_item_tokens
-        metadata_pruning = support_span_metadata_pruning if support_span_contract_enabled else sentence_contract_metadata_pruning
+        if adaptive_support_span_enabled:
+            max_item_tokens = adaptive_support_span_max_item_tokens
+            metadata_pruning = adaptive_support_span_metadata_pruning
+        else:
+            max_item_tokens = support_span_max_item_tokens if support_span_contract_enabled else sentence_contract_max_item_tokens
+            metadata_pruning = support_span_metadata_pruning if support_span_contract_enabled else sentence_contract_metadata_pruning
         item = _contract_single_item(
             text=raw_text,
             unit_id=unit_id,
@@ -661,6 +877,15 @@ def apply_sentence_level_evidence_contract(
             support_span_length_penalty_enabled=bool(support_span_length_penalty_enabled),
             support_span_adjacent_sentence_enabled=bool(support_span_adjacent_sentence_enabled),
             support_span_adjacent_sentence_max_count=int(max(0, support_span_adjacent_sentence_max_count)),
+            adaptive_support_span_enabled=bool(adaptive_support_span_enabled),
+            adaptive_support_span_hard_cap_enabled=bool(adaptive_support_span_hard_cap_enabled),
+            adaptive_support_span_max_item_tokens=adaptive_support_span_max_item_tokens,
+            adaptive_support_span_soft_length_penalty_enabled=bool(adaptive_support_span_soft_length_penalty_enabled),
+            adaptive_support_span_use_query_entity_signal=bool(adaptive_support_span_use_query_entity_signal),
+            adaptive_support_span_use_anchor_entity_signal=bool(adaptive_support_span_use_anchor_entity_signal),
+            adaptive_support_span_use_bridge_signal=bool(adaptive_support_span_use_bridge_signal),
+            adaptive_support_span_bridge_mode=str(adaptive_support_span_bridge_mode or "conditional"),
+            adaptive_support_span_metadata_pruning=bool(adaptive_support_span_metadata_pruning),
         )
         text = str(item.get("text", "") or "").strip()
         if not text:
@@ -685,6 +910,8 @@ def apply_sentence_level_evidence_contract(
         if bool(item.get("fallback_truncation_used", False)):
             fallback_truncation_count += 1
         support_span_score_sum += float(item.get("support_span_score", 0.0) or 0.0)
+        length_penalty_sum += float(item.get("length_penalty", 0.0) or 0.0)
+        bridge_bonus_sum += float(item.get("bridge_bonus", 0.0) or 0.0)
         if float(item.get("query_hit", 0.0) or 0.0) > 0.0:
             query_hit_item_count += 1
         if float(item.get("anchor_hit", 0.0) or 0.0) > 0.0:
@@ -732,6 +959,8 @@ def apply_sentence_level_evidence_contract(
     minimal_span_fallback_rate = float(safe_div(float(minimal_span_count), float(max(1, rendered_count))))
     separator_tokens = int(max(0, rendered_count - 1))
     support_span_score_avg = float(safe_div(float(support_span_score_sum), float(max(1, support_span_item_count))))
+    length_penalty_avg = float(safe_div(float(length_penalty_sum), float(max(1, support_span_item_count))))
+    bridge_bonus_avg = float(safe_div(float(bridge_bonus_sum), float(max(1, support_span_item_count))))
     query_entity_hit_rate = float(safe_div(float(query_hit_item_count), float(max(1, support_span_item_count))))
     anchor_entity_hit_rate = float(safe_div(float(anchor_hit_item_count), float(max(1, support_span_item_count))))
     bridge_entity_hit_rate = float(safe_div(float(bridge_hit_item_count), float(max(1, support_span_item_count))))
@@ -743,6 +972,7 @@ def apply_sentence_level_evidence_contract(
         {
             "sentence_contract_render_enabled": bool(sentence_contract_render_enabled),
             "support_span_contract_enabled": bool(support_span_contract_enabled),
+            "adaptive_support_span_enabled": bool(adaptive_support_span_enabled),
             "sentence_contract_applied": True,
             "sentence_contract_max_item_tokens": (
                 None if sentence_contract_max_item_tokens is None else int(sentence_contract_max_item_tokens)
@@ -766,6 +996,18 @@ def apply_sentence_level_evidence_contract(
             "support_span_adjacent_sentence_enabled": bool(support_span_adjacent_sentence_enabled),
             "support_span_adjacent_sentence_max_count": int(max(0, support_span_adjacent_sentence_max_count)),
             "support_span_log_diagnostics": bool(support_span_log_diagnostics),
+            "adaptive_support_span_hard_cap_enabled": bool(adaptive_support_span_hard_cap_enabled),
+            "adaptive_support_span_max_item_tokens": (
+                None if adaptive_support_span_max_item_tokens is None else int(adaptive_support_span_max_item_tokens)
+            ),
+            "adaptive_support_span_soft_length_penalty_enabled": bool(adaptive_support_span_soft_length_penalty_enabled),
+            "adaptive_support_span_use_query_entity_signal": bool(adaptive_support_span_use_query_entity_signal),
+            "adaptive_support_span_use_anchor_entity_signal": bool(adaptive_support_span_use_anchor_entity_signal),
+            "adaptive_support_span_use_bridge_signal": bool(adaptive_support_span_use_bridge_signal),
+            "adaptive_support_span_bridge_mode": _normalize_bridge_mode(adaptive_support_span_bridge_mode),
+            "adaptive_support_span_metadata_pruning": bool(adaptive_support_span_metadata_pruning),
+            "adaptive_support_span_preserve_selected_items": bool(adaptive_support_span_preserve_selected_items),
+            "adaptive_support_span_log_diagnostics": bool(adaptive_support_span_log_diagnostics),
             "selected_unit_type": "sentence",
             "rendered_item_count": int(rendered_count),
             "selected_item_count": int(selected_count),
@@ -790,6 +1032,8 @@ def apply_sentence_level_evidence_contract(
                 safe_div(float(fallback_truncation_count), float(max(1, rendered_count)))
             ),
             "support_span_score_avg": float(support_span_score_avg),
+            "length_penalty_avg": float(length_penalty_avg),
+            "bridge_bonus_avg": float(bridge_bonus_avg),
             "query_entity_hit_rate": float(query_entity_hit_rate),
             "anchor_entity_hit_rate": float(anchor_entity_hit_rate),
             "bridge_entity_hit_rate": float(bridge_entity_hit_rate),
@@ -798,11 +1042,16 @@ def apply_sentence_level_evidence_contract(
         }
     )
     render_diag = dict(meta.get("render_diagnostics", {}) or {})
-    if bool(sentence_contract_log_diagnostics) or bool(support_span_log_diagnostics):
+    if (
+        bool(sentence_contract_log_diagnostics)
+        or bool(support_span_log_diagnostics)
+        or bool(adaptive_support_span_log_diagnostics)
+    ):
         render_diag.update(
             {
                 "sentence_contract_render_enabled": True,
                 "support_span_contract_enabled": bool(support_span_contract_enabled),
+                "adaptive_support_span_enabled": bool(adaptive_support_span_enabled),
                 "rendered_item_count": int(rendered_count),
                 "selected_item_count": int(selected_count),
                 "selected_to_rendered_preservation_rate": float(preservation_rate),
@@ -817,6 +1066,8 @@ def apply_sentence_level_evidence_contract(
                 "truncated_item_rate": float(truncated_item_rate),
                 "minimal_span_fallback_rate": float(minimal_span_fallback_rate),
                 "support_span_score_avg": float(support_span_score_avg),
+                "length_penalty_avg": float(length_penalty_avg),
+                "bridge_bonus_avg": float(bridge_bonus_avg),
                 "query_entity_hit_rate": float(query_entity_hit_rate),
                 "anchor_entity_hit_rate": float(anchor_entity_hit_rate),
                 "bridge_entity_hit_rate": float(bridge_entity_hit_rate),

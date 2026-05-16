@@ -1085,6 +1085,17 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     support_span_chunk_expansion_allowed=cfg.support_span_chunk_expansion_allowed,
                     support_span_preserve_selected_items=cfg.support_span_preserve_selected_items,
                     support_span_log_diagnostics=cfg.support_span_log_diagnostics,
+                    adaptive_support_span_enabled=cfg.adaptive_support_span_enabled,
+                    adaptive_support_span_hard_cap_enabled=cfg.adaptive_support_span_hard_cap_enabled,
+                    adaptive_support_span_max_item_tokens=cfg.adaptive_support_span_max_item_tokens,
+                    adaptive_support_span_soft_length_penalty_enabled=cfg.adaptive_support_span_soft_length_penalty_enabled,
+                    adaptive_support_span_use_query_entity_signal=cfg.adaptive_support_span_use_query_entity_signal,
+                    adaptive_support_span_use_anchor_entity_signal=cfg.adaptive_support_span_use_anchor_entity_signal,
+                    adaptive_support_span_use_bridge_signal=cfg.adaptive_support_span_use_bridge_signal,
+                    adaptive_support_span_bridge_mode=cfg.adaptive_support_span_bridge_mode,
+                    adaptive_support_span_metadata_pruning=cfg.adaptive_support_span_metadata_pruning,
+                    adaptive_support_span_preserve_selected_items=cfg.adaptive_support_span_preserve_selected_items,
+                    adaptive_support_span_log_diagnostics=cfg.adaptive_support_span_log_diagnostics,
                 )
                 meta = dict((rendered.metadata or {}))
                 meta["prompt_variant"] = str(getattr(cfg, "prompt_variant", "default") or "default")
@@ -1305,8 +1316,14 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     "support_span_contract_enabled": bool(
                         rendered_meta.get("support_span_contract_enabled", False)
                     ),
+                    "adaptive_support_span_enabled": bool(
+                        rendered_meta.get("adaptive_support_span_enabled", False)
+                    ),
                     "sentence_contract_max_item_tokens": rendered_meta.get("sentence_contract_max_item_tokens", None),
                     "support_span_max_item_tokens": rendered_meta.get("support_span_max_item_tokens", None),
+                    "adaptive_support_span_max_item_tokens": rendered_meta.get(
+                        "adaptive_support_span_max_item_tokens", None
+                    ),
                     "selected_to_rendered_preservation_rate": float(
                         rendered_meta.get("selected_to_rendered_preservation_rate", 0.0) or 0.0
                     ),
@@ -1322,6 +1339,7 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     "evidence_text_tokens": int(_safe_int(rendered_meta.get("evidence_text_tokens", 0), 0)),
                     "separator_tokens": int(_safe_int(rendered_meta.get("separator_tokens", 0), 0)),
                     "support_span_score_avg": float(rendered_meta.get("support_span_score_avg", 0.0) or 0.0),
+                    "length_penalty_avg": float(rendered_meta.get("length_penalty_avg", 0.0) or 0.0),
                     "query_entity_hit_rate": float(rendered_meta.get("query_entity_hit_rate", 0.0) or 0.0),
                     "anchor_entity_hit_rate": float(rendered_meta.get("anchor_entity_hit_rate", 0.0) or 0.0),
                     "bridge_entity_hit_rate": float(rendered_meta.get("bridge_entity_hit_rate", 0.0) or 0.0),
@@ -1387,8 +1405,14 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     "support_span_contract_enabled": bool(
                         rendered_meta.get("support_span_contract_enabled", False)
                     ),
+                    "adaptive_support_span_enabled": bool(
+                        rendered_meta.get("adaptive_support_span_enabled", False)
+                    ),
                     "sentence_contract_max_item_tokens": rendered_meta.get("sentence_contract_max_item_tokens", None),
                     "support_span_max_item_tokens": rendered_meta.get("support_span_max_item_tokens", None),
+                    "adaptive_support_span_max_item_tokens": rendered_meta.get(
+                        "adaptive_support_span_max_item_tokens", None
+                    ),
                     "selected_to_rendered_preservation_rate": float(
                         rendered_meta.get("selected_to_rendered_preservation_rate", 0.0) or 0.0
                     ),
@@ -1401,6 +1425,7 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                         rendered_meta.get("minimal_span_fallback_rate", 0.0) or 0.0
                     ),
                     "support_span_score_avg": float(rendered_meta.get("support_span_score_avg", 0.0) or 0.0),
+                    "length_penalty_avg": float(rendered_meta.get("length_penalty_avg", 0.0) or 0.0),
                     "query_entity_hit_rate": float(rendered_meta.get("query_entity_hit_rate", 0.0) or 0.0),
                     "anchor_entity_hit_rate": float(rendered_meta.get("anchor_entity_hit_rate", 0.0) or 0.0),
                     "bridge_entity_hit_rate": float(rendered_meta.get("bridge_entity_hit_rate", 0.0) or 0.0),
@@ -1675,8 +1700,12 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             [float(_render_diag_from_row(r).get("evidence_text_tokens", 0.0) or 0.0) for r in rows]
         ),
         "support_span_contract_enabled": bool(getattr(cfg, "support_span_contract_enabled", False)),
+        "adaptive_support_span_enabled": bool(getattr(cfg, "adaptive_support_span_enabled", False)),
         "support_span_score_avg": mean_or_zero(
             [float(_render_diag_from_row(r).get("support_span_score_avg", 0.0) or 0.0) for r in rows]
+        ),
+        "support_span_length_penalty_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("length_penalty_avg", 0.0) or 0.0) for r in rows]
         ),
         "support_span_query_entity_hit_rate_avg": mean_or_zero(
             [float(_render_diag_from_row(r).get("query_entity_hit_rate", 0.0) or 0.0) for r in rows]
@@ -1898,6 +1927,17 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "support_span_chunk_expansion_allowed": cfg.support_span_chunk_expansion_allowed,
             "support_span_preserve_selected_items": cfg.support_span_preserve_selected_items,
             "support_span_log_diagnostics": cfg.support_span_log_diagnostics,
+            "adaptive_support_span_enabled": cfg.adaptive_support_span_enabled,
+            "adaptive_support_span_hard_cap_enabled": cfg.adaptive_support_span_hard_cap_enabled,
+            "adaptive_support_span_max_item_tokens": cfg.adaptive_support_span_max_item_tokens,
+            "adaptive_support_span_soft_length_penalty_enabled": cfg.adaptive_support_span_soft_length_penalty_enabled,
+            "adaptive_support_span_use_query_entity_signal": cfg.adaptive_support_span_use_query_entity_signal,
+            "adaptive_support_span_use_anchor_entity_signal": cfg.adaptive_support_span_use_anchor_entity_signal,
+            "adaptive_support_span_use_bridge_signal": cfg.adaptive_support_span_use_bridge_signal,
+            "adaptive_support_span_bridge_mode": cfg.adaptive_support_span_bridge_mode,
+            "adaptive_support_span_metadata_pruning": cfg.adaptive_support_span_metadata_pruning,
+            "adaptive_support_span_preserve_selected_items": cfg.adaptive_support_span_preserve_selected_items,
+            "adaptive_support_span_log_diagnostics": cfg.adaptive_support_span_log_diagnostics,
             "order_strategy": cfg.order_strategy,
         },
         "profile_config": {

@@ -3154,6 +3154,17 @@ def render_context(
     support_span_chunk_expansion_allowed=False,
     support_span_preserve_selected_items=True,
     support_span_log_diagnostics=True,
+    adaptive_support_span_enabled=False,
+    adaptive_support_span_hard_cap_enabled=False,
+    adaptive_support_span_max_item_tokens=40,
+    adaptive_support_span_soft_length_penalty_enabled=True,
+    adaptive_support_span_use_query_entity_signal=True,
+    adaptive_support_span_use_anchor_entity_signal=True,
+    adaptive_support_span_use_bridge_signal=True,
+    adaptive_support_span_bridge_mode="conditional",
+    adaptive_support_span_metadata_pruning=True,
+    adaptive_support_span_preserve_selected_items=True,
+    adaptive_support_span_log_diagnostics=True,
 ):
     mode = str(render_mode or "flat").strip().lower()
     rendered = None
@@ -3302,5 +3313,16 @@ def render_context(
         support_span_chunk_expansion_allowed=bool(support_span_chunk_expansion_allowed),
         support_span_preserve_selected_items=bool(support_span_preserve_selected_items),
         support_span_log_diagnostics=bool(support_span_log_diagnostics),
+        adaptive_support_span_enabled=bool(adaptive_support_span_enabled),
+        adaptive_support_span_hard_cap_enabled=bool(adaptive_support_span_hard_cap_enabled),
+        adaptive_support_span_max_item_tokens=adaptive_support_span_max_item_tokens,
+        adaptive_support_span_soft_length_penalty_enabled=bool(adaptive_support_span_soft_length_penalty_enabled),
+        adaptive_support_span_use_query_entity_signal=bool(adaptive_support_span_use_query_entity_signal),
+        adaptive_support_span_use_anchor_entity_signal=bool(adaptive_support_span_use_anchor_entity_signal),
+        adaptive_support_span_use_bridge_signal=bool(adaptive_support_span_use_bridge_signal),
+        adaptive_support_span_bridge_mode=str(adaptive_support_span_bridge_mode or "conditional"),
+        adaptive_support_span_metadata_pruning=bool(adaptive_support_span_metadata_pruning),
+        adaptive_support_span_preserve_selected_items=bool(adaptive_support_span_preserve_selected_items),
+        adaptive_support_span_log_diagnostics=bool(adaptive_support_span_log_diagnostics),
     )
     return _attach_stagewise_render_diagnostics(sample=sample, retrieval_result=retrieval_result, rendered=rendered)

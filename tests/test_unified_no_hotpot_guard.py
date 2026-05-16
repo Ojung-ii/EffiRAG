@@ -33,6 +33,11 @@ def test_hotpotqa_unified_profile_does_not_enable_hotpot_guard_at_runtime():
         "unified_gl_rcedr_v1_support_span_contract_no_cap",
         "unified_gl_rcedr_v1_support_span_contract_no_bridge_signal",
         "unified_gl_rcedr_v1_support_span_contract_no_query_entity_signal",
+        "unified_gl_rcedr_v1_adaptive_support_span",
+        "unified_gl_rcedr_v1_adaptive_support_span_weak_bridge",
+        "unified_gl_rcedr_v1_adaptive_support_span_no_bridge",
+        "unified_gl_rcedr_v1_adaptive_support_span_no_length_penalty",
+        "unified_gl_rcedr_v1_adaptive_support_span_span40",
         "unified_gl_rcedr_no_dynamic_control",
         "unified_gl_rcedr_no_stability",
         "unified_gl_rcedr_no_bridge_path",
@@ -79,6 +84,11 @@ def test_hotpotqa_unified_profile_does_not_enable_hotpot_guard_at_runtime():
             "unified_gl_rcedr_v1_support_span_contract_no_cap",
             "unified_gl_rcedr_v1_support_span_contract_no_bridge_signal",
             "unified_gl_rcedr_v1_support_span_contract_no_query_entity_signal",
+            "unified_gl_rcedr_v1_adaptive_support_span",
+            "unified_gl_rcedr_v1_adaptive_support_span_weak_bridge",
+            "unified_gl_rcedr_v1_adaptive_support_span_no_bridge",
+            "unified_gl_rcedr_v1_adaptive_support_span_no_length_penalty",
+            "unified_gl_rcedr_v1_adaptive_support_span_span40",
             "unified_gl_rcedr_no_dynamic_control",
             "unified_gl_rcedr_no_stability",
             "unified_gl_rcedr_no_bridge_path",
@@ -107,6 +117,11 @@ def test_hotpotqa_unified_profile_does_not_enable_hotpot_guard_at_runtime():
             "unified_gl_rcedr_v1_support_span_contract_no_cap",
             "unified_gl_rcedr_v1_support_span_contract_no_bridge_signal",
             "unified_gl_rcedr_v1_support_span_contract_no_query_entity_signal",
+            "unified_gl_rcedr_v1_adaptive_support_span",
+            "unified_gl_rcedr_v1_adaptive_support_span_weak_bridge",
+            "unified_gl_rcedr_v1_adaptive_support_span_no_bridge",
+            "unified_gl_rcedr_v1_adaptive_support_span_no_length_penalty",
+            "unified_gl_rcedr_v1_adaptive_support_span_span40",
             "unified_gl_rcedr_no_dynamic_control",
             "unified_gl_rcedr_no_stability",
             "unified_gl_rcedr_no_bridge_path",
@@ -211,6 +226,24 @@ def test_hotpotqa_unified_profile_does_not_enable_hotpot_guard_at_runtime():
             assert cfg.support_span_contract_enabled is True
             assert cfg.support_span_use_query_entity_signal is False
             assert cfg.support_span_use_anchor_entity_signal is False
+        if profile == "unified_gl_rcedr_v1_adaptive_support_span":
+            assert cfg.adaptive_support_span_enabled is True
+            assert cfg.adaptive_support_span_hard_cap_enabled is False
+            assert cfg.adaptive_support_span_use_bridge_signal is True
+            assert cfg.adaptive_support_span_bridge_mode == "conditional"
+        if profile == "unified_gl_rcedr_v1_adaptive_support_span_weak_bridge":
+            assert cfg.adaptive_support_span_enabled is True
+            assert cfg.adaptive_support_span_bridge_mode == "weak"
+        if profile == "unified_gl_rcedr_v1_adaptive_support_span_no_bridge":
+            assert cfg.adaptive_support_span_enabled is True
+            assert cfg.adaptive_support_span_use_bridge_signal is False
+        if profile == "unified_gl_rcedr_v1_adaptive_support_span_no_length_penalty":
+            assert cfg.adaptive_support_span_enabled is True
+            assert cfg.adaptive_support_span_soft_length_penalty_enabled is False
+        if profile == "unified_gl_rcedr_v1_adaptive_support_span_span40":
+            assert cfg.adaptive_support_span_enabled is True
+            assert cfg.adaptive_support_span_hard_cap_enabled is True
+            assert cfg.adaptive_support_span_max_item_tokens == 40
         if profile == "unified_gl_rcedr_no_dynamic_control":
             assert cfg.gl_rcedr_dynamic_control_enabled is False
             assert cfg.gl_rcedr_stability_enabled is True

@@ -475,6 +475,18 @@ class RagConfig(RetrievalConfig):
     support_span_chunk_expansion_allowed: bool = False
     support_span_preserve_selected_items: bool = True
     support_span_log_diagnostics: bool = True
+    # Adaptive support span contract (render-only).
+    adaptive_support_span_enabled: bool = False
+    adaptive_support_span_hard_cap_enabled: bool = False
+    adaptive_support_span_max_item_tokens: int | None = 40
+    adaptive_support_span_soft_length_penalty_enabled: bool = True
+    adaptive_support_span_use_query_entity_signal: bool = True
+    adaptive_support_span_use_anchor_entity_signal: bool = True
+    adaptive_support_span_use_bridge_signal: bool = True
+    adaptive_support_span_bridge_mode: str = "conditional"  # weak | conditional
+    adaptive_support_span_metadata_pruning: bool = True
+    adaptive_support_span_preserve_selected_items: bool = True
+    adaptive_support_span_log_diagnostics: bool = True
     # score | retrieval | corridor_rank | query_bridge_answer
     # corridor_aware_flat flags:
     # +raw_focus_front +raw_focus_dedup +raw_focus_scaffold_light +raw_focus_top1_bundle_only(+top2)
@@ -609,9 +621,20 @@ def apply_cli_overrides(config_dict, args_namespace):
         "support_span_chunk_expansion_allowed",
         "support_span_preserve_selected_items",
         "support_span_log_diagnostics",
+        "adaptive_support_span_enabled",
+        "adaptive_support_span_hard_cap_enabled",
+        "adaptive_support_span_soft_length_penalty_enabled",
+        "adaptive_support_span_use_query_entity_signal",
+        "adaptive_support_span_use_anchor_entity_signal",
+        "adaptive_support_span_use_bridge_signal",
+        "adaptive_support_span_metadata_pruning",
+        "adaptive_support_span_preserve_selected_items",
+        "adaptive_support_span_log_diagnostics",
     ):
         if key in merged:
             merged[key] = parse_bool(merged[key])
+    if "adaptive_support_span_bridge_mode" in merged:
+        merged["adaptive_support_span_bridge_mode"] = str(merged["adaptive_support_span_bridge_mode"]).strip().lower()
     if "force_rebuild_graph_index" in merged:
         merged["force_rebuild_graph_index"] = parse_bool(merged["force_rebuild_graph_index"])
     if "timestamp_output" in merged:
