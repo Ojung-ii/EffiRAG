@@ -461,6 +461,20 @@ class RagConfig(RetrievalConfig):
     sentence_contract_preserve_selected_items: bool = True
     sentence_contract_minimal_span_fallback: bool = True
     sentence_contract_log_diagnostics: bool = True
+    # Support-preserving sentence/span contract (render-only).
+    support_span_contract_enabled: bool = False
+    support_span_max_item_tokens: int | None = 48
+    support_span_metadata_pruning: bool = True
+    support_span_use_query_entity_signal: bool = True
+    support_span_use_anchor_entity_signal: bool = True
+    support_span_use_bridge_signal: bool = True
+    support_span_use_view_stability_signal: bool = True
+    support_span_length_penalty_enabled: bool = True
+    support_span_adjacent_sentence_enabled: bool = True
+    support_span_adjacent_sentence_max_count: int = 1
+    support_span_chunk_expansion_allowed: bool = False
+    support_span_preserve_selected_items: bool = True
+    support_span_log_diagnostics: bool = True
     # score | retrieval | corridor_rank | query_bridge_answer
     # corridor_aware_flat flags:
     # +raw_focus_front +raw_focus_dedup +raw_focus_scaffold_light +raw_focus_top1_bundle_only(+top2)
@@ -584,6 +598,17 @@ def apply_cli_overrides(config_dict, args_namespace):
         "sentence_contract_preserve_selected_items",
         "sentence_contract_minimal_span_fallback",
         "sentence_contract_log_diagnostics",
+        "support_span_contract_enabled",
+        "support_span_metadata_pruning",
+        "support_span_use_query_entity_signal",
+        "support_span_use_anchor_entity_signal",
+        "support_span_use_bridge_signal",
+        "support_span_use_view_stability_signal",
+        "support_span_length_penalty_enabled",
+        "support_span_adjacent_sentence_enabled",
+        "support_span_chunk_expansion_allowed",
+        "support_span_preserve_selected_items",
+        "support_span_log_diagnostics",
     ):
         if key in merged:
             merged[key] = parse_bool(merged[key])

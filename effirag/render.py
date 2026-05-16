@@ -3141,6 +3141,19 @@ def render_context(
     sentence_contract_preserve_selected_items=True,
     sentence_contract_minimal_span_fallback=True,
     sentence_contract_log_diagnostics=True,
+    support_span_contract_enabled=False,
+    support_span_max_item_tokens=48,
+    support_span_metadata_pruning=True,
+    support_span_use_query_entity_signal=True,
+    support_span_use_anchor_entity_signal=True,
+    support_span_use_bridge_signal=True,
+    support_span_use_view_stability_signal=True,
+    support_span_length_penalty_enabled=True,
+    support_span_adjacent_sentence_enabled=True,
+    support_span_adjacent_sentence_max_count=1,
+    support_span_chunk_expansion_allowed=False,
+    support_span_preserve_selected_items=True,
+    support_span_log_diagnostics=True,
 ):
     mode = str(render_mode or "flat").strip().lower()
     rendered = None
@@ -3276,5 +3289,18 @@ def render_context(
         sentence_contract_preserve_selected_items=bool(sentence_contract_preserve_selected_items),
         sentence_contract_minimal_span_fallback=bool(sentence_contract_minimal_span_fallback),
         sentence_contract_log_diagnostics=bool(sentence_contract_log_diagnostics),
+        support_span_contract_enabled=bool(support_span_contract_enabled),
+        support_span_max_item_tokens=support_span_max_item_tokens,
+        support_span_metadata_pruning=bool(support_span_metadata_pruning),
+        support_span_use_query_entity_signal=bool(support_span_use_query_entity_signal),
+        support_span_use_anchor_entity_signal=bool(support_span_use_anchor_entity_signal),
+        support_span_use_bridge_signal=bool(support_span_use_bridge_signal),
+        support_span_use_view_stability_signal=bool(support_span_use_view_stability_signal),
+        support_span_length_penalty_enabled=bool(support_span_length_penalty_enabled),
+        support_span_adjacent_sentence_enabled=bool(support_span_adjacent_sentence_enabled),
+        support_span_adjacent_sentence_max_count=int(max(0, support_span_adjacent_sentence_max_count)),
+        support_span_chunk_expansion_allowed=bool(support_span_chunk_expansion_allowed),
+        support_span_preserve_selected_items=bool(support_span_preserve_selected_items),
+        support_span_log_diagnostics=bool(support_span_log_diagnostics),
     )
     return _attach_stagewise_render_diagnostics(sample=sample, retrieval_result=retrieval_result, rendered=rendered)

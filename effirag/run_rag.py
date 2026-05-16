@@ -1072,6 +1072,19 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     sentence_contract_preserve_selected_items=cfg.sentence_contract_preserve_selected_items,
                     sentence_contract_minimal_span_fallback=cfg.sentence_contract_minimal_span_fallback,
                     sentence_contract_log_diagnostics=cfg.sentence_contract_log_diagnostics,
+                    support_span_contract_enabled=cfg.support_span_contract_enabled,
+                    support_span_max_item_tokens=cfg.support_span_max_item_tokens,
+                    support_span_metadata_pruning=cfg.support_span_metadata_pruning,
+                    support_span_use_query_entity_signal=cfg.support_span_use_query_entity_signal,
+                    support_span_use_anchor_entity_signal=cfg.support_span_use_anchor_entity_signal,
+                    support_span_use_bridge_signal=cfg.support_span_use_bridge_signal,
+                    support_span_use_view_stability_signal=cfg.support_span_use_view_stability_signal,
+                    support_span_length_penalty_enabled=cfg.support_span_length_penalty_enabled,
+                    support_span_adjacent_sentence_enabled=cfg.support_span_adjacent_sentence_enabled,
+                    support_span_adjacent_sentence_max_count=cfg.support_span_adjacent_sentence_max_count,
+                    support_span_chunk_expansion_allowed=cfg.support_span_chunk_expansion_allowed,
+                    support_span_preserve_selected_items=cfg.support_span_preserve_selected_items,
+                    support_span_log_diagnostics=cfg.support_span_log_diagnostics,
                 )
                 meta = dict((rendered.metadata or {}))
                 meta["prompt_variant"] = str(getattr(cfg, "prompt_variant", "default") or "default")
@@ -1289,7 +1302,11 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     "sentence_contract_render_enabled": bool(
                         rendered_meta.get("sentence_contract_render_enabled", False)
                     ),
+                    "support_span_contract_enabled": bool(
+                        rendered_meta.get("support_span_contract_enabled", False)
+                    ),
                     "sentence_contract_max_item_tokens": rendered_meta.get("sentence_contract_max_item_tokens", None),
+                    "support_span_max_item_tokens": rendered_meta.get("support_span_max_item_tokens", None),
                     "selected_to_rendered_preservation_rate": float(
                         rendered_meta.get("selected_to_rendered_preservation_rate", 0.0) or 0.0
                     ),
@@ -1304,6 +1321,13 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     "metadata_tokens": int(_safe_int(rendered_meta.get("metadata_tokens", 0), 0)),
                     "evidence_text_tokens": int(_safe_int(rendered_meta.get("evidence_text_tokens", 0), 0)),
                     "separator_tokens": int(_safe_int(rendered_meta.get("separator_tokens", 0), 0)),
+                    "support_span_score_avg": float(rendered_meta.get("support_span_score_avg", 0.0) or 0.0),
+                    "query_entity_hit_rate": float(rendered_meta.get("query_entity_hit_rate", 0.0) or 0.0),
+                    "anchor_entity_hit_rate": float(rendered_meta.get("anchor_entity_hit_rate", 0.0) or 0.0),
+                    "bridge_entity_hit_rate": float(rendered_meta.get("bridge_entity_hit_rate", 0.0) or 0.0),
+                    "adjacent_sentence_used_rate": float(
+                        rendered_meta.get("adjacent_sentence_used_rate", 0.0) or 0.0
+                    ),
                     "render_diagnostics": dict(render_diag),
                     "selected_to_rendered_jaccard": float(
                         render_diag.get("selected_to_rendered_jaccard", 0.0) or 0.0
@@ -1360,7 +1384,11 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     "sentence_contract_render_enabled": bool(
                         rendered_meta.get("sentence_contract_render_enabled", False)
                     ),
+                    "support_span_contract_enabled": bool(
+                        rendered_meta.get("support_span_contract_enabled", False)
+                    ),
                     "sentence_contract_max_item_tokens": rendered_meta.get("sentence_contract_max_item_tokens", None),
+                    "support_span_max_item_tokens": rendered_meta.get("support_span_max_item_tokens", None),
                     "selected_to_rendered_preservation_rate": float(
                         rendered_meta.get("selected_to_rendered_preservation_rate", 0.0) or 0.0
                     ),
@@ -1371,6 +1399,13 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     "truncated_item_rate": float(rendered_meta.get("truncated_item_rate", 0.0) or 0.0),
                     "minimal_span_fallback_rate": float(
                         rendered_meta.get("minimal_span_fallback_rate", 0.0) or 0.0
+                    ),
+                    "support_span_score_avg": float(rendered_meta.get("support_span_score_avg", 0.0) or 0.0),
+                    "query_entity_hit_rate": float(rendered_meta.get("query_entity_hit_rate", 0.0) or 0.0),
+                    "anchor_entity_hit_rate": float(rendered_meta.get("anchor_entity_hit_rate", 0.0) or 0.0),
+                    "bridge_entity_hit_rate": float(rendered_meta.get("bridge_entity_hit_rate", 0.0) or 0.0),
+                    "adjacent_sentence_used_rate": float(
+                        rendered_meta.get("adjacent_sentence_used_rate", 0.0) or 0.0
                     ),
                     "render_diagnostics": dict(render_diag),
                 },
@@ -1639,6 +1674,22 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         "sentence_contract_evidence_text_tokens_avg": mean_or_zero(
             [float(_render_diag_from_row(r).get("evidence_text_tokens", 0.0) or 0.0) for r in rows]
         ),
+        "support_span_contract_enabled": bool(getattr(cfg, "support_span_contract_enabled", False)),
+        "support_span_score_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("support_span_score_avg", 0.0) or 0.0) for r in rows]
+        ),
+        "support_span_query_entity_hit_rate_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("query_entity_hit_rate", 0.0) or 0.0) for r in rows]
+        ),
+        "support_span_anchor_entity_hit_rate_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("anchor_entity_hit_rate", 0.0) or 0.0) for r in rows]
+        ),
+        "support_span_bridge_entity_hit_rate_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("bridge_entity_hit_rate", 0.0) or 0.0) for r in rows]
+        ),
+        "support_span_adjacent_sentence_used_rate_avg": mean_or_zero(
+            [float(_render_diag_from_row(r).get("adjacent_sentence_used_rate", 0.0) or 0.0) for r in rows]
+        ),
         "selector_render_estimated_actual_prompt_tokens_avg": mean_or_zero(
             [float(_render_diag_from_row(r).get("estimated_actual_prompt_tokens", 0.0) or 0.0) for r in rows]
         ),
@@ -1834,6 +1885,19 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             "sentence_contract_preserve_selected_items": cfg.sentence_contract_preserve_selected_items,
             "sentence_contract_minimal_span_fallback": cfg.sentence_contract_minimal_span_fallback,
             "sentence_contract_log_diagnostics": cfg.sentence_contract_log_diagnostics,
+            "support_span_contract_enabled": cfg.support_span_contract_enabled,
+            "support_span_max_item_tokens": cfg.support_span_max_item_tokens,
+            "support_span_metadata_pruning": cfg.support_span_metadata_pruning,
+            "support_span_use_query_entity_signal": cfg.support_span_use_query_entity_signal,
+            "support_span_use_anchor_entity_signal": cfg.support_span_use_anchor_entity_signal,
+            "support_span_use_bridge_signal": cfg.support_span_use_bridge_signal,
+            "support_span_use_view_stability_signal": cfg.support_span_use_view_stability_signal,
+            "support_span_length_penalty_enabled": cfg.support_span_length_penalty_enabled,
+            "support_span_adjacent_sentence_enabled": cfg.support_span_adjacent_sentence_enabled,
+            "support_span_adjacent_sentence_max_count": cfg.support_span_adjacent_sentence_max_count,
+            "support_span_chunk_expansion_allowed": cfg.support_span_chunk_expansion_allowed,
+            "support_span_preserve_selected_items": cfg.support_span_preserve_selected_items,
+            "support_span_log_diagnostics": cfg.support_span_log_diagnostics,
             "order_strategy": cfg.order_strategy,
         },
         "profile_config": {

@@ -379,3 +379,16 @@ sentence_contract_chunk_expansion_allowed: false
 sentence_contract_preserve_selected_items: true
 sentence_contract_minimal_span_fallback: true
 sentence_contract_log_diagnostics: true
+support_span_contract_enabled: false
+support_span_max_item_tokens: 48
+support_span_metadata_pruning: true
+support_span_use_query_entity_signal: true
+support_span_use_anchor_entity_signal: true
+support_span_use_bridge_signal: true
+support_span_use_view_stability_signal: true
+support_span_length_penalty_enabled: true
+support_span_adjacent_sentence_enabled: true
+support_span_adjacent_sentence_max_count: 1
+support_span_chunk_expansion_allowed: false
+support_span_preserve_selected_items: true
+support_span_log_diagnostics: true
