@@ -7,9 +7,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
+import sys
 from collections import defaultdict
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Mapping, Tuple
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 from effirag.champion_bottleneck_audit import (
     aggregate_query_rows_by_profile_dataset,
@@ -60,6 +66,20 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(value)
     except Exception:
         return int(default)
+
+
+def _slug_token(text: str) -> str:
+    token = re.sub(r"[^A-Za-z0-9]+", "_", str(text or "")).strip("_")
+    return token.upper() if token else "AUDIT"
+
+
+def _infer_qa_profile_from_path(path: Path) -> str:
+    parts = list(path.parts)
+    if "qa_smoke" in parts:
+        idx = parts.index("qa_smoke")
+        if idx + 1 < len(parts):
+            return str(parts[idx + 1]).strip()
+    return ""
 
 
 def _reconcile_decomposition_with_prompt_override(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -204,6 +224,7 @@ def _build_query_row(
         "sf_F1_per_1k_prompt": float(density.get("sf_F1_per_1k_prompt", 0.0)),
         "QA_EM": float(_safe_float(metrics.get("em", metrics.get("EM", 0.0)), 0.0)),
         "QA_F1": float(_safe_float(metrics.get("f1", metrics.get("F1", 0.0)), 0.0)),
+        "qa_metric_available": bool(row.get("qa_executed", False)),
         "completion_tokens": int(_safe_int(generation_diag.get("completion_tokens", 0), 0)),
         "answer_error_type_if_available": str(generation_diag.get("answer_error_type", "")),
         "sentence_contract_render_enabled": bool(rendered_meta.get("sentence_contract_render_enabled", False)),
@@ -243,7 +264,7 @@ def _build_query_row(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Phase-6J champion-based bottleneck audit.")
+    parser = argparse.ArgumentParser(description="Champion-based bottleneck audit.")
     parser.add_argument("--datasets", nargs="+", default=["hotpotqa", "2wikimultihopqa"])
     parser.add_argument(
         "--profiles",
@@ -268,6 +289,17 @@ def main() -> None:
         nargs="*",
         default=[],
         help="Optional dataset=qa_json mappings. Empty values are ignored.",
+    )
+    parser.add_argument("--phase-label", default="Phase-6J")
+    parser.add_argument("--audit-title", default="Champion-based Bottleneck Audit")
+    parser.add_argument(
+        "--purpose-text",
+        default="Reposition bottlenecks against legacy and profile champions before any method patching.",
+    )
+    parser.add_argument(
+        "--summary-md-name",
+        default="",
+        help="Optional markdown output filename. Default keeps Phase-6J legacy name when defaults are used.",
     )
     parser.add_argument("--output-dir", default="outputs/phase6j_champion_bottleneck_audit")
     args = parser.parse_args()
@@ -300,7 +332,8 @@ def main() -> None:
         qa_path = qa_json_map.get(dataset)
         if not qa_path:
             continue
-        profile_map, dataset_map = load_optional_qa_index(qa_path, dataset)
+        qa_profile = _infer_qa_profile_from_path(qa_path)
+        profile_map, dataset_map = load_optional_qa_index(qa_path, dataset, qa_profile)
         qa_profile_index.update(profile_map)
         for key, rows in dataset_map.items():
             qa_dataset_index[key].extend(list(rows or []))
@@ -575,6 +608,48 @@ def main() -> None:
         ],
     )
 
+    qa_smoke_rows: List[Dict[str, Any]] = []
+    for row in aggregate_rows:
+        qa_smoke_rows.append(
+            {
+                "dataset": str(row.get("dataset", "")),
+                "profile": str(row.get("profile", "")),
+                "num_queries": int(_safe_int(row.get("num_queries", 0), 0)),
+                "qa_num_queries": int(_safe_int(row.get("qa_num_queries", 0), 0)),
+                "QA_EM": float(_safe_float(row.get("QA_EM", 0.0), 0.0)),
+                "QA_F1": float(_safe_float(row.get("QA_F1", 0.0), 0.0)),
+            }
+        )
+    write_csv(
+        output_dir / "qa_smoke_by_profile_dataset.csv",
+        qa_smoke_rows,
+        fieldnames=["dataset", "profile", "num_queries", "qa_num_queries", "QA_EM", "QA_F1"],
+    )
+
+    if qa_json_map:
+        query_qa_rows: List[Dict[str, Any]] = []
+        for row in query_rows:
+            dataset = str(row.get("dataset", ""))
+            if dataset not in qa_json_map:
+                continue
+            query_qa_rows.append(
+                {
+                    "dataset": dataset,
+                    "qid": str(row.get("qid", "")),
+                    "profile": str(row.get("profile", "")),
+                    "QA_EM": float(_safe_float(row.get("QA_EM", 0.0), 0.0)),
+                    "QA_F1": float(_safe_float(row.get("QA_F1", 0.0), 0.0)),
+                    "rendered_sf_R": float(_safe_float(row.get("rendered_sf_R", 0.0), 0.0)),
+                    "rendered_sf_P": float(_safe_float(row.get("rendered_sf_P", 0.0), 0.0)),
+                    "rendered_sf_F1_per_1k_tokens": float(
+                        _safe_float(row.get("rendered_sf_F1_per_1k_tokens", 0.0), 0.0)
+                    ),
+                    "rendered_tokens": int(_safe_int(row.get("rendered_tokens", 0), 0)),
+                    "prompt_tokens": int(_safe_int(row.get("prompt_tokens", 0), 0)),
+                }
+            )
+        write_jsonl(output_dir / "query_level_qa_smoke.jsonl", query_qa_rows)
+
     summary_md = build_phase6j_markdown(
         datasets=datasets,
         profiles=profiles,
@@ -586,14 +661,30 @@ def main() -> None:
         unit_rows=unit_rows,
         utility_rows=utility_rows,
         taxonomy_rows=taxonomy_rows,
+        phase_label=str(args.phase_label),
+        audit_title=str(args.audit_title),
+        purpose_text=str(args.purpose_text),
     )
-    (output_dir / "PHASE6J_CHAMPION_BOTTLENECK_AUDIT.md").write_text(summary_md, encoding="utf-8")
+    default_phase = str(args.phase_label) == "Phase-6J"
+    default_title = str(args.audit_title) == "Champion-based Bottleneck Audit"
+    default_name = "PHASE6J_CHAMPION_BOTTLENECK_AUDIT.md"
+    if str(args.summary_md_name or "").strip():
+        summary_name = str(args.summary_md_name).strip()
+    elif default_phase and default_title:
+        summary_name = default_name
+    else:
+        summary_name = f"{_slug_token(str(args.phase_label))}_{_slug_token(str(args.audit_title))}.md"
+    (output_dir / summary_name).write_text(summary_md, encoding="utf-8")
 
     run_manifest = {
         "datasets": datasets,
         "profiles": profiles,
         "roots": {k: str(v) for k, v in roots.items()},
         "qa_jsons": {k: str(v) for k, v in qa_json_map.items()},
+        "phase_label": str(args.phase_label),
+        "audit_title": str(args.audit_title),
+        "purpose_text": str(args.purpose_text),
+        "summary_md_name": str(summary_name),
         "query_sources": query_sources,
         "output_dir": str(output_dir),
         "num_query_rows": int(len(query_rows)),

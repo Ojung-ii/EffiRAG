@@ -81,6 +81,21 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, Any]], fieldnames: Sequenc
             writer.writerow(dict(row or {}))
 
 
+def load_json_or_jsonl(path: Path) -> Any:
+    if not path.exists():
+        return {}
+    text = _safe_text(path.read_text(encoding="utf-8"))
+    if not text:
+        return {}
+    try:
+        return json.loads(text)
+    except Exception:
+        rows = read_jsonl(path)
+        if rows:
+            return rows
+        return {}
+
+
 def parse_key_value_items(items: Iterable[str]) -> Dict[str, Path]:
     out: Dict[str, Path] = {}
     for item in list(items or []):
@@ -551,14 +566,15 @@ def aggregate_query_rows_by_profile_dataset(rows: Sequence[Mapping[str, Any]]) -
         "source_repetition_rate",
         "entity_repetition_rate",
         "sf_F1_per_1k_prompt",
-        "QA_EM",
-        "QA_F1",
         "chunk_like_rate",
         "avg_tokens_per_item",
     ]
     out: List[Dict[str, Any]] = []
     for (dataset, profile), group in sorted(buckets.items()):
         agg = _aggregate(group, metric_keys)
+        qa_rows = [item for item in group if bool(item.get("qa_metric_available", False))]
+        qa_em = float(mean_or_zero([_safe_float(item.get("QA_EM", 0.0), 0.0) for item in qa_rows]))
+        qa_f1 = float(mean_or_zero([_safe_float(item.get("QA_F1", 0.0), 0.0) for item in qa_rows]))
         dominant_counter = Counter([_safe_text(item.get("dominant_bottleneck", "")) for item in group])
         lost_stage_counter = Counter([_safe_text(item.get("dominant_lost_stage", "")) for item in group])
         out.append(
@@ -566,6 +582,9 @@ def aggregate_query_rows_by_profile_dataset(rows: Sequence[Mapping[str, Any]]) -
                 "dataset": dataset,
                 "profile": profile,
                 "num_queries": int(len(group)),
+                "qa_num_queries": int(len(qa_rows)),
+                "QA_EM": float(qa_em),
+                "QA_F1": float(qa_f1),
                 **agg,
                 "candidate_contains_legacy_evidence_rate": float(
                     mean_or_zero([1.0 if bool(item.get("candidate_contains_legacy_evidence", False)) else 0.0 for item in group])
@@ -759,12 +778,13 @@ def champion_summary_rows(
     return out
 
 
-def load_optional_qa_index(path: Path, dataset: str) -> Tuple[Dict[Tuple[str, str, str], Dict[str, float]], Dict[Tuple[str, str], List[Dict[str, float]]]]:
-    if not path.exists():
-        return {}, {}
-    try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
+def load_optional_qa_index(
+    path: Path,
+    dataset: str,
+    default_profile: str = "",
+) -> Tuple[Dict[Tuple[str, str, str], Dict[str, float]], Dict[Tuple[str, str], List[Dict[str, float]]]]:
+    payload = load_json_or_jsonl(path)
+    if not payload:
         return {}, {}
 
     out_profile: Dict[Tuple[str, str, str], Dict[str, float]] = {}
@@ -783,16 +803,60 @@ def load_optional_qa_index(path: Path, dataset: str) -> Tuple[Dict[Tuple[str, st
         if not qid:
             return
         ds = _safe_text(item.get("dataset", fallback_dataset)) or fallback_dataset
-        profile = _safe_text(item.get("profile", item.get("variant", "")))
-        em = _safe_float(item.get("em", item.get("EM", item.get("qa_em", item.get("QA_EM", 0.0)))), 0.0)
-        f1 = _safe_float(item.get("f1", item.get("F1", item.get("qa_f1", item.get("QA_F1", 0.0)))), 0.0)
-        prompt_tokens = _safe_int(item.get("prompt_tokens", 0), 0)
-        completion_tokens = _safe_int(item.get("completion_tokens", 0), 0)
+        profile = _safe_text(item.get("profile", item.get("variant", default_profile)))
+        metrics = item.get("metrics", {})
+        if not isinstance(metrics, Mapping):
+            metrics = {}
+        em = _safe_float(
+            item.get(
+                "em",
+                item.get(
+                    "EM",
+                    item.get(
+                        "qa_em",
+                        item.get(
+                            "QA_EM",
+                            metrics.get("em", metrics.get("EM", metrics.get("qa_em", metrics.get("QA_EM", 0.0)))),
+                        ),
+                    ),
+                ),
+            ),
+            0.0,
+        )
+        f1 = _safe_float(
+            item.get(
+                "f1",
+                item.get(
+                    "F1",
+                    item.get(
+                        "qa_f1",
+                        item.get(
+                            "QA_F1",
+                            metrics.get("f1", metrics.get("F1", metrics.get("qa_f1", metrics.get("QA_F1", 0.0)))),
+                        ),
+                    ),
+                ),
+            ),
+            0.0,
+        )
+        generation_diag = item.get("generation_diagnostics", {})
+        if not isinstance(generation_diag, Mapping):
+            generation_diag = {}
+        prompt_tokens = _safe_int(
+            item.get("prompt_tokens", generation_diag.get("prompt_tokens", item.get("prompt_token_count", 0))),
+            0,
+        )
+        completion_tokens = _safe_int(
+            item.get("completion_tokens", generation_diag.get("completion_tokens", item.get("completion_token_count", 0))),
+            0,
+        )
         record = {
             "QA_EM": float(em),
             "QA_F1": float(f1),
             "prompt_tokens": int(prompt_tokens),
             "completion_tokens": int(completion_tokens),
+            "qa_profile": str(profile),
+            "qa_metric_available": True,
         }
         if profile:
             out_profile[(ds, profile, qid)] = record
@@ -834,11 +898,32 @@ def merge_optional_qa_metrics(
     merged = dict(base_row or {})
     key_profile = (dataset, profile, qid)
     if key_profile in qa_profile_index:
-        merged.update(dict(qa_profile_index[key_profile] or {}))
+        matched = dict(qa_profile_index[key_profile] or {})
+        merged.update(matched)
+        merged["qa_metric_available"] = bool(matched.get("qa_metric_available", True))
         return merged
     dataset_records = list(qa_dataset_index.get((dataset, qid), []) or [])
-    if len(dataset_records) == 1:
-        merged.update(dict(dataset_records[0] or {}))
+    if not dataset_records:
+        return merged
+    exact_profile = [
+        dict(record or {})
+        for record in dataset_records
+        if _safe_text((record or {}).get("qa_profile", "")) == profile
+    ]
+    if len(exact_profile) == 1:
+        matched = exact_profile[0]
+        merged.update(matched)
+        merged["qa_metric_available"] = bool(matched.get("qa_metric_available", True))
+        return merged
+    compatible = [
+        dict(record or {})
+        for record in dataset_records
+        if _safe_text((record or {}).get("qa_profile", "")) in {"", profile}
+    ]
+    if len(compatible) == 1:
+        matched = compatible[0]
+        merged.update(matched)
+        merged["qa_metric_available"] = bool(matched.get("qa_metric_available", True))
     return merged
 
 
@@ -854,6 +939,9 @@ def build_phase6j_markdown(
     unit_rows: Sequence[Mapping[str, Any]],
     utility_rows: Sequence[Mapping[str, Any]],
     taxonomy_rows: Sequence[Mapping[str, Any]],
+    phase_label: str = "Phase-6J",
+    audit_title: str = "Champion-based Bottleneck Audit",
+    purpose_text: str = "Reposition bottlenecks against legacy and profile champions before any method patching.",
 ) -> str:
     agg_by_key = {
         (_safe_text(r.get("dataset", "")), _safe_text(r.get("profile", ""))): dict(r)
@@ -881,11 +969,11 @@ def build_phase6j_markdown(
     }
 
     lines: List[str] = []
-    lines.append("# Phase-6J Champion-based Bottleneck Audit")
+    lines.append(f"# {phase_label} {audit_title}")
     lines.append("")
     lines.append("## 1. Purpose")
     lines.append("")
-    lines.append("Reposition bottlenecks against legacy and profile champions before any method patching.")
+    lines.append(str(purpose_text or "").strip() or "TBD")
     lines.append("")
     lines.append("## 2. Compared Profiles")
     lines.append("")
@@ -1037,7 +1125,22 @@ def build_phase6j_markdown(
                 f"{_safe_text(row.get('dominant_bottleneck', 'none'))} |"
             )
     lines.append("")
-    lines.append("## 11. Decision")
+    lines.append("## 11. QA Smoke")
+    lines.append("")
+    lines.append("| dataset | profile | qa_num_queries | QA_EM | QA_F1 |")
+    lines.append("|---|---|---:|---:|---:|")
+    for dataset in list(datasets or []):
+        for profile in list(profiles or []):
+            row = agg_by_key.get((dataset, profile))
+            if not row:
+                continue
+            lines.append(
+                f"| {dataset} | {profile} | {int(_safe_int(row.get('qa_num_queries', 0), 0))} | "
+                f"{float(_safe_float(row.get('QA_EM', 0.0), 0.0)):.4f} | "
+                f"{float(_safe_float(row.get('QA_F1', 0.0), 0.0)):.4f} |"
+            )
+    lines.append("")
+    lines.append("## 12. Decision")
     lines.append("")
     lines.append("- Fine-grained improvement or large redesign?")
     lines.append("- Which bottleneck should be targeted next?")
