@@ -487,6 +487,24 @@ class RagConfig(RetrievalConfig):
     adaptive_support_span_metadata_pruning: bool = True
     adaptive_support_span_preserve_selected_items: bool = True
     adaptive_support_span_log_diagnostics: bool = True
+    # Answerability-constrained compact evidence selection.
+    answerability_selection_enabled: bool = False
+    answerability_selection_mode: str = "greedy"  # greedy | beam | beam3
+    answerability_selection_beam_size: int = 3
+    answerability_selection_max_atoms: int = 8
+    answerability_selection_max_tokens: int = 220
+    answerability_selection_hard_token_budget_enabled: bool = True
+    answerability_selection_use_answerability: bool = True
+    answerability_selection_use_structure: bool = True
+    answerability_selection_use_noise_penalty: bool = True
+    answerability_selection_use_cost_penalty: bool = True
+    answerability_selection_ordering_enabled: bool = True
+    answerability_selection_atom_span_max_sentences: int = 2
+    answerability_selection_structure_weight: float = 0.65
+    answerability_selection_noise_weight: float = 0.55
+    answerability_selection_cost_weight: float = 0.35
+    answerability_selection_length_penalty_weight: float = 0.04
+    answerability_selection_log_diagnostics: bool = True
     # score | retrieval | corridor_rank | query_bridge_answer
     # corridor_aware_flat flags:
     # +raw_focus_front +raw_focus_dedup +raw_focus_scaffold_light +raw_focus_top1_bundle_only(+top2)
@@ -630,11 +648,21 @@ def apply_cli_overrides(config_dict, args_namespace):
         "adaptive_support_span_metadata_pruning",
         "adaptive_support_span_preserve_selected_items",
         "adaptive_support_span_log_diagnostics",
+        "answerability_selection_enabled",
+        "answerability_selection_hard_token_budget_enabled",
+        "answerability_selection_use_answerability",
+        "answerability_selection_use_structure",
+        "answerability_selection_use_noise_penalty",
+        "answerability_selection_use_cost_penalty",
+        "answerability_selection_ordering_enabled",
+        "answerability_selection_log_diagnostics",
     ):
         if key in merged:
             merged[key] = parse_bool(merged[key])
     if "adaptive_support_span_bridge_mode" in merged:
         merged["adaptive_support_span_bridge_mode"] = str(merged["adaptive_support_span_bridge_mode"]).strip().lower()
+    if "answerability_selection_mode" in merged:
+        merged["answerability_selection_mode"] = str(merged["answerability_selection_mode"]).strip().lower()
     if "force_rebuild_graph_index" in merged:
         merged["force_rebuild_graph_index"] = parse_bool(merged["force_rebuild_graph_index"])
     if "timestamp_output" in merged:
