@@ -8,6 +8,8 @@ GPU="${GPU:-1}"
 OUT_ROOT="${OUT_ROOT:-outputs/phase6p_acr_qa_smoke}"
 DATASETS="${DATASETS:-hotpotqa 2wikimultihopqa}"
 SAMPLE_SIZE="${SAMPLE_SIZE:-100}"
+RETRIEVAL_AUDIT_ROOT="${RETRIEVAL_AUDIT_ROOT:-outputs/phase6p_acr_retrieval_only/audit}"
+SUMMARY_OUT_ROOT="${SUMMARY_OUT_ROOT:-${OUT_ROOT}/summary}"
 
 mkdir -p "${OUT_ROOT}/logs"
 
@@ -45,9 +47,23 @@ run_unified_qa unified_acr_v1_no_cost unified_acr_v1_no_cost
 run_unified_qa unified_acr_v1_no_ordering unified_acr_v1_no_ordering
 run_unified_qa unified_acr_v1_beam3 unified_acr_v1_beam3
 
+echo "=== phase6p summary ==="
+if [ -f scripts/summarize_phase6p_acr_results.py ]; then
+  PYTHONPATH=. "${PYTHON}" scripts/summarize_phase6p_acr_results.py \
+    --datasets ${DATASETS} \
+    --qa-root "${OUT_ROOT}/qa_runs" \
+    --retrieval-audit-root "${RETRIEVAL_AUDIT_ROOT}" \
+    --output-dir "${SUMMARY_OUT_ROOT}" \
+    --summary-md-name "PHASE6P_ACR_SUMMARY.md" \
+    2>&1 | tee "${OUT_ROOT}/logs/summary_phase6p.log"
+else
+  echo "WARNING: scripts/summarize_phase6p_acr_results.py not found; skipping summary generation."
+fi
+
 echo "=== cleanup ==="
 find . -type d -name "__pycache__" -prune -exec rm -rf {} +
 find . -type f -name "*.pyc" -delete
 rm -rf .pytest_cache
 
 echo "=== done ==="
+echo "Summary: ${SUMMARY_OUT_ROOT}/PHASE6P_ACR_SUMMARY.md"
