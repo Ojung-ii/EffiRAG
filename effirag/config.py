@@ -505,6 +505,23 @@ class RagConfig(RetrievalConfig):
     answerability_selection_cost_weight: float = 0.35
     answerability_selection_length_penalty_weight: float = 0.04
     answerability_selection_log_diagnostics: bool = True
+    # Unified ACR-RCEDR selector.
+    unified_acr_rcedr_enabled: bool = False
+    unified_acr_rcedr_mode: str = "greedy"  # greedy | beam | beam3
+    unified_acr_rcedr_beam_size: int = 3
+    unified_acr_rcedr_max_atoms: int = 8
+    unified_acr_rcedr_max_tokens: int = 220
+    unified_acr_rcedr_hard_token_budget_enabled: bool = True
+    unified_acr_rcedr_use_answerability_gain: bool = True
+    unified_acr_rcedr_use_bridge_gain: bool = True
+    unified_acr_rcedr_use_redundancy_penalty: bool = True
+    unified_acr_rcedr_use_cost_penalty: bool = False
+    unified_acr_rcedr_lambda_bridge: float = 0.28
+    unified_acr_rcedr_mu_redundancy: float = 0.22
+    unified_acr_rcedr_answerability_weight: float = 1.0
+    unified_acr_rcedr_atom_span_max_sentences: int = 2
+    unified_acr_rcedr_length_penalty_weight: float = 0.04
+    unified_acr_rcedr_log_diagnostics: bool = True
     # score | retrieval | corridor_rank | query_bridge_answer
     # corridor_aware_flat flags:
     # +raw_focus_front +raw_focus_dedup +raw_focus_scaffold_light +raw_focus_top1_bundle_only(+top2)
@@ -656,6 +673,13 @@ def apply_cli_overrides(config_dict, args_namespace):
         "answerability_selection_use_cost_penalty",
         "answerability_selection_ordering_enabled",
         "answerability_selection_log_diagnostics",
+        "unified_acr_rcedr_enabled",
+        "unified_acr_rcedr_hard_token_budget_enabled",
+        "unified_acr_rcedr_use_answerability_gain",
+        "unified_acr_rcedr_use_bridge_gain",
+        "unified_acr_rcedr_use_redundancy_penalty",
+        "unified_acr_rcedr_use_cost_penalty",
+        "unified_acr_rcedr_log_diagnostics",
     ):
         if key in merged:
             merged[key] = parse_bool(merged[key])
@@ -663,6 +687,8 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["adaptive_support_span_bridge_mode"] = str(merged["adaptive_support_span_bridge_mode"]).strip().lower()
     if "answerability_selection_mode" in merged:
         merged["answerability_selection_mode"] = str(merged["answerability_selection_mode"]).strip().lower()
+    if "unified_acr_rcedr_mode" in merged:
+        merged["unified_acr_rcedr_mode"] = str(merged["unified_acr_rcedr_mode"]).strip().lower()
     if "force_rebuild_graph_index" in merged:
         merged["force_rebuild_graph_index"] = parse_bool(merged["force_rebuild_graph_index"])
     if "timestamp_output" in merged:

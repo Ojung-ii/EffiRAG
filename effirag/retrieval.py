@@ -31,6 +31,7 @@ from .config import RetrievalConfig
 from .embedding import cosine_similarity, encode_texts, rerank_sentences_by_embedding, topk_cosine_similarity
 from .evidence_density_rerank import rerank_evidence_density
 from .answerability_selection import apply_answerability_constrained_selection
+from .unified_acr_rcedr_selector import apply_unified_acr_rcedr_selection
 from .gl_rcedr import apply_gl_rcedr
 from .global_index import load_or_build_global_index, load_semantic_index
 from .graph import build_document_entity_graph
@@ -5623,6 +5624,7 @@ def run_graphrag_core(
         "phase2_refine_ms": 0.0,
         "top1_correction_ms": 0.0,
         "sentence_rerank_ms": 0.0,
+        "unified_acr_rcedr_ms": 0.0,
         "render_ms": 0.0,
         # backward-compatible aliases
         "proposal_time_ms": 0.0,
@@ -5667,6 +5669,11 @@ def run_graphrag_core(
         "reason": "disabled",
     }
     answerability_selection_diag = {
+        "enabled": False,
+        "applied": False,
+        "reason": "disabled",
+    }
+    unified_acr_rcedr_diag = {
         "enabled": False,
         "applied": False,
         "reason": "disabled",
@@ -6691,67 +6698,108 @@ def run_graphrag_core(
         sentence_score_map=selected_sentence_score_map,
         corridors=filtered_corridors,
     )
-    selected_sentence_ids, selected_sentences, gl_rcedr_diag = apply_gl_rcedr(
-        question_text=sample.question,
-        selected_sentence_ids=selected_sentence_ids,
-        selected_sentences=selected_sentences,
-        sentence_feature_table=sentence_feature_table,
-        cfg=cfg,
-    )
-    if bool(gl_rcedr_diag.get("applied", False)):
-        sentence_feature_table = _build_sentence_feature_table(
-            sample=sample,
+    unified_selector_enabled = bool(getattr(cfg, "unified_acr_rcedr_enabled", False))
+    if unified_selector_enabled:
+        unified_selector_start = time.perf_counter()
+        selected_sentence_ids, selected_sentences, unified_acr_rcedr_diag = apply_unified_acr_rcedr_selection(
+            question_text=sample.question,
             selected_sentence_ids=selected_sentence_ids,
-            sentence_texts=selected_sentences,
-            sentence_score_map=selected_sentence_score_map,
-            corridors=filtered_corridors,
+            selected_sentences=selected_sentences,
+            sentence_feature_table=sentence_feature_table,
+            cfg=cfg,
         )
-    selected_sentence_ids, selected_sentences, evidence_density_rerank_diag = rerank_evidence_density(
-        question_text=sample.question,
-        selected_sentence_ids=selected_sentence_ids,
-        selected_sentences=selected_sentences,
-        sentence_feature_table=sentence_feature_table,
-        cfg=cfg,
-    )
-    if bool(evidence_density_rerank_diag.get("applied", False)):
-        sentence_feature_table = _build_sentence_feature_table(
-            sample=sample,
+        stage_ms["unified_acr_rcedr_ms"] = float((time.perf_counter() - unified_selector_start) * 1000.0)
+        if bool(unified_acr_rcedr_diag.get("applied", False)):
+            sentence_feature_table = _build_sentence_feature_table(
+                sample=sample,
+                selected_sentence_ids=selected_sentence_ids,
+                sentence_texts=selected_sentences,
+                sentence_score_map=selected_sentence_score_map,
+                corridors=filtered_corridors,
+            )
+        gl_rcedr_diag = {
+            "enabled": bool(getattr(cfg, "gl_rcedr_enabled", False)),
+            "applied": False,
+            "reason": "skipped_by_unified_acr_rcedr",
+        }
+        evidence_density_rerank_diag = {
+            "enabled": bool(getattr(cfg, "evidence_density_rerank_enabled", False)),
+            "applied": False,
+            "reason": "skipped_by_unified_acr_rcedr",
+        }
+        top1_sentence_diag = {
+            "enabled": bool(getattr(cfg, "top1_correction_enabled", False)),
+            "applied": False,
+            "head_size": int(len(selected_sentence_ids)),
+            "reason": "skipped_by_unified_acr_rcedr",
+        }
+        answerability_selection_diag = {
+            "enabled": bool(getattr(cfg, "answerability_selection_enabled", False)),
+            "applied": False,
+            "reason": "skipped_by_unified_acr_rcedr",
+        }
+    else:
+        selected_sentence_ids, selected_sentences, gl_rcedr_diag = apply_gl_rcedr(
+            question_text=sample.question,
             selected_sentence_ids=selected_sentence_ids,
-            sentence_texts=selected_sentences,
-            sentence_score_map=selected_sentence_score_map,
-            corridors=filtered_corridors,
+            selected_sentences=selected_sentences,
+            sentence_feature_table=sentence_feature_table,
+            cfg=cfg,
         )
-    top1_sentence_start = time.perf_counter()
-    selected_sentence_ids, selected_sentences, top1_sentence_diag = _apply_lightweight_sentence_top1_correction(
-        selected_sentence_ids=selected_sentence_ids,
-        selected_sentences=selected_sentences,
-        sentence_feature_table=sentence_feature_table,
-        cfg=cfg,
-    )
-    stage_ms["top1_correction_ms"] += float((time.perf_counter() - top1_sentence_start) * 1000.0)
-    if bool(top1_sentence_diag.get("applied", False)):
-        sentence_feature_table = _build_sentence_feature_table(
-            sample=sample,
+        if bool(gl_rcedr_diag.get("applied", False)):
+            sentence_feature_table = _build_sentence_feature_table(
+                sample=sample,
+                selected_sentence_ids=selected_sentence_ids,
+                sentence_texts=selected_sentences,
+                sentence_score_map=selected_sentence_score_map,
+                corridors=filtered_corridors,
+            )
+        selected_sentence_ids, selected_sentences, evidence_density_rerank_diag = rerank_evidence_density(
+            question_text=sample.question,
             selected_sentence_ids=selected_sentence_ids,
-            sentence_texts=selected_sentences,
-            sentence_score_map=selected_sentence_score_map,
-            corridors=filtered_corridors,
+            selected_sentences=selected_sentences,
+            sentence_feature_table=sentence_feature_table,
+            cfg=cfg,
         )
-    selected_sentence_ids, selected_sentences, answerability_selection_diag = apply_answerability_constrained_selection(
-        question_text=sample.question,
-        selected_sentence_ids=selected_sentence_ids,
-        selected_sentences=selected_sentences,
-        sentence_feature_table=sentence_feature_table,
-        cfg=cfg,
-    )
-    if bool(answerability_selection_diag.get("applied", False)):
-        sentence_feature_table = _build_sentence_feature_table(
-            sample=sample,
+        if bool(evidence_density_rerank_diag.get("applied", False)):
+            sentence_feature_table = _build_sentence_feature_table(
+                sample=sample,
+                selected_sentence_ids=selected_sentence_ids,
+                sentence_texts=selected_sentences,
+                sentence_score_map=selected_sentence_score_map,
+                corridors=filtered_corridors,
+            )
+        top1_sentence_start = time.perf_counter()
+        selected_sentence_ids, selected_sentences, top1_sentence_diag = _apply_lightweight_sentence_top1_correction(
             selected_sentence_ids=selected_sentence_ids,
-            sentence_texts=selected_sentences,
-            sentence_score_map=selected_sentence_score_map,
-            corridors=filtered_corridors,
+            selected_sentences=selected_sentences,
+            sentence_feature_table=sentence_feature_table,
+            cfg=cfg,
         )
+        stage_ms["top1_correction_ms"] += float((time.perf_counter() - top1_sentence_start) * 1000.0)
+        if bool(top1_sentence_diag.get("applied", False)):
+            sentence_feature_table = _build_sentence_feature_table(
+                sample=sample,
+                selected_sentence_ids=selected_sentence_ids,
+                sentence_texts=selected_sentences,
+                sentence_score_map=selected_sentence_score_map,
+                corridors=filtered_corridors,
+            )
+        selected_sentence_ids, selected_sentences, answerability_selection_diag = apply_answerability_constrained_selection(
+            question_text=sample.question,
+            selected_sentence_ids=selected_sentence_ids,
+            selected_sentences=selected_sentences,
+            sentence_feature_table=sentence_feature_table,
+            cfg=cfg,
+        )
+        if bool(answerability_selection_diag.get("applied", False)):
+            sentence_feature_table = _build_sentence_feature_table(
+                sample=sample,
+                selected_sentence_ids=selected_sentence_ids,
+                sentence_texts=selected_sentences,
+                sentence_score_map=selected_sentence_score_map,
+                corridors=filtered_corridors,
+            )
     selected_text_map = {
         sid: text for sid, text in zip(selected_sentence_ids, selected_sentences) if sid and text
     }
@@ -6760,7 +6808,8 @@ def run_graphrag_core(
         0.0,
         float(final_total_ms)
         - float(stage_ms.get("sentence_rerank_ms", 0.0))
-        - float(stage_ms.get("top1_correction_ms", 0.0)),
+        - float(stage_ms.get("top1_correction_ms", 0.0))
+        - float(stage_ms.get("unified_acr_rcedr_ms", 0.0)),
     )
     stage_ms["final_render_time_ms"] = float(stage_ms["render_ms"])
 
@@ -6917,6 +6966,7 @@ def run_graphrag_core(
             "bridge_candidate_induction_diag": dict(bridge_induction_diag or {}),
             "candidate_recall_boost_diag": dict(candidate_recall_boost_diag or {}),
             "gl_rcedr_diag": dict(gl_rcedr_diag or {}),
+            "unified_acr_rcedr_diag": dict(unified_acr_rcedr_diag or {}),
             "answerability_selection_diag": dict(answerability_selection_diag or {}),
             "evidence_density_rerank_diag": dict(evidence_density_rerank_diag or {}),
             "shared_budget_profile": str((shared_budget_diag or {}).get("resolved_profile", "off") or "off"),

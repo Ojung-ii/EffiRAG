@@ -96,6 +96,21 @@ COPY_SPAN_INSTRUCTION_UNIFIED_ACR_V11_NO_STRUCTURE = "copy_span_instruction_unif
 COPY_SPAN_INSTRUCTION_UNIFIED_ACR_V11_NO_COST = "copy_span_instruction_unified_acr_v11_no_cost"
 COPY_SPAN_INSTRUCTION_UNIFIED_ACR_V11_ORDERED = "copy_span_instruction_unified_acr_v11_ordered"
 COPY_SPAN_INSTRUCTION_UNIFIED_ACR_V11_BEAM3 = "copy_span_instruction_unified_acr_v11_beam3"
+COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12 = "copy_span_instruction_unified_acr_rcedr_v12"
+COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_ANSWERABILITY_ONLY = (
+    "copy_span_instruction_unified_acr_rcedr_v12_answerability_only"
+)
+COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_BRIDGE = "copy_span_instruction_unified_acr_rcedr_v12_no_bridge"
+COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_REDUNDANCY = (
+    "copy_span_instruction_unified_acr_rcedr_v12_no_redundancy"
+)
+COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_BEAM3 = "copy_span_instruction_unified_acr_rcedr_v12_beam3"
+COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_SENTENCE_RERANK = (
+    "copy_span_instruction_unified_acr_rcedr_v12_no_sentence_rerank"
+)
+COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_BEAM3_NO_SENTENCE_RERANK = (
+    "copy_span_instruction_unified_acr_rcedr_v12_beam3_no_sentence_rerank"
+)
 COPY_SPAN_INSTRUCTION_UNIFIED_GL_RCEDR_V2 = "copy_span_instruction_unified_gl_rcedr_v2"
 COPY_SPAN_INSTRUCTION_UNIFIED_GL_RCEDR_V2_NO_ADAPTIVE_BRIDGE = (
     "copy_span_instruction_unified_gl_rcedr_v2_no_adaptive_bridge"
@@ -151,6 +166,13 @@ UNIFIED_DYNAMIC_PROFILE_NAMES = (
     COPY_SPAN_INSTRUCTION_UNIFIED_ACR_V11_NO_COST,
     COPY_SPAN_INSTRUCTION_UNIFIED_ACR_V11_ORDERED,
     COPY_SPAN_INSTRUCTION_UNIFIED_ACR_V11_BEAM3,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_ANSWERABILITY_ONLY,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_BRIDGE,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_REDUNDANCY,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_BEAM3,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_SENTENCE_RERANK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_BEAM3_NO_SENTENCE_RERANK,
     COPY_SPAN_INSTRUCTION_UNIFIED_GL_RCEDR_NO_DYNAMIC_CONTROL,
     COPY_SPAN_INSTRUCTION_UNIFIED_GL_RCEDR_NO_STABILITY,
     COPY_SPAN_INSTRUCTION_UNIFIED_GL_RCEDR_NO_BRIDGE_PATH,
@@ -285,6 +307,27 @@ UNIFIED_PROFILE_ALIASES = {
     "acr_v11_beam3": COPY_SPAN_INSTRUCTION_UNIFIED_ACR_V11_BEAM3,
     "unified_acr_v11_beam3": COPY_SPAN_INSTRUCTION_UNIFIED_ACR_V11_BEAM3,
     COPY_SPAN_INSTRUCTION_UNIFIED_ACR_V11_BEAM3: COPY_SPAN_INSTRUCTION_UNIFIED_ACR_V11_BEAM3,
+    "acr_rcedr_v12": COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12,
+    "unified_acr_rcedr_v12": COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12: COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12,
+    "acr_rcedr_v12_answerability_only": COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_ANSWERABILITY_ONLY,
+    "unified_acr_rcedr_v12_answerability_only": COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_ANSWERABILITY_ONLY,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_ANSWERABILITY_ONLY: COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_ANSWERABILITY_ONLY,
+    "acr_rcedr_v12_no_bridge": COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_BRIDGE,
+    "unified_acr_rcedr_v12_no_bridge": COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_BRIDGE,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_BRIDGE: COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_BRIDGE,
+    "acr_rcedr_v12_no_redundancy": COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_REDUNDANCY,
+    "unified_acr_rcedr_v12_no_redundancy": COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_REDUNDANCY,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_REDUNDANCY: COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_REDUNDANCY,
+    "acr_rcedr_v12_beam3": COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_BEAM3,
+    "unified_acr_rcedr_v12_beam3": COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_BEAM3,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_BEAM3: COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_BEAM3,
+    "acr_rcedr_v12_no_sentence_rerank": COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_SENTENCE_RERANK,
+    "unified_acr_rcedr_v12_no_sentence_rerank": COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_SENTENCE_RERANK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_SENTENCE_RERANK: COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_SENTENCE_RERANK,
+    "acr_rcedr_v12_beam3_no_sentence_rerank": COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_BEAM3_NO_SENTENCE_RERANK,
+    "unified_acr_rcedr_v12_beam3_no_sentence_rerank": COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_BEAM3_NO_SENTENCE_RERANK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_BEAM3_NO_SENTENCE_RERANK: COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_BEAM3_NO_SENTENCE_RERANK,
     "gl_rcedr_no_dynamic_control": COPY_SPAN_INSTRUCTION_UNIFIED_GL_RCEDR_NO_DYNAMIC_CONTROL,
     "unified_gl_rcedr_no_dynamic_control": COPY_SPAN_INSTRUCTION_UNIFIED_GL_RCEDR_NO_DYNAMIC_CONTROL,
     COPY_SPAN_INSTRUCTION_UNIFIED_GL_RCEDR_NO_DYNAMIC_CONTROL: COPY_SPAN_INSTRUCTION_UNIFIED_GL_RCEDR_NO_DYNAMIC_CONTROL,
@@ -355,6 +398,13 @@ UNIFIED_PROFILE_DIRS = {
     COPY_SPAN_INSTRUCTION_UNIFIED_ACR_V11_NO_COST: "unified_acr_v11_no_cost",
     COPY_SPAN_INSTRUCTION_UNIFIED_ACR_V11_ORDERED: "unified_acr_v11_ordered",
     COPY_SPAN_INSTRUCTION_UNIFIED_ACR_V11_BEAM3: "unified_acr_v11_beam3",
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12: "unified_acr_rcedr_v12",
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_ANSWERABILITY_ONLY: "unified_acr_rcedr_v12_answerability_only",
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_BRIDGE: "unified_acr_rcedr_v12_no_bridge",
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_REDUNDANCY: "unified_acr_rcedr_v12_no_redundancy",
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_BEAM3: "unified_acr_rcedr_v12_beam3",
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_SENTENCE_RERANK: "unified_acr_rcedr_v12_no_sentence_rerank",
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_BEAM3_NO_SENTENCE_RERANK: "unified_acr_rcedr_v12_beam3_no_sentence_rerank",
     COPY_SPAN_INSTRUCTION_UNIFIED_GL_RCEDR_NO_DYNAMIC_CONTROL: "unified_gl_rcedr_no_dynamic_control",
     COPY_SPAN_INSTRUCTION_UNIFIED_GL_RCEDR_NO_STABILITY: "unified_gl_rcedr_no_stability",
     COPY_SPAN_INSTRUCTION_UNIFIED_GL_RCEDR_NO_BRIDGE_PATH: "unified_gl_rcedr_no_bridge_path",
@@ -563,6 +613,41 @@ UNIFIED_BUDGETS = {
         "render_topn": 24,
     },
     COPY_SPAN_INSTRUCTION_UNIFIED_ACR_V11_BEAM3: {
+        "seed_topn": 45,
+        "run_topn": 24,
+        "render_topn": 24,
+    },
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12: {
+        "seed_topn": 45,
+        "run_topn": 24,
+        "render_topn": 24,
+    },
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_ANSWERABILITY_ONLY: {
+        "seed_topn": 45,
+        "run_topn": 24,
+        "render_topn": 24,
+    },
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_BRIDGE: {
+        "seed_topn": 45,
+        "run_topn": 24,
+        "render_topn": 24,
+    },
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_REDUNDANCY: {
+        "seed_topn": 45,
+        "run_topn": 24,
+        "render_topn": 24,
+    },
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_BEAM3: {
+        "seed_topn": 45,
+        "run_topn": 24,
+        "render_topn": 24,
+    },
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_SENTENCE_RERANK: {
+        "seed_topn": 45,
+        "run_topn": 24,
+        "render_topn": 24,
+    },
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_BEAM3_NO_SENTENCE_RERANK: {
         "seed_topn": 45,
         "run_topn": 24,
         "render_topn": 24,
@@ -802,6 +887,22 @@ UNIFIED_METHOD_LOCK = {
     "answerability_selection_cost_weight": 0.35,
     "answerability_selection_length_penalty_weight": 0.04,
     "answerability_selection_log_diagnostics": True,
+    "unified_acr_rcedr_enabled": False,
+    "unified_acr_rcedr_mode": "greedy",
+    "unified_acr_rcedr_beam_size": 3,
+    "unified_acr_rcedr_max_atoms": 8,
+    "unified_acr_rcedr_max_tokens": 220,
+    "unified_acr_rcedr_hard_token_budget_enabled": True,
+    "unified_acr_rcedr_use_answerability_gain": True,
+    "unified_acr_rcedr_use_bridge_gain": True,
+    "unified_acr_rcedr_use_redundancy_penalty": True,
+    "unified_acr_rcedr_use_cost_penalty": False,
+    "unified_acr_rcedr_lambda_bridge": 0.28,
+    "unified_acr_rcedr_mu_redundancy": 0.22,
+    "unified_acr_rcedr_answerability_weight": 1.0,
+    "unified_acr_rcedr_atom_span_max_sentences": 2,
+    "unified_acr_rcedr_length_penalty_weight": 0.04,
+    "unified_acr_rcedr_log_diagnostics": True,
     **UNIFIED_RENDERING_LOCK,
 }
 
@@ -848,6 +949,13 @@ UNIFIED_PROFILE_INTERFACE_LOCKS = {
     COPY_SPAN_INSTRUCTION_UNIFIED_ACR_V11_NO_COST: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
     COPY_SPAN_INSTRUCTION_UNIFIED_ACR_V11_ORDERED: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
     COPY_SPAN_INSTRUCTION_UNIFIED_ACR_V11_BEAM3: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_ANSWERABILITY_ONLY: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_BRIDGE: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_REDUNDANCY: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_BEAM3: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_SENTENCE_RERANK: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_BEAM3_NO_SENTENCE_RERANK: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
     COPY_SPAN_INSTRUCTION_UNIFIED_GL_RCEDR_NO_DYNAMIC_CONTROL: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
     COPY_SPAN_INSTRUCTION_UNIFIED_GL_RCEDR_NO_STABILITY: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
     COPY_SPAN_INSTRUCTION_UNIFIED_GL_RCEDR_NO_BRIDGE_PATH: UNIFIED_LIGHTSEP_INTERFACE_LOCK,
@@ -1615,6 +1723,73 @@ _ACR_V11_BEAM3 = dict(_ACR_V11_BASE)
 _ACR_V11_BEAM3["answerability_selection_mode"] = "beam3"
 _ACR_V11_BEAM3["answerability_selection_beam_size"] = 3
 UNIFIED_PROFILE_METHOD_OVERRIDES[COPY_SPAN_INSTRUCTION_UNIFIED_ACR_V11_BEAM3] = _ACR_V11_BEAM3
+
+_ACR_RCEDR_V12_BASE = dict(_ACR_V1_BASE)
+_ACR_RCEDR_V12_BASE.update(
+    {
+        "gl_rcedr_enabled": False,
+        "answerability_selection_enabled": False,
+        "evidence_density_rerank_enabled": False,
+        "top1_correction_enabled": False,
+        "unified_acr_rcedr_enabled": True,
+        "unified_acr_rcedr_mode": "greedy",
+        "unified_acr_rcedr_beam_size": 3,
+        "unified_acr_rcedr_max_atoms": 8,
+        "unified_acr_rcedr_max_tokens": 220,
+        "unified_acr_rcedr_hard_token_budget_enabled": True,
+        "unified_acr_rcedr_use_answerability_gain": True,
+        "unified_acr_rcedr_use_bridge_gain": True,
+        "unified_acr_rcedr_use_redundancy_penalty": True,
+        "unified_acr_rcedr_use_cost_penalty": False,
+        "unified_acr_rcedr_lambda_bridge": 0.28,
+        "unified_acr_rcedr_mu_redundancy": 0.22,
+        "unified_acr_rcedr_answerability_weight": 1.0,
+        "unified_acr_rcedr_atom_span_max_sentences": 2,
+        "unified_acr_rcedr_length_penalty_weight": 0.04,
+        "unified_acr_rcedr_log_diagnostics": True,
+    }
+)
+UNIFIED_PROFILE_METHOD_OVERRIDES[COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12] = dict(_ACR_RCEDR_V12_BASE)
+
+_ACR_RCEDR_V12_ANSWERABILITY_ONLY = dict(_ACR_RCEDR_V12_BASE)
+_ACR_RCEDR_V12_ANSWERABILITY_ONLY["unified_acr_rcedr_use_bridge_gain"] = False
+_ACR_RCEDR_V12_ANSWERABILITY_ONLY["unified_acr_rcedr_use_redundancy_penalty"] = False
+UNIFIED_PROFILE_METHOD_OVERRIDES[
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_ANSWERABILITY_ONLY
+] = _ACR_RCEDR_V12_ANSWERABILITY_ONLY
+
+_ACR_RCEDR_V12_NO_BRIDGE = dict(_ACR_RCEDR_V12_BASE)
+_ACR_RCEDR_V12_NO_BRIDGE["unified_acr_rcedr_use_bridge_gain"] = False
+UNIFIED_PROFILE_METHOD_OVERRIDES[
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_BRIDGE
+] = _ACR_RCEDR_V12_NO_BRIDGE
+
+_ACR_RCEDR_V12_NO_REDUNDANCY = dict(_ACR_RCEDR_V12_BASE)
+_ACR_RCEDR_V12_NO_REDUNDANCY["unified_acr_rcedr_use_redundancy_penalty"] = False
+UNIFIED_PROFILE_METHOD_OVERRIDES[
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_REDUNDANCY
+] = _ACR_RCEDR_V12_NO_REDUNDANCY
+
+_ACR_RCEDR_V12_BEAM3 = dict(_ACR_RCEDR_V12_BASE)
+_ACR_RCEDR_V12_BEAM3["unified_acr_rcedr_mode"] = "beam"
+_ACR_RCEDR_V12_BEAM3["unified_acr_rcedr_beam_size"] = 3
+UNIFIED_PROFILE_METHOD_OVERRIDES[
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_BEAM3
+] = _ACR_RCEDR_V12_BEAM3
+
+_ACR_RCEDR_V12_NO_SENTENCE_RERANK = dict(_ACR_RCEDR_V12_BASE)
+_ACR_RCEDR_V12_NO_SENTENCE_RERANK["sentence_rerank_enabled"] = False
+UNIFIED_PROFILE_METHOD_OVERRIDES[
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_NO_SENTENCE_RERANK
+] = _ACR_RCEDR_V12_NO_SENTENCE_RERANK
+
+_ACR_RCEDR_V12_BEAM3_NO_SENTENCE_RERANK = dict(_ACR_RCEDR_V12_BASE)
+_ACR_RCEDR_V12_BEAM3_NO_SENTENCE_RERANK["unified_acr_rcedr_mode"] = "beam"
+_ACR_RCEDR_V12_BEAM3_NO_SENTENCE_RERANK["unified_acr_rcedr_beam_size"] = 3
+_ACR_RCEDR_V12_BEAM3_NO_SENTENCE_RERANK["sentence_rerank_enabled"] = False
+UNIFIED_PROFILE_METHOD_OVERRIDES[
+    COPY_SPAN_INSTRUCTION_UNIFIED_ACR_RCEDR_V12_BEAM3_NO_SENTENCE_RERANK
+] = _ACR_RCEDR_V12_BEAM3_NO_SENTENCE_RERANK
 
 UNIFIED_PROFILE_RENDERING_OVERRIDES = {
     COPY_SPAN_INSTRUCTION_UNIFIED_LARGE_REORDER_ALL: {
