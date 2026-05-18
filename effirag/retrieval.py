@@ -4,10 +4,12 @@ import random
 import time
 import hashlib
 import weakref
+import json
 from collections import deque
 from concurrent.futures import ProcessPoolExecutor
 from math import sqrt
 from pathlib import Path
+from typing import Any, Mapping
 
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
@@ -3773,6 +3775,323 @@ def _proposal_union_level_settings(mode, topn_entity, topn_chunk, reserve_topn):
     return settings
 
 
+def _init_proposal_union_profile():
+    timing_keys = [
+        "proposal_union_total_ms",
+        "raw_semantic_entity_fetch_ms",
+        "raw_semantic_chunk_fetch_ms",
+        "graph_reserve_fetch_ms",
+        "entity_to_chunk_expand_ms",
+        "chunk_candidate_lookup_ms",
+        "candidate_materialization_ms",
+        "chunk_text_lookup_ms",
+        "title_lookup_ms",
+        "metadata_lookup_ms",
+        "token_count_lookup_ms",
+        "score_merge_ms",
+        "score_normalization_ms",
+        "dedup_ms",
+        "sort_topk_ms",
+        "early_pruning_ms",
+        "candidate_object_build_ms",
+        "candidate_validation_ms",
+        "candidate_filter_ms",
+        "python_loop_overhead_ms",
+        "cache_lookup_ms",
+        "cache_miss_io_ms",
+    ]
+    count_keys = [
+        "num_raw_semantic_entities",
+        "num_raw_semantic_chunks",
+        "num_graph_reserve_candidates",
+        "num_entity_to_chunk_expansions",
+        "num_chunk_candidates_before_dedup",
+        "num_chunk_candidates_after_dedup",
+        "num_chunk_candidates_after_topk",
+        "num_candidate_objects_built",
+        "num_text_lookups",
+        "num_title_lookups",
+        "num_metadata_lookups",
+        "num_token_count_lookups",
+        "num_score_entries_merged",
+        "num_candidates_sorted",
+        "num_candidates_filtered",
+    ]
+    return {
+        "timing_ms": {key: 0.0 for key in timing_keys},
+        "counts": {key: 0 for key in count_keys},
+        "aliases": {
+            "semantic_candidate_union_ms": "proposal_union_total_ms",
+            "proposal_union_ms": "proposal_union_total_ms",
+        },
+        "overlap_note": "",
+    }
+
+
+def _proposal_profile_add_ms(profile, key, delta_ms):
+    if not isinstance(profile, dict):
+        return
+    timing = profile.get("timing_ms")
+    if not isinstance(timing, dict):
+        return
+    try:
+        timing[key] = float(timing.get(key, 0.0)) + float(delta_ms)
+    except Exception:
+        return
+
+
+def _proposal_profile_add_count(profile, key, delta_count):
+    if not isinstance(profile, dict):
+        return
+    counts = profile.get("counts")
+    if not isinstance(counts, dict):
+        return
+    try:
+        counts[key] = int(counts.get(key, 0)) + int(delta_count)
+    except Exception:
+        return
+
+
+_PHASE6T_PROP_TRACE_COUNTER = 0
+_PHASE6T_CAND_UNION_TRACE_COUNTER = 0
+_PHASE6T_ALIGNED_TRACE_COUNTER = 0
+_PHASE6T_CAND_UNION_POST_TRACE_COUNTER = 0
+_PHASE6T_SCORE_ATTACH_TRACE_COUNTER = 0
+
+
+def _env_truthy(name: str, default: bool = False) -> bool:
+    raw = str(os.environ.get(name, "1" if default else "0") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on", "y"}
+
+
+def _env_int(name: str, default: int = 0) -> int:
+    try:
+        return int(str(os.environ.get(name, default)).strip())
+    except Exception:
+        return int(default)
+
+
+def _parse_trace_sample_ids(raw: str) -> set[str]:
+    text = str(raw or "").strip()
+    if not text:
+        return set()
+    out: set[str] = set()
+    for token in text.split(","):
+        t = str(token or "").strip()
+        if t:
+            out.add(t)
+    return out
+
+
+def _should_enable_phase6t_prop_trace(sample_id: str) -> bool:
+    global _PHASE6T_PROP_TRACE_COUNTER
+    if not _env_truthy("PHASE6T_PROP_TRACE", False):
+        return False
+    allow_ids = _parse_trace_sample_ids(os.environ.get("PHASE6T_PROP_TRACE_SAMPLE_IDS", ""))
+    sid = str(sample_id or "")
+    if allow_ids and sid not in allow_ids:
+        return False
+    limit = _env_int("PHASE6T_PROP_TRACE_LIMIT", 0)
+    if limit > 0 and _PHASE6T_PROP_TRACE_COUNTER >= limit:
+        return False
+    _PHASE6T_PROP_TRACE_COUNTER += 1
+    return True
+
+
+def _should_enable_phase6t_cand_union_trace(sample_id: str) -> bool:
+    global _PHASE6T_CAND_UNION_TRACE_COUNTER
+    if not _env_truthy("PHASE6T_CAND_UNION_TRACE", False):
+        return False
+    allow_ids = _parse_trace_sample_ids(os.environ.get("PHASE6T_CAND_UNION_TRACE_SAMPLE_IDS", ""))
+    sid = str(sample_id or "")
+    if allow_ids and sid not in allow_ids:
+        return False
+    limit = _env_int("PHASE6T_CAND_UNION_TRACE_LIMIT", 0)
+    if limit > 0 and _PHASE6T_CAND_UNION_TRACE_COUNTER >= limit:
+        return False
+    _PHASE6T_CAND_UNION_TRACE_COUNTER += 1
+    return True
+
+
+def _should_enable_phase6t_aligned_trace(sample_id: str) -> bool:
+    global _PHASE6T_ALIGNED_TRACE_COUNTER
+    if not _env_truthy("PHASE6T_ALIGNED_TRACE", False):
+        return False
+    allow_ids = _parse_trace_sample_ids(os.environ.get("PHASE6T_ALIGNED_TRACE_SAMPLE_IDS", ""))
+    sid = str(sample_id or "")
+    if allow_ids and sid not in allow_ids:
+        return False
+    limit = _env_int("PHASE6T_ALIGNED_TRACE_LIMIT", 0)
+    if limit > 0 and _PHASE6T_ALIGNED_TRACE_COUNTER >= limit:
+        return False
+    _PHASE6T_ALIGNED_TRACE_COUNTER += 1
+    return True
+
+
+def _should_enable_phase6t_cand_union_post_trace(sample_id: str) -> bool:
+    global _PHASE6T_CAND_UNION_POST_TRACE_COUNTER
+    if not _env_truthy("PHASE6T_CAND_UNION_POST_TRACE", False):
+        return False
+    allow_ids = _parse_trace_sample_ids(os.environ.get("PHASE6T_CAND_UNION_POST_TRACE_SAMPLE_IDS", ""))
+    sid = str(sample_id or "")
+    if allow_ids and sid not in allow_ids:
+        return False
+    limit = _env_int("PHASE6T_CAND_UNION_POST_TRACE_LIMIT", 0)
+    if limit > 0 and _PHASE6T_CAND_UNION_POST_TRACE_COUNTER >= limit:
+        return False
+    _PHASE6T_CAND_UNION_POST_TRACE_COUNTER += 1
+    return True
+
+
+def _should_enable_phase6t_score_attach_trace(sample_id: str) -> bool:
+    global _PHASE6T_SCORE_ATTACH_TRACE_COUNTER
+    if not _env_truthy("PHASE6T_SCORE_ATTACH_TRACE", False):
+        return False
+    allow_ids = _parse_trace_sample_ids(os.environ.get("PHASE6T_SCORE_ATTACH_TRACE_SAMPLE_IDS", ""))
+    sid = str(sample_id or "")
+    if allow_ids and sid not in allow_ids:
+        return False
+    limit = _env_int("PHASE6T_SCORE_ATTACH_TRACE_LIMIT", 0)
+    if limit > 0 and _PHASE6T_SCORE_ATTACH_TRACE_COUNTER >= limit:
+        return False
+    _PHASE6T_SCORE_ATTACH_TRACE_COUNTER += 1
+    return True
+
+
+def _append_phase6t_prop_trace_line(
+    *,
+    log_path: str,
+    sample_id: str,
+    step: str,
+    dt_prev_ms: float,
+    dt_total_ms: float,
+    extra: Mapping[str, Any] | None = None,
+) -> None:
+    if not log_path:
+        return
+    try:
+        line = (
+            f"[PROP_TRACE] qid={str(sample_id)} step={str(step)} "
+            f"dt_prev_ms={float(dt_prev_ms):.3f} dt_total_ms={float(dt_total_ms):.3f} "
+            f"extra={json.dumps(dict(extra or {}), ensure_ascii=False, sort_keys=True)}\n"
+        )
+        path = Path(log_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        return
+
+
+def _append_phase6t_cand_union_trace_line(
+    *,
+    log_path: str,
+    sample_id: str,
+    step: str,
+    dt_prev_ms: float,
+    dt_total_ms: float,
+    extra: Mapping[str, Any] | None = None,
+) -> None:
+    if not log_path:
+        return
+    try:
+        line = (
+            f"[CAND_UNION_TRACE] qid={str(sample_id)} step={str(step)} "
+            f"dt_prev_ms={float(dt_prev_ms):.3f} dt_total_ms={float(dt_total_ms):.3f} "
+            f"extra={json.dumps(dict(extra or {}), ensure_ascii=False, sort_keys=True)}\n"
+        )
+        path = Path(log_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        return
+
+
+def _append_phase6t_aligned_trace_line(
+    *,
+    log_path: str,
+    sample_id: str,
+    trace_id: str,
+    scope: str,
+    step: str,
+    perf_t: float,
+    dt_prev_ms: float,
+    dt_total_ms: float,
+    extra: Mapping[str, Any] | None = None,
+) -> None:
+    if not log_path:
+        return
+    try:
+        line = (
+            f"[PROP_ALIGNED_TRACE] qid={str(sample_id)} trace_id={str(trace_id)} scope={str(scope)} "
+            f"step={str(step)} t={float(perf_t):.6f} dt_prev_ms={float(dt_prev_ms):.3f} "
+            f"dt_total_ms={float(dt_total_ms):.3f} "
+            f"extra={json.dumps(dict(extra or {}), ensure_ascii=False, sort_keys=True)}\n"
+        )
+        path = Path(log_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        return
+
+
+def _append_phase6t_cand_union_post_trace_line(
+    *,
+    log_path: str,
+    sample_id: str,
+    trace_id: str,
+    mode: str,
+    step: str,
+    perf_t: float,
+    dt_prev_ms: float,
+    dt_total_ms: float,
+    extra: Mapping[str, Any] | None = None,
+) -> None:
+    if not log_path:
+        return
+    try:
+        line = (
+            f"[CAND_UNION_POST_TRACE] qid={str(sample_id)} trace_id={str(trace_id)} "
+            f"mode={str(mode)} step={str(step)} t={float(perf_t):.6f} "
+            f"dt_prev_ms={float(dt_prev_ms):.3f} dt_total_ms={float(dt_total_ms):.3f} "
+            f"extra={json.dumps(dict(extra or {}), ensure_ascii=False, sort_keys=True)}\n"
+        )
+        path = Path(log_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        return
+
+
+def _append_phase6t_score_attach_trace_line(
+    *,
+    log_path: str,
+    sample_id: str,
+    trace_id: str,
+    step: str,
+    dt_prev_ms: float,
+    dt_total_ms: float,
+    extra: Mapping[str, Any] | None = None,
+) -> None:
+    if not log_path:
+        return
+    try:
+        line = (
+            f"[SCORE_ATTACH_TRACE] qid={str(sample_id)} trace_id={str(trace_id)} "
+            f"step={str(step)} dt_prev_ms={float(dt_prev_ms):.3f} dt_total_ms={float(dt_total_ms):.3f} "
+            f"extra={json.dumps(dict(extra or {}), ensure_ascii=False, sort_keys=True)}\n"
+        )
+        path = Path(log_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as f:
+            f.write(line)
+    except Exception:
+        return
+
+
 def _build_anchor_proposals_lazy_experimental(
     g,
     anchors,
@@ -3781,7 +4100,37 @@ def _build_anchor_proposals_lazy_experimental(
     cfg,
     semantic_state=None,
     mode="mild",
+    candidate_union_trace_fn=None,
 ):
+    def _cand_trace(step: str, extra: Mapping[str, Any] | None = None, reset: bool = False) -> None:
+        if not callable(candidate_union_trace_fn):
+            return
+        payload = dict(extra or {})
+        try:
+            candidate_union_trace_fn(step=str(step), extra=payload, reset=bool(reset))
+        except TypeError:
+            try:
+                candidate_union_trace_fn(str(step), payload, bool(reset))
+            except Exception:
+                return
+        except Exception:
+            return
+
+    stage_ms["proposal_pre_union_ms"] = float((time.perf_counter() - proposal_start) * 1000.0)
+    pre_known_keys = [
+        "query_embedding_prepare_ms",
+        "semantic_lookup_entity_ms",
+        "semantic_lookup_chunk_ms",
+        "semantic_score_load_or_reuse_ms",
+    ]
+    pre_known_total = 0.0
+    for _k in pre_known_keys:
+        pre_known_total += float(stage_ms.get(_k, 0.0))
+    stage_ms["pre_union_misc_ms"] = float(stage_ms.get("proposal_pre_union_ms", 0.0)) - float(pre_known_total)
+
+    proposal_union_start = time.perf_counter()
+    _cand_trace("candidate_union_inner_start", extra={}, reset=True)
+    union_profile = _init_proposal_union_profile()
     topn_entity = max(0, int(getattr(cfg, "semantic_topn_entity", getattr(cfg, "semantic_topn", 50))))
     topn_chunk = max(0, int(getattr(cfg, "semantic_topn_chunk", max(1, topn_entity // 2))))
     reserve_topn = max(0, int(getattr(cfg, "graph_reserve_topn", 15)))
@@ -3814,21 +4163,70 @@ def _build_anchor_proposals_lazy_experimental(
     semantic_scores.update({str(k): float(v) for k, v in (semantic_entity_scores or {}).items()})
     semantic_scores.update({str(k): float(v) for k, v in (semantic_chunk_scores or {}).items()})
 
+    cache_lookup_start = time.perf_counter()
     ent2chk = semantic_state.get("entity_topk_chunks_cache", {}) if isinstance(semantic_state, dict) else {}
     support_map = semantic_state.get("entity_to_chunks", {}) if isinstance(semantic_state, dict) else {}
+    _proposal_profile_add_ms(union_profile, "cache_lookup_ms", (time.perf_counter() - cache_lookup_start) * 1000.0)
     ent2chk = ent2chk if isinstance(ent2chk, dict) else {}
     support_map = support_map if isinstance(support_map, dict) else {}
 
+    _cand_trace(
+        "semantic_entity_candidates_start",
+        extra={"num_semantic_entities": None, "semantic_topn_entity": int(topn_entity)},
+    )
+    semantic_entity_fetch_start = time.perf_counter()
     semantic_entities = sorted(
         [(str(node), float(score)) for node, score in (semantic_entity_scores or {}).items()],
         key=lambda x: x[1],
         reverse=True,
     )[:entity_pool_cap]
+    _proposal_profile_add_ms(
+        union_profile,
+        "raw_semantic_entity_fetch_ms",
+        (time.perf_counter() - semantic_entity_fetch_start) * 1000.0,
+    )
+    _proposal_profile_add_count(union_profile, "num_raw_semantic_entities", len(semantic_entities))
+    _proposal_profile_add_count(union_profile, "num_candidates_sorted", len(semantic_entities))
+    _cand_trace(
+        "semantic_entity_candidates_done",
+        extra={"num_semantic_entities": int(len(semantic_entities)), "semantic_topn_entity": int(topn_entity)},
+    )
+
+    _cand_trace(
+        "semantic_chunk_candidates_start",
+        extra={"num_semantic_chunks": None, "semantic_topn_chunk": int(topn_chunk)},
+    )
+    semantic_chunk_fetch_start = time.perf_counter()
     semantic_chunks = sorted(
         [(str(node), float(score)) for node, score in (semantic_chunk_scores or {}).items()],
         key=lambda x: x[1],
         reverse=True,
     )[:chunk_pool_cap]
+    _proposal_profile_add_ms(
+        union_profile,
+        "raw_semantic_chunk_fetch_ms",
+        (time.perf_counter() - semantic_chunk_fetch_start) * 1000.0,
+    )
+    _proposal_profile_add_count(union_profile, "num_raw_semantic_chunks", len(semantic_chunks))
+    _proposal_profile_add_count(union_profile, "num_candidates_sorted", len(semantic_chunks))
+    _cand_trace(
+        "semantic_chunk_candidates_done",
+        extra={"num_semantic_chunks": int(len(semantic_chunks)), "semantic_topn_chunk": int(topn_chunk)},
+    )
+
+    candidate_validation_start = time.perf_counter()
+    semantic_entities = [(node, score) for node, score in semantic_entities if node in g]
+    semantic_chunks = [(node, score) for node, score in semantic_chunks if node in g]
+    _proposal_profile_add_ms(
+        union_profile,
+        "candidate_validation_ms",
+        (time.perf_counter() - candidate_validation_start) * 1000.0,
+    )
+    _proposal_profile_add_count(
+        union_profile,
+        "num_candidates_filtered",
+        len(semantic_entities) + len(semantic_chunks),
+    )
 
     high_conf_votes = {}
     high_conf_score = {}
@@ -3841,6 +4239,11 @@ def _build_anchor_proposals_lazy_experimental(
             except Exception:
                 dmap = {}
 
+        _cand_trace(
+            "graph_reserve_candidates_start",
+            extra={"num_graph_reserve": None, "graph_reserve_topn": int(reserve_topn)},
+        )
+        reserve_fetch_start = time.perf_counter()
         cache_reserve_nodes, cache_reserve_scores = _anchor_cache_reserve_candidates(
             g=g,
             anchor=anchor,
@@ -3854,33 +4257,60 @@ def _build_anchor_proposals_lazy_experimental(
             max_hops=reserve_hops_effective,
             precomputed_dmap=dmap if dmap else None,
         )
+        _proposal_profile_add_ms(union_profile, "graph_reserve_fetch_ms", (time.perf_counter() - reserve_fetch_start) * 1000.0)
+        reserve_dedup_start = time.perf_counter()
         reserve_nodes = _ordered_unique(list(cache_reserve_nodes or []) + list(graph_reserve_nodes or []))
+        _proposal_profile_add_ms(union_profile, "dedup_ms", (time.perf_counter() - reserve_dedup_start) * 1000.0)
         if not reserve_nodes and reserve_bfs_fallback:
             reserve_nodes = list(cache_reserve_nodes or [])
+        reserve_prune_start = time.perf_counter()
         reserve_nodes = reserve_nodes[:reserve_cap]
+        _proposal_profile_add_ms(union_profile, "early_pruning_ms", (time.perf_counter() - reserve_prune_start) * 1000.0)
+        _proposal_profile_add_count(union_profile, "num_graph_reserve_candidates", len(reserve_nodes))
+        _cand_trace(
+            "graph_reserve_candidates_done",
+            extra={"num_graph_reserve": int(len(reserve_nodes or [])), "graph_reserve_topn": int(reserve_topn)},
+        )
 
+        _cand_trace(
+            "candidate_sort_topk_start",
+            extra={"num_before_sort": int(len(semantic_entities) + len(semantic_chunks)), "num_after_topk": None},
+        )
+        ent_rank_start = time.perf_counter()
         ent_ranked = []
         for node, raw_score in semantic_entities:
-            if node not in g:
-                continue
             bonus = 0.0
             if anchor_distance_bonus and node in dmap:
                 bonus = 1.0 - (float(min(dist_cap_effective, int(dmap[node]))) / float(max(1, dist_cap_effective)))
             ent_ranked.append((node, 0.90 * float(raw_score) + 0.10 * bonus))
         ent_ranked.sort(key=lambda x: x[1], reverse=True)
+        _proposal_profile_add_ms(union_profile, "sort_topk_ms", (time.perf_counter() - ent_rank_start) * 1000.0)
         top_entities = [node for node, _ in ent_ranked[:entity_cap]]
+        _proposal_profile_add_count(union_profile, "num_chunk_candidates_before_dedup", len(ent_ranked))
+        _proposal_profile_add_count(union_profile, "num_chunk_candidates_after_topk", len(top_entities))
 
+        chunk_rank_start = time.perf_counter()
         chunk_ranked = []
         for node, raw_score in semantic_chunks:
-            if node not in g:
-                continue
             bonus = 0.0
             if anchor_distance_bonus and node in dmap:
                 bonus = 1.0 - (float(min(dist_cap_effective, int(dmap[node]))) / float(max(1, dist_cap_effective)))
             chunk_ranked.append((node, 0.90 * float(raw_score) + 0.10 * bonus))
         chunk_ranked.sort(key=lambda x: x[1], reverse=True)
+        _proposal_profile_add_ms(union_profile, "chunk_candidate_lookup_ms", (time.perf_counter() - chunk_rank_start) * 1000.0)
+        _proposal_profile_add_count(union_profile, "num_candidates_sorted", len(chunk_ranked))
         top_chunks = [node for node, _ in chunk_ranked[:chunk_cap]]
+        _proposal_profile_add_count(union_profile, "num_chunk_candidates_after_topk", len(top_chunks))
+        _cand_trace(
+            "candidate_sort_topk_done",
+            extra={"num_before_sort": int(len(ent_ranked) + len(chunk_ranked)), "num_after_topk": int(len(top_entities) + len(top_chunks))},
+        )
 
+        _cand_trace(
+            "entity_to_chunk_expand_start",
+            extra={"num_entities_expanded": None, "num_expanded_chunks": None},
+        )
+        expand_start = time.perf_counter()
         high_conf_nodes = []
         for ent in top_entities[: max(3, entity_cap // 2)]:
             linked = []
@@ -3892,13 +4322,37 @@ def _build_anchor_proposals_lazy_experimental(
                 if node_id not in g:
                     continue
                 high_conf_nodes.append(node_id)
+                _proposal_profile_add_count(union_profile, "num_entity_to_chunk_expansions", 1)
                 added += 1
                 if added >= support_per_entity:
                     break
         for node in reserve_nodes:
             high_conf_nodes.append(str(node))
+        _proposal_profile_add_ms(union_profile, "entity_to_chunk_expand_ms", (time.perf_counter() - expand_start) * 1000.0)
+        _cand_trace(
+            "entity_to_chunk_expand_done",
+            extra={
+                "num_entities_expanded": int(len(top_entities[: max(3, entity_cap // 2)])),
+                "num_expanded_chunks": int(len(high_conf_nodes)),
+            },
+        )
 
+        _cand_trace(
+            "candidate_merge_start",
+            extra={"num_before_merge": int(len(top_entities) + len(top_chunks) + len(reserve_nodes)), "num_after_merge": None},
+        )
+        _cand_trace(
+            "candidate_dedup_start",
+            extra={"num_before_dedup": int(len(high_conf_nodes)), "num_after_dedup": None},
+        )
+        high_conf_dedup_start = time.perf_counter()
         high_conf_nodes = _ordered_unique(high_conf_nodes)[: max(2, reserve_cap)]
+        _proposal_profile_add_ms(union_profile, "dedup_ms", (time.perf_counter() - high_conf_dedup_start) * 1000.0)
+        _proposal_profile_add_count(union_profile, "num_chunk_candidates_after_dedup", len(high_conf_nodes))
+        _cand_trace(
+            "candidate_dedup_done",
+            extra={"num_before_dedup": None, "num_after_dedup": int(len(high_conf_nodes))},
+        )
         for node in high_conf_nodes:
             high_conf_votes[node] = int(high_conf_votes.get(node, 0)) + 1
             high_conf_score[node] = max(
@@ -3906,11 +4360,23 @@ def _build_anchor_proposals_lazy_experimental(
                 float(cache_reserve_scores.get(node, semantic_scores.get(node, 0.0))),
             )
 
+        materialization_start = time.perf_counter()
         semantic_nodes = _ordered_unique(top_entities + top_chunks)
         graph_reserve_union.update([node for node in reserve_nodes if node in g])
         merged = _ordered_unique([anchor] + high_conf_nodes + semantic_nodes + reserve_nodes)[:local_cap]
+        _cand_trace(
+            "candidate_merge_done",
+            extra={"num_before_merge": int(len(top_entities) + len(top_chunks) + len(reserve_nodes)), "num_after_merge": int(len(merged))},
+        )
+        _cand_trace("candidate_score_normalize_start", extra={})
         proposal_by_anchor[anchor] = merged
+        _proposal_profile_add_ms(union_profile, "candidate_materialization_ms", (time.perf_counter() - materialization_start) * 1000.0)
+        _proposal_profile_add_count(union_profile, "num_chunk_candidates_before_dedup", len(top_entities) + len(top_chunks))
+        _proposal_profile_add_count(union_profile, "num_chunk_candidates_after_dedup", len(semantic_nodes))
+        _proposal_profile_add_count(union_profile, "num_chunk_candidates_after_topk", len(merged))
+        _proposal_profile_add_count(union_profile, "num_candidate_objects_built", len(merged))
 
+        merge_score_start = time.perf_counter()
         for rank, node in enumerate(merged):
             base = float(semantic_scores.get(node, 0.0))
             if node in high_conf_nodes:
@@ -3919,7 +4385,13 @@ def _build_anchor_proposals_lazy_experimental(
                 base = max(base, 0.05)
             rank_decay = 1.0 / float(rank + 1)
             proposal_scores[node] = max(float(proposal_scores.get(node, -1.0e9)), base + 0.02 * rank_decay)
+        _proposal_profile_add_ms(union_profile, "score_merge_ms", (time.perf_counter() - merge_score_start) * 1000.0)
+        _cand_trace("candidate_score_normalize_done", extra={})
+        _cand_trace("candidate_materialize_start", extra={"num_materialized": None})
+        _proposal_profile_add_count(union_profile, "num_score_entries_merged", len(merged))
+        _cand_trace("candidate_materialize_done", extra={"num_materialized": int(len(merged))})
 
+    shared_sort_start = time.perf_counter()
     shared_ranked = sorted(
         [n for n in high_conf_votes.keys() if int(high_conf_votes.get(n, 0)) >= 2 and n in g],
         key=lambda n: (int(high_conf_votes.get(n, 0)), float(high_conf_score.get(n, 0.0))),
@@ -3931,9 +4403,11 @@ def _build_anchor_proposals_lazy_experimental(
             key=lambda n: float(high_conf_score.get(n, 0.0)),
             reverse=True,
         )
+    _proposal_profile_add_ms(union_profile, "sort_topk_ms", (time.perf_counter() - shared_sort_start) * 1000.0)
     shared_high_conf = [str(n) for n in shared_ranked[:shared_high_conf_topn]]
     shared_set = set(shared_high_conf)
 
+    global_pool_start = time.perf_counter()
     global_pool = []
     for node, score in semantic_entities:
         if node in g and node not in shared_set:
@@ -3943,13 +4417,19 @@ def _build_anchor_proposals_lazy_experimental(
             global_pool.append((node, float(score)))
     global_pool.sort(key=lambda x: x[1], reverse=True)
     global_fallback = [str(node) for node, _ in global_pool[:global_fallback_topn]]
+    _proposal_profile_add_ms(union_profile, "sort_topk_ms", (time.perf_counter() - global_pool_start) * 1000.0)
+    _proposal_profile_add_count(union_profile, "num_candidates_sorted", len(global_pool))
 
+    proposal_filter_start = time.perf_counter()
     proposal_nodes = set()
     for vals in proposal_by_anchor.values():
         proposal_nodes.update(vals)
     proposal_nodes.update(shared_high_conf)
     proposal_nodes.update(global_fallback)
     proposal_nodes = {node for node in proposal_nodes if node in g}
+    _proposal_profile_add_ms(union_profile, "candidate_filter_ms", (time.perf_counter() - proposal_filter_start) * 1000.0)
+    _proposal_profile_add_count(union_profile, "num_candidates_filtered", len(proposal_nodes))
+    _proposal_profile_add_count(union_profile, "num_chunk_candidates_after_topk", len(proposal_nodes))
 
     proposal_diag = {
         "proposal_entity_count": int(sum(1 for node in semantic_entity_scores.keys() if node in g)),
@@ -3959,6 +4439,26 @@ def _build_anchor_proposals_lazy_experimental(
         "global_fallback_count": int(len(global_fallback)),
         "union_candidate_count": int(len(proposal_nodes)),
     }
+    total_ms = float((time.perf_counter() - proposal_union_start) * 1000.0)
+    _cand_trace(
+        "candidate_union_inner_done",
+        extra={
+            "candidate_union_total_ms": float(total_ms),
+            "raw_entities": int(len(semantic_entities)),
+            "raw_chunks": int(len(semantic_chunks)),
+            "graph_reserve": int(len(graph_reserve_union)),
+            "after_dedup": int(len(proposal_nodes)),
+            "after_topk": int(len(proposal_nodes)),
+        },
+    )
+    _proposal_profile_add_ms(union_profile, "proposal_union_total_ms", total_ms)
+    known = 0.0
+    for key, value in list((union_profile.get("timing_ms", {}) or {}).items()):
+        if key in {"proposal_union_total_ms", "python_loop_overhead_ms"}:
+            continue
+        known += float(value)
+    union_profile["timing_ms"]["python_loop_overhead_ms"] = max(0.0, float(total_ms) - float(known))
+    proposal_diag["proposal_union_profile"] = union_profile
     proposal_partitions = {
         "shared_high_conf": [str(n) for n in shared_high_conf],
         "global_fallback": [str(n) for n in global_fallback],
@@ -3966,7 +4466,15 @@ def _build_anchor_proposals_lazy_experimental(
     return proposal_by_anchor, proposal_nodes, proposal_scores, semantic_scores, proposal_diag, proposal_partitions
 
 
-def _build_anchor_proposals(g, anchors, semantic_entity_scores, semantic_chunk_scores, cfg, semantic_state=None):
+def _build_anchor_proposals(
+    g,
+    anchors,
+    semantic_entity_scores,
+    semantic_chunk_scores,
+    cfg,
+    semantic_state=None,
+    candidate_union_trace_fn=None,
+):
     proposal_mode = _resolve_proposal_union_experiment_mode(cfg)
     if proposal_mode != "off":
         return _build_anchor_proposals_lazy_experimental(
@@ -3977,8 +4485,26 @@ def _build_anchor_proposals(g, anchors, semantic_entity_scores, semantic_chunk_s
             cfg=cfg,
             semantic_state=semantic_state,
             mode=proposal_mode,
+            candidate_union_trace_fn=candidate_union_trace_fn,
         )
 
+    def _cand_trace(step: str, extra: Mapping[str, Any] | None = None, reset: bool = False) -> None:
+        if not callable(candidate_union_trace_fn):
+            return
+        payload = dict(extra or {})
+        try:
+            candidate_union_trace_fn(step=str(step), extra=payload, reset=bool(reset))
+        except TypeError:
+            try:
+                candidate_union_trace_fn(str(step), payload, bool(reset))
+            except Exception:
+                return
+        except Exception:
+            return
+
+    proposal_union_start = time.perf_counter()
+    _cand_trace("candidate_union_inner_start", extra={}, reset=True)
+    union_profile = _init_proposal_union_profile()
     topn_entity = max(0, int(getattr(cfg, "semantic_topn_entity", getattr(cfg, "semantic_topn", 50))))
     topn_chunk = max(0, int(getattr(cfg, "semantic_topn_chunk", max(1, topn_entity // 2))))
     reserve_topn = max(0, int(getattr(cfg, "graph_reserve_topn", 15)))
@@ -3993,8 +4519,49 @@ def _build_anchor_proposals(g, anchors, semantic_entity_scores, semantic_chunk_s
     semantic_scores.update({str(k): float(v) for k, v in (semantic_entity_scores or {}).items()})
     semantic_scores.update({str(k): float(v) for k, v in (semantic_chunk_scores or {}).items()})
 
+    _cand_trace(
+        "semantic_entity_candidates_start",
+        extra={
+            "num_semantic_entities": None,
+            "semantic_topn_entity": int(topn_entity),
+        },
+    )
+    entity_fetch_start = time.perf_counter()
     semantic_entities = list((semantic_entity_scores or {}).items())
+    _proposal_profile_add_ms(union_profile, "raw_semantic_entity_fetch_ms", (time.perf_counter() - entity_fetch_start) * 1000.0)
+    _proposal_profile_add_count(union_profile, "num_raw_semantic_entities", len(semantic_entities))
+    _cand_trace(
+        "semantic_entity_candidates_done",
+        extra={
+            "num_semantic_entities": int(len(semantic_entities)),
+            "semantic_topn_entity": int(topn_entity),
+        },
+    )
+
+    _cand_trace(
+        "semantic_chunk_candidates_start",
+        extra={
+            "num_semantic_chunks": None,
+            "semantic_topn_chunk": int(topn_chunk),
+        },
+    )
+    chunk_fetch_start = time.perf_counter()
     semantic_chunks = list((semantic_chunk_scores or {}).items())
+    _proposal_profile_add_ms(union_profile, "raw_semantic_chunk_fetch_ms", (time.perf_counter() - chunk_fetch_start) * 1000.0)
+    _proposal_profile_add_count(union_profile, "num_raw_semantic_chunks", len(semantic_chunks))
+    _cand_trace(
+        "semantic_chunk_candidates_done",
+        extra={
+            "num_semantic_chunks": int(len(semantic_chunks)),
+            "semantic_topn_chunk": int(topn_chunk),
+        },
+    )
+
+    candidate_validation_start = time.perf_counter()
+    semantic_entities = [(node, score) for node, score in semantic_entities if node in g]
+    semantic_chunks = [(node, score) for node, score in semantic_chunks if node in g]
+    _proposal_profile_add_ms(union_profile, "candidate_validation_ms", (time.perf_counter() - candidate_validation_start) * 1000.0)
+    _proposal_profile_add_count(union_profile, "num_candidates_filtered", len(semantic_entities) + len(semantic_chunks))
 
     for anchor in anchors:
         dmap = {}
@@ -4004,6 +4571,14 @@ def _build_anchor_proposals(g, anchors, semantic_entity_scores, semantic_chunk_s
             except Exception:
                 dmap = {}
 
+        _cand_trace(
+            "graph_reserve_candidates_start",
+            extra={
+                "num_graph_reserve": None,
+                "graph_reserve_topn": int(reserve_topn),
+            },
+        )
+        reserve_fetch_start = time.perf_counter()
         reserve_nodes = _anchor_graph_reserve_candidates(
             g=g,
             anchor=anchor,
@@ -4012,63 +4587,167 @@ def _build_anchor_proposals(g, anchors, semantic_entity_scores, semantic_chunk_s
             precomputed_dmap=dmap if dmap else None,
         )
         if not reserve_nodes:
+            cache_lookup_start = time.perf_counter()
             cache_reserve_nodes, _ = _anchor_cache_reserve_candidates(
                 g=g,
                 anchor=anchor,
                 topn=reserve_topn,
                 semantic_state=semantic_state,
             )
+            _proposal_profile_add_ms(union_profile, "cache_lookup_ms", (time.perf_counter() - cache_lookup_start) * 1000.0)
             reserve_nodes = list(cache_reserve_nodes[:reserve_topn]) if cache_reserve_nodes else []
         elif reserve_bfs_fallback and len(reserve_nodes) < max(2, reserve_topn // 2):
+            cache_lookup_start = time.perf_counter()
             cache_reserve_nodes, _ = _anchor_cache_reserve_candidates(
                 g=g,
                 anchor=anchor,
                 topn=reserve_topn,
                 semantic_state=semantic_state,
             )
+            _proposal_profile_add_ms(union_profile, "cache_lookup_ms", (time.perf_counter() - cache_lookup_start) * 1000.0)
             for node in cache_reserve_nodes:
                 if node in reserve_nodes:
                     continue
                 reserve_nodes.append(node)
                 if len(reserve_nodes) >= reserve_topn:
                     break
+        _proposal_profile_add_ms(union_profile, "graph_reserve_fetch_ms", (time.perf_counter() - reserve_fetch_start) * 1000.0)
+        _cand_trace(
+            "graph_reserve_candidates_done",
+            extra={
+                "num_graph_reserve": int(len(reserve_nodes or [])),
+                "graph_reserve_topn": int(reserve_topn),
+            },
+        )
 
+        ent_lookup_start = time.perf_counter()
         ent_ranked = []
         for node, raw_score in semantic_entities:
-            if node not in g:
-                continue
             bonus = 0.0
             if anchor_distance_bonus and node in dmap:
                 bonus = 1.0 - (float(min(dist_cap, int(dmap[node]))) / float(dist_cap))
             ent_ranked.append((node, 0.90 * float(raw_score) + 0.10 * bonus))
+        _proposal_profile_add_ms(union_profile, "chunk_candidate_lookup_ms", (time.perf_counter() - ent_lookup_start) * 1000.0)
 
+        chunk_lookup_start = time.perf_counter()
         chunk_ranked = []
         for node, raw_score in semantic_chunks:
-            if node not in g:
-                continue
             bonus = 0.0
             if anchor_distance_bonus and node in dmap:
                 bonus = 1.0 - (float(min(dist_cap, int(dmap[node]))) / float(dist_cap))
             chunk_ranked.append((node, 0.90 * float(raw_score) + 0.10 * bonus))
+        _proposal_profile_add_ms(union_profile, "chunk_candidate_lookup_ms", (time.perf_counter() - chunk_lookup_start) * 1000.0)
 
+        _cand_trace(
+            "candidate_sort_topk_start",
+            extra={
+                "num_before_sort": int(len(ent_ranked) + len(chunk_ranked)),
+                "num_after_topk": None,
+            },
+        )
+        sort_start = time.perf_counter()
         ent_ranked.sort(key=lambda x: x[1], reverse=True)
         chunk_ranked.sort(key=lambda x: x[1], reverse=True)
+        _proposal_profile_add_ms(union_profile, "sort_topk_ms", (time.perf_counter() - sort_start) * 1000.0)
+        _proposal_profile_add_count(union_profile, "num_candidates_sorted", len(ent_ranked) + len(chunk_ranked))
         semantic_nodes = [n for n, _ in ent_ranked[:topn_entity]] + [n for n, _ in chunk_ranked[:topn_chunk]]
+        _proposal_profile_add_count(union_profile, "num_chunk_candidates_before_dedup", len(semantic_nodes))
+        _proposal_profile_add_count(union_profile, "num_chunk_candidates_after_topk", len(semantic_nodes))
+        _cand_trace(
+            "candidate_sort_topk_done",
+            extra={
+                "num_before_sort": int(len(ent_ranked) + len(chunk_ranked)),
+                "num_after_topk": int(len(semantic_nodes)),
+            },
+        )
+        _cand_trace(
+            "entity_to_chunk_expand_start",
+            extra={
+                "num_entities_expanded": None,
+                "num_expanded_chunks": None,
+            },
+        )
+        top_entity_count = int(len(ent_ranked[:topn_entity]))
+        expanded_chunk_count = int(len(semantic_nodes))
+        _cand_trace(
+            "entity_to_chunk_expand_done",
+            extra={
+                "num_entities_expanded": top_entity_count,
+                "num_expanded_chunks": expanded_chunk_count,
+            },
+        )
         graph_reserve_union.update([node for node in reserve_nodes if node in g])
+        _cand_trace(
+            "candidate_merge_start",
+            extra={
+                "num_before_merge": int(len(semantic_nodes) + len(reserve_nodes)),
+                "num_after_merge": None,
+            },
+        )
+        before_dedup = int(1 + len(semantic_nodes) + len(reserve_nodes))
+        _cand_trace(
+            "candidate_dedup_start",
+            extra={
+                "num_before_dedup": before_dedup,
+                "num_after_dedup": None,
+            },
+        )
+        dedup_start = time.perf_counter()
         merged = _ordered_unique([anchor] + semantic_nodes + reserve_nodes)
+        _proposal_profile_add_ms(union_profile, "dedup_ms", (time.perf_counter() - dedup_start) * 1000.0)
+        _proposal_profile_add_count(union_profile, "num_chunk_candidates_after_dedup", len(merged))
+        _cand_trace(
+            "candidate_dedup_done",
+            extra={
+                "num_before_dedup": before_dedup,
+                "num_after_dedup": int(len(merged)),
+            },
+        )
+        _cand_trace(
+            "candidate_merge_done",
+            extra={
+                "num_before_merge": int(len(semantic_nodes) + len(reserve_nodes)),
+                "num_after_merge": int(len(merged)),
+            },
+        )
+        _cand_trace(
+            "candidate_score_normalize_start",
+            extra={},
+        )
         proposal_by_anchor[anchor] = merged
 
+        score_merge_start = time.perf_counter()
         for rank, node in enumerate(merged):
             base = float(semantic_scores.get(node, 0.0))
             if node in reserve_nodes:
                 base = max(base, 0.05)
             rank_decay = 1.0 / float(rank + 1)
             proposal_scores[node] = max(float(proposal_scores.get(node, -1.0e9)), base + 0.02 * rank_decay)
+        _proposal_profile_add_ms(union_profile, "score_merge_ms", (time.perf_counter() - score_merge_start) * 1000.0)
+        _cand_trace("candidate_score_normalize_done", extra={})
+        _cand_trace(
+            "candidate_materialize_start",
+            extra={
+                "num_materialized": None,
+            },
+        )
+        _proposal_profile_add_count(union_profile, "num_score_entries_merged", len(merged))
+        _proposal_profile_add_count(union_profile, "num_candidate_objects_built", len(merged))
+        _proposal_profile_add_count(union_profile, "num_graph_reserve_candidates", len(reserve_nodes))
+        _cand_trace(
+            "candidate_materialize_done",
+            extra={
+                "num_materialized": int(len(merged)),
+            },
+        )
 
+    filter_start = time.perf_counter()
     proposal_nodes = set()
     for vals in proposal_by_anchor.values():
         proposal_nodes.update(vals)
     proposal_nodes = {node for node in proposal_nodes if node in g}
+    _proposal_profile_add_ms(union_profile, "candidate_filter_ms", (time.perf_counter() - filter_start) * 1000.0)
+    _proposal_profile_add_count(union_profile, "num_candidates_filtered", len(proposal_nodes))
     proposal_diag = {
         "proposal_entity_count": int(sum(1 for node in semantic_entity_scores.keys() if node in g)),
         "proposal_chunk_count": int(sum(1 for node in semantic_chunk_scores.keys() if node in g)),
@@ -4077,6 +4756,26 @@ def _build_anchor_proposals(g, anchors, semantic_entity_scores, semantic_chunk_s
         "global_fallback_count": 0,
         "union_candidate_count": int(len(proposal_nodes)),
     }
+    total_ms = float((time.perf_counter() - proposal_union_start) * 1000.0)
+    _cand_trace(
+        "candidate_union_inner_done",
+        extra={
+            "candidate_union_total_ms": float(total_ms),
+            "raw_entities": int(len(semantic_entities)),
+            "raw_chunks": int(len(semantic_chunks)),
+            "graph_reserve": int(len(graph_reserve_union)),
+            "after_dedup": int(len(proposal_nodes)),
+            "after_topk": int(len(proposal_nodes)),
+        },
+    )
+    _proposal_profile_add_ms(union_profile, "proposal_union_total_ms", total_ms)
+    known = 0.0
+    for key, value in list((union_profile.get("timing_ms", {}) or {}).items()):
+        if key in {"proposal_union_total_ms", "python_loop_overhead_ms"}:
+            continue
+        known += float(value)
+    union_profile["timing_ms"]["python_loop_overhead_ms"] = max(0.0, float(total_ms) - float(known))
+    proposal_diag["proposal_union_profile"] = union_profile
     proposal_partitions = {
         "shared_high_conf": [],
         "global_fallback": [],
@@ -4379,6 +5078,8 @@ def _apply_final_text_rerank(
         "max_length": int(getattr(cfg, "embedding_max_length", 192)),
         "max_chars": int(getattr(cfg, "embedding_text_max_chars", 600)),
         "head_size": 0,
+        "input_candidate_count": int(len(selected_sentence_ids or [])),
+        "output_candidate_count": int(len(selected_sentence_ids or [])),
     }
     sentence_rerank_semantic_calls = 0
     sentence_rerank_ms = 0.0
@@ -4408,6 +5109,7 @@ def _apply_final_text_rerank(
         embedding_diag["head_size"] = int(rerank.get("rerank_topn", 0))
         embedding_diag["similarity_by_sentence_id"] = rerank.get("similarity_by_sentence_id", {})
         embedding_diag["fused_score_by_sentence_id"] = rerank.get("fused_score_by_sentence_id", {})
+        embedding_diag["output_candidate_count"] = int(len(selected_sentence_ids))
         sentence_rerank_ms = float((time.perf_counter() - sentence_rerank_start) * 1000.0)
     elif not bool(sentence_rerank_enabled):
         embedding_diag["error"] = "sentence_rerank_disabled_by_config"
@@ -5614,16 +6316,95 @@ def run_graphrag_core(
     stage_ms = {
         # detailed timings
         "query_embed_ms": 0.0,
+        "query_embedding_prepare_ms": 0.0,
+        "query_preprocess_ms": 0.0,
+        "query_entity_extraction_ms": 0.0,
+        "anchor_extraction_ms": 0.0,
+        "anchor_candidate_lookup_ms": 0.0,
+        "graph_handle_prepare_ms": 0.0,
+        "semantic_score_map_prepare_ms": 0.0,
+        "semantic_score_load_or_reuse_ms": 0.0,
+        "pre_union_misc_ms": 0.0,
         "semantic_lookup_entity_ms": 0.0,
         "semantic_lookup_chunk_ms": 0.0,
+        "semantic_scan_ms": 0.0,
+        "semantic_entity_scan_ms": 0.0,
+        "semantic_chunk_scan_ms": 0.0,
+        "semantic_score_reuse_ms": 0.0,
+        "semantic_candidate_union_ms": 0.0,
+        "proposal_union_total_ms": 0.0,
+        "proposal_union_wrapper_ms": 0.0,
+        "raw_semantic_entity_fetch_ms": 0.0,
+        "raw_semantic_chunk_fetch_ms": 0.0,
+        "graph_reserve_fetch_ms": 0.0,
+        "entity_to_chunk_expand_ms": 0.0,
+        "chunk_candidate_lookup_ms": 0.0,
+        "candidate_materialization_ms": 0.0,
+        "chunk_text_lookup_ms": 0.0,
+        "title_lookup_ms": 0.0,
+        "metadata_lookup_ms": 0.0,
+        "token_count_lookup_ms": 0.0,
+        "score_merge_ms": 0.0,
+        "sort_topk_ms": 0.0,
+        "early_pruning_ms": 0.0,
+        "candidate_object_build_ms": 0.0,
+        "candidate_validation_ms": 0.0,
+        "candidate_filter_ms": 0.0,
+        "cache_lookup_ms": 0.0,
+        "cache_miss_io_ms": 0.0,
+        "embedding_query_encode_ms": 0.0,
+        "embedding_candidate_encode_ms": 0.0,
+        "embedding_candidate_rerank_ms": 0.0,
+        "embedding_endpoint_wait_ms": 0.0,
+        "embedding_cache_lookup_ms": 0.0,
+        "bridge_candidate_expansion_ms": 0.0,
+        "bridge_candidate_filter_ms": 0.0,
         "proposal_union_ms": 0.0,
         "proposal_subgraph_build_ms": 0.0,
+        "proposal_pre_union_ms": 0.0,
+        "proposal_post_union_ms": 0.0,
+        "proposal_known_total_ms": 0.0,
+        "proposal_total_ms": 0.0,
+        "proposal_substage_total_ms": 0.0,
+        "unattributed_proposal_ms": 0.0,
+        "proposal_unattributed_share": 0.0,
+        "proposal_timer_overlap_ms": 0.0,
+        "local_graph_construction_ms": 0.0,
+        "local_subgraph_build_ms": 0.0,
         "phase1_ppr_ms": 0.0,
+        "ppr_time_ms": 0.0,
+        "ppr_total_ms": 0.0,
+        "ppr_avg_ms": 0.0,
+        "ppr_p95_ms": 0.0,
+        "phase1_run_generation_ms": 0.0,
         "phase1_run_scoring_ms": 0.0,
+        "phase1_run_shortlist_ms": 0.0,
+        "seed_candidate_build_ms": 0.0,
+        "anchor_seed_pair_build_ms": 0.0,
+        "seed_selection_ms": 0.0,
+        "pair_construction_ms": 0.0,
+        "pair_scoring_ms": 0.0,
+        "pair_shortlist_ms": 0.0,
+        "bounded_local_refine_setup_ms": 0.0,
+        "corridor_candidate_generation_ms": 0.0,
+        "corridor_feature_extraction_ms": 0.0,
+        "corridor_scoring_ms": 0.0,
+        "corridor_shortlist_ms": 0.0,
+        "final_candidate_packaging_ms": 0.0,
+        "stagewise_diagnostics_ms": 0.0,
+        "post_union_misc_ms": 0.0,
+        "score_normalization_ms": 0.0,
+        "deduplication_ms": 0.0,
+        "misc_python_overhead_ms": 0.0,
+        "corridor_extraction_ms": 0.0,
         "phase2_pair_shortlist_ms": 0.0,
         "phase2_refine_ms": 0.0,
         "top1_correction_ms": 0.0,
         "sentence_rerank_ms": 0.0,
+        "embedding_rerank_ms": 0.0,
+        "bridge_feature_ms": 0.0,
+        "answerability_feature_ms": 0.0,
+        "redundancy_scoring_ms": 0.0,
         "unified_acr_rcedr_ms": 0.0,
         "render_ms": 0.0,
         # backward-compatible aliases
@@ -5633,6 +6414,237 @@ def run_graphrag_core(
         "phase2_refinement_time_ms": 0.0,
         "final_render_time_ms": 0.0,
     }
+    proposal_counts = {
+        "num_query_entities": 0,
+        "num_anchor_candidates": 0,
+        "num_selected_anchors": 0,
+        "semantic_score_map_size": 0,
+        "samples_per_anchor": 0,
+        "num_generated_runs": 0,
+        "num_run_candidates": 0,
+        "num_shortlisted_runs": 0,
+        "num_semantic_entity_candidates": 0,
+        "num_semantic_chunk_candidates": 0,
+        "num_union_candidates": 0,
+        "num_bridge_candidates_before_filter": 0,
+        "num_bridge_candidates_after_filter": 0,
+        "num_ppr_calls": 0,
+        "num_ppr_sources": 0,
+        "num_ppr_target_nodes": 0,
+        "num_seed_candidates": 0,
+        "num_selected_seeds": 0,
+        "num_anchor_seed_pairs": 0,
+        "num_pair_candidates": 0,
+        "num_corridor_candidates": 0,
+        "num_selected_corridors": 0,
+        "num_candidate_atoms": 0,
+        "num_selected_atoms": 0,
+        "objective_eval_calls": 0,
+        "num_raw_semantic_entities": 0,
+        "num_raw_semantic_chunks": 0,
+        "num_graph_reserve_candidates": 0,
+        "num_entity_to_chunk_expansions": 0,
+        "num_chunk_candidates_before_dedup": 0,
+        "num_chunk_candidates_after_dedup": 0,
+        "num_chunk_candidates_after_topk": 0,
+        "num_candidate_objects_built": 0,
+        "num_text_lookups": 0,
+        "num_title_lookups": 0,
+        "num_metadata_lookups": 0,
+        "num_token_count_lookups": 0,
+        "num_score_entries_merged": 0,
+        "num_candidates_sorted": 0,
+        "num_candidates_filtered": 0,
+    }
+    ppr_call_ms_values = []
+
+    prop_trace_enabled = _should_enable_phase6t_prop_trace(str(getattr(sample, "qid", "")))
+    prop_trace_log_path = str(os.environ.get("PHASE6T_PROP_TRACE_LOG", "") or "")
+    prop_trace_t0 = None
+    prop_trace_prev = None
+    cand_union_trace_enabled = _should_enable_phase6t_cand_union_trace(str(getattr(sample, "qid", "")))
+    cand_union_trace_log_path = str(os.environ.get("PHASE6T_CAND_UNION_TRACE_LOG", "") or "")
+    cand_union_trace_t0 = None
+    cand_union_trace_prev = None
+    aligned_trace_enabled = _should_enable_phase6t_aligned_trace(str(getattr(sample, "qid", "")))
+    aligned_trace_log_path = str(os.environ.get("PHASE6T_ALIGNED_TRACE_LOG", "") or "")
+    aligned_trace_t0 = None
+    aligned_trace_prev = None
+    aligned_trace_id = str(getattr(sample, "qid", "") or "")
+    cand_union_post_trace_enabled = _should_enable_phase6t_cand_union_post_trace(str(getattr(sample, "qid", "")))
+    cand_union_post_trace_log_path = str(os.environ.get("PHASE6T_CAND_UNION_POST_TRACE_LOG", "") or "")
+    cand_union_post_trace_t0 = None
+    cand_union_post_trace_prev = None
+    cand_union_post_trace_id = str(getattr(sample, "qid", "") or "")
+    score_attach_trace_enabled = _should_enable_phase6t_score_attach_trace(str(getattr(sample, "qid", "")))
+    score_attach_trace_log_path = str(os.environ.get("PHASE6T_SCORE_ATTACH_TRACE_LOG", "") or "")
+    score_attach_trace_t0 = None
+    score_attach_trace_prev = None
+    score_attach_trace_id = str(getattr(sample, "qid", "") or "")
+    disable_retrieval_diagnostics = _env_truthy("PHASE6T_DISABLE_RETRIEVAL_DIAGNOSTICS", False)
+    cand_union_post_mode = "diag_off" if disable_retrieval_diagnostics else "diag_on"
+
+    outer_step_alias = {
+        "candidate_union_start": "candidate_union_outer_start",
+        "candidate_union_done": "candidate_union_outer_done",
+    }
+    inner_step_alias = {
+        "candidate_union_start": "candidate_union_inner_start",
+        "candidate_union_done": "candidate_union_inner_done",
+    }
+
+    def _aligned_trace(
+        *,
+        scope: str,
+        step: str,
+        extra: Mapping[str, Any] | None = None,
+        reset: bool = False,
+    ) -> None:
+        nonlocal aligned_trace_t0, aligned_trace_prev
+        if not aligned_trace_enabled:
+            return
+        now = time.perf_counter()
+        if reset or aligned_trace_t0 is None or aligned_trace_prev is None:
+            aligned_trace_t0 = now
+            aligned_trace_prev = now
+            dt_prev_ms = 0.0
+            dt_total_ms = 0.0
+        else:
+            dt_prev_ms = float((now - aligned_trace_prev) * 1000.0)
+            dt_total_ms = float((now - aligned_trace_t0) * 1000.0)
+            aligned_trace_prev = now
+        _append_phase6t_aligned_trace_line(
+            log_path=aligned_trace_log_path,
+            sample_id=str(getattr(sample, "qid", "")),
+            trace_id=str(aligned_trace_id),
+            scope=str(scope),
+            step=str(step),
+            perf_t=float(now),
+            dt_prev_ms=dt_prev_ms,
+            dt_total_ms=dt_total_ms,
+            extra=dict(extra or {}),
+        )
+
+    def _prop_trace(step: str, extra: Mapping[str, Any] | None = None, reset: bool = False):
+        nonlocal prop_trace_t0, prop_trace_prev
+        if not prop_trace_enabled and not aligned_trace_enabled:
+            return
+        if prop_trace_enabled:
+            now = time.perf_counter()
+            if reset or prop_trace_t0 is None or prop_trace_prev is None:
+                prop_trace_t0 = now
+                prop_trace_prev = now
+                dt_prev_ms = 0.0
+                dt_total_ms = 0.0
+            else:
+                dt_prev_ms = float((now - prop_trace_prev) * 1000.0)
+                dt_total_ms = float((now - prop_trace_t0) * 1000.0)
+                prop_trace_prev = now
+            _append_phase6t_prop_trace_line(
+                log_path=prop_trace_log_path,
+                sample_id=str(getattr(sample, "qid", "")),
+                step=str(step),
+                dt_prev_ms=dt_prev_ms,
+                dt_total_ms=dt_total_ms,
+                extra=dict(extra or {}),
+            )
+        aligned_step = str(outer_step_alias.get(str(step), str(step)))
+        _aligned_trace(
+            scope="outer",
+            step=aligned_step,
+            extra=dict(extra or {}),
+            reset=bool(reset),
+        )
+
+    def _cand_union_trace(step: str, extra: Mapping[str, Any] | None = None, reset: bool = False):
+        nonlocal cand_union_trace_t0, cand_union_trace_prev
+        if not cand_union_trace_enabled and not aligned_trace_enabled:
+            return
+        if cand_union_trace_enabled:
+            now = time.perf_counter()
+            if reset or cand_union_trace_t0 is None or cand_union_trace_prev is None:
+                cand_union_trace_t0 = now
+                cand_union_trace_prev = now
+                dt_prev_ms = 0.0
+                dt_total_ms = 0.0
+            else:
+                dt_prev_ms = float((now - cand_union_trace_prev) * 1000.0)
+                dt_total_ms = float((now - cand_union_trace_t0) * 1000.0)
+                cand_union_trace_prev = now
+            _append_phase6t_cand_union_trace_line(
+                log_path=cand_union_trace_log_path,
+                sample_id=str(getattr(sample, "qid", "")),
+                step=str(step),
+                dt_prev_ms=dt_prev_ms,
+                dt_total_ms=dt_total_ms,
+                extra=dict(extra or {}),
+            )
+        aligned_step = str(inner_step_alias.get(str(step), str(step)))
+        _aligned_trace(
+            scope="candidate_union",
+            step=aligned_step,
+            extra=dict(extra or {}),
+            reset=bool(reset),
+        )
+
+    def _cand_union_post_trace(step: str, extra: Mapping[str, Any] | None = None, reset: bool = False):
+        nonlocal cand_union_post_trace_t0, cand_union_post_trace_prev
+        if not cand_union_post_trace_enabled:
+            return
+        now = time.perf_counter()
+        if reset or cand_union_post_trace_t0 is None or cand_union_post_trace_prev is None:
+            cand_union_post_trace_t0 = now
+            cand_union_post_trace_prev = now
+            dt_prev_ms = 0.0
+            dt_total_ms = 0.0
+        else:
+            dt_prev_ms = float((now - cand_union_post_trace_prev) * 1000.0)
+            dt_total_ms = float((now - cand_union_post_trace_t0) * 1000.0)
+            cand_union_post_trace_prev = now
+        _append_phase6t_cand_union_post_trace_line(
+            log_path=cand_union_post_trace_log_path,
+            sample_id=str(getattr(sample, "qid", "")),
+            trace_id=str(cand_union_post_trace_id),
+            mode=str(cand_union_post_mode),
+            step=str(step),
+            perf_t=float(now),
+            dt_prev_ms=dt_prev_ms,
+            dt_total_ms=dt_total_ms,
+            extra=dict(extra or {}),
+        )
+
+    def _score_attach_trace(step: str, extra: Mapping[str, Any] | None = None, reset: bool = False):
+        nonlocal score_attach_trace_t0, score_attach_trace_prev
+        if not score_attach_trace_enabled:
+            return
+        now = time.perf_counter()
+        if reset or score_attach_trace_t0 is None or score_attach_trace_prev is None:
+            score_attach_trace_t0 = now
+            score_attach_trace_prev = now
+            dt_prev_ms = 0.0
+            dt_total_ms = 0.0
+        else:
+            dt_prev_ms = float((now - score_attach_trace_prev) * 1000.0)
+            dt_total_ms = float((now - score_attach_trace_t0) * 1000.0)
+            score_attach_trace_prev = now
+        _append_phase6t_score_attach_trace_line(
+            log_path=score_attach_trace_log_path,
+            sample_id=str(getattr(sample, "qid", "")),
+            trace_id=str(score_attach_trace_id),
+            step=str(step),
+            dt_prev_ms=dt_prev_ms,
+            dt_total_ms=dt_total_ms,
+            extra=dict(extra or {}),
+        )
+
+    def _p95_from(values):
+        if not values:
+            return 0.0
+        arr = np.asarray(list(values), dtype=np.float32)
+        try:
+            return float(np.percentile(arr, 95))
+        except Exception:
+            return float(np.max(arr))
     shared_budget_diag = _apply_shared_budget_profile_once(cfg)
     objective_flags = _resolve_retrieval_objective_flags(cfg)
     objective_flags, objective_profile_diag = _apply_connector_objective_profile(
@@ -5691,11 +6703,23 @@ def run_graphrag_core(
         artifacts = build_document_entity_graph(sample)
         g = artifacts.graph
 
+    query_preprocess_start = time.perf_counter()
+    query_entity_extract_start = time.perf_counter()
     anchors = select_lexical_anchors(sample, g, int(getattr(cfg, "max_anchors", 5)), cfg=cfg)
+    stage_ms["query_entity_extraction_ms"] = float((time.perf_counter() - query_entity_extract_start) * 1000.0)
+    stage_ms["anchor_extraction_ms"] = float(stage_ms.get("query_entity_extraction_ms", 0.0))
+    stage_ms["anchor_candidate_lookup_ms"] = float(stage_ms.get("query_entity_extraction_ms", 0.0))
+    proposal_counts["num_anchor_candidates"] = int(len(anchors or []))
     if not anchors:
+        anchor_fallback_start = time.perf_counter()
         entities = [n for n in g.nodes if g.nodes[n].get("node_type") == "entity"]
         entities.sort(key=lambda n: g.degree(n), reverse=True)
         anchors = entities[: int(getattr(cfg, "max_anchors", 5))]
+        stage_ms["anchor_candidate_lookup_ms"] += float((time.perf_counter() - anchor_fallback_start) * 1000.0)
+    stage_ms["query_preprocess_ms"] = float((time.perf_counter() - query_preprocess_start) * 1000.0)
+    proposal_counts["num_selected_anchors"] = int(len(anchors or []))
+    # Best-effort proxy: lexical anchors correspond to query-linked entities.
+    proposal_counts["num_query_entities"] = int(len(anchors or []))
 
     rng = random.Random(int(getattr(cfg, "random_seed", 42)))
     show_inner_progress = bool(getattr(cfg, "show_inner_progress", True))
@@ -5704,6 +6728,20 @@ def run_graphrag_core(
 
     ppr_engine = _resolve_ppr_engine(cfg, graph_scope=graph_scope, graph=g)
     proposal_start = time.perf_counter()
+    _prop_trace("proposal_start", extra={}, reset=True)
+    _prop_trace(
+        "query_setup_done",
+        extra={
+            "num_query_entities": int(proposal_counts.get("num_query_entities", 0)),
+        },
+    )
+    _prop_trace(
+        "anchor_selection_done",
+        extra={
+            "num_anchor_candidates": int(proposal_counts.get("num_anchor_candidates", 0)),
+            "num_selected_anchors": int(proposal_counts.get("num_selected_anchors", len(anchors))),
+        },
+    )
 
     semantic_diag = {
         "enabled": bool(getattr(cfg, "embedding_enabled", False)),
@@ -5747,6 +6785,8 @@ def run_graphrag_core(
         query_embed_start = time.perf_counter()
         query_vec, qerr, query_embedding_recomputed, query_embedding_cache_hit = _query_embedding(sample.question, cfg)
         stage_ms["query_embed_ms"] = float((time.perf_counter() - query_embed_start) * 1000.0)
+        stage_ms["query_embedding_prepare_ms"] = float(stage_ms.get("query_embed_ms", 0.0))
+        stage_ms["embedding_query_encode_ms"] = float(stage_ms.get("query_embed_ms", 0.0))
         if query_vec is None:
             semantic_diag["error"] = qerr
             semantic_entity_lookup_mode = "error"
@@ -5770,6 +6810,14 @@ def run_graphrag_core(
                 )
                 stage_ms["semantic_lookup_entity_ms"] = float(semantic_lookup_diag.get("entity_ms", 0.0))
                 stage_ms["semantic_lookup_chunk_ms"] = float(semantic_lookup_diag.get("chunk_ms", 0.0))
+                stage_ms["semantic_entity_scan_ms"] = float(stage_ms.get("semantic_lookup_entity_ms", 0.0))
+                stage_ms["semantic_chunk_scan_ms"] = float(stage_ms.get("semantic_lookup_chunk_ms", 0.0))
+                stage_ms["embedding_candidate_rerank_ms"] = float(
+                    stage_ms.get("semantic_entity_scan_ms", 0.0) + stage_ms.get("semantic_chunk_scan_ms", 0.0)
+                )
+                stage_ms["embedding_cache_lookup_ms"] = float(
+                    stage_ms.get("semantic_entity_scan_ms", 0.0) + stage_ms.get("semantic_chunk_scan_ms", 0.0)
+                )
                 semantic_entity_lookup_mode = str(semantic_lookup_diag.get("entity_mode", semantic_entity_lookup_mode))
                 semantic_chunk_lookup_mode = str(semantic_lookup_diag.get("chunk_mode", semantic_chunk_lookup_mode))
                 semantic_diag["entity_lookup_tier1_candidate_count"] = int(
@@ -5822,6 +6870,11 @@ def run_graphrag_core(
                 local_ms = float((time.perf_counter() - local_lookup_start) * 1000.0)
                 stage_ms["semantic_lookup_entity_ms"] = float(local_ms * 0.5)
                 stage_ms["semantic_lookup_chunk_ms"] = float(local_ms * 0.5)
+                stage_ms["semantic_entity_scan_ms"] = float(stage_ms.get("semantic_lookup_entity_ms", 0.0))
+                stage_ms["semantic_chunk_scan_ms"] = float(stage_ms.get("semantic_lookup_chunk_ms", 0.0))
+                stage_ms["embedding_candidate_rerank_ms"] = float(
+                    stage_ms.get("semantic_entity_scan_ms", 0.0) + stage_ms.get("semantic_chunk_scan_ms", 0.0)
+                )
             else:
                 semantic_diag["error"] = "semantic_index_unavailable_for_large_graph"
                 semantic_entity_lookup_mode = "unavailable"
@@ -5838,7 +6891,32 @@ def run_graphrag_core(
     else:
         hybrid_anchor_diag["final_anchors"] = [str(a) for a in anchors]
 
+    _prop_trace(
+        "semantic_score_prepare_done",
+        extra={
+            "semantic_score_map_size": int(len(semantic_entity_scores) + len(semantic_chunk_scores)),
+            "semantic_topn_entity": int(getattr(cfg, "semantic_topn_entity", getattr(cfg, "semantic_topn", 50))),
+            "semantic_topn_chunk": int(
+                getattr(cfg, "semantic_topn_chunk", max(1, int(getattr(cfg, "semantic_topn", 50)) // 2))
+            ),
+        },
+    )
+
     proposal_union_start = time.perf_counter()
+    _prop_trace("candidate_union_start", extra={})
+    _cand_union_post_trace(
+        "candidate_union_outer_start",
+        extra={
+            "semantic_topn_entity": int(getattr(cfg, "semantic_topn_entity", getattr(cfg, "semantic_topn", 50))),
+            "semantic_topn_chunk": int(
+                getattr(cfg, "semantic_topn_chunk", max(1, int(getattr(cfg, "semantic_topn", 50)) // 2))
+            ),
+            "graph_reserve_topn": int(getattr(cfg, "graph_reserve_topn", 15)),
+        },
+        reset=True,
+    )
+    _cand_union_post_trace("candidate_result_receive_start", extra={})
+    _cand_union_post_trace("candidate_union_inner_start", extra={})
     (
         proposal_by_anchor,
         proposal_nodes,
@@ -5853,22 +6931,96 @@ def run_graphrag_core(
         semantic_chunk_scores=semantic_chunk_scores,
         cfg=cfg,
         semantic_state=semantic_state,
+        candidate_union_trace_fn=_cand_union_trace,
+    )
+    _cand_union_post_trace(
+        "candidate_result_receive_done",
+        extra={
+            "num_candidates_received": int(len(proposal_nodes or [])),
+            "candidate_type": str(type(proposal_by_anchor).__name__),
+        },
+    )
+    proposal_union_profile_raw = dict((proposal_diag or {}).get("proposal_union_profile", {}) or {})
+    proposal_union_timing_raw = dict((proposal_union_profile_raw.get("timing_ms", {}) or {}))
+    proposal_union_counts_raw = dict((proposal_union_profile_raw.get("counts", {}) or {}))
+    _cand_union_post_trace(
+        "candidate_union_inner_done",
+        extra={
+            "candidate_union_total_ms": float(proposal_union_timing_raw.get("proposal_union_total_ms", 0.0)),
+            "raw_entities": int(proposal_union_counts_raw.get("num_raw_semantic_entities", 0)),
+            "raw_chunks": int(proposal_union_counts_raw.get("num_raw_semantic_chunks", 0)),
+            "graph_reserve": int(proposal_union_counts_raw.get("num_graph_reserve_candidates", 0)),
+            "after_dedup": int(proposal_union_counts_raw.get("num_chunk_candidates_after_dedup", 0)),
+            "after_topk": int(proposal_union_counts_raw.get("num_chunk_candidates_after_topk", 0)),
+        },
+    )
+    _cand_union_post_trace("outer_postprocess_start", extra={})
+
+    _cand_union_post_trace("candidate_object_conversion_start", extra={})
+    proposal_union_profile = dict(proposal_union_profile_raw)
+    proposal_union_timing = dict(proposal_union_timing_raw)
+    proposal_union_counts = dict(proposal_union_counts_raw)
+    for key, value in proposal_union_timing.items():
+        if key in stage_ms:
+            stage_ms[key] = float(value)
+    for key, value in proposal_union_counts.items():
+        if key in proposal_counts:
+            proposal_counts[key] = int(value)
+    _cand_union_post_trace(
+        "candidate_object_conversion_done",
+        extra={
+            "num_candidates_converted": int(len(proposal_nodes or [])),
+            "num_conversion_failures": 0,
+        },
+    )
+    _cand_union_post_trace(
+        "candidate_packaging_start",
+        extra={"num_candidate_packages": int(len(proposal_by_anchor or {}))},
+    )
+    _cand_union_post_trace(
+        "candidate_packaging_done",
+        extra={"num_candidate_packages": int(len(proposal_by_anchor or {}))},
     )
 
     if bool(objective_flags.get("bridge_candidate_induction", False)):
+        _cand_union_post_trace("chunk_metadata_hydration_start", extra={"num_chunk_metadata_lookups": None})
+        _cand_union_post_trace("chunk_text_lookup_start", extra={"num_chunk_text_lookups": None})
+        _cand_union_post_trace("title_metadata_lookup_start", extra={"num_title_lookups": None})
+        _cand_union_post_trace(
+            "token_count_or_prompt_estimation_start",
+            extra={"num_token_count_calls": None, "num_prompt_estimation_calls": None},
+        )
+        _cand_union_post_trace("late_sort_or_rank_start", extra={"num_before_sort": None, "num_after_topk": None})
+        bridge_expand_start = time.perf_counter()
         bridge_nodes, bridge_scores, bridge_induction_diag = _induce_bridge_candidates(
             g=g,
             anchors=anchors,
             semantic_scores=semantic_scores,
             cfg=cfg,
         )
+        stage_ms["bridge_candidate_expansion_ms"] = float((time.perf_counter() - bridge_expand_start) * 1000.0)
+        proposal_counts["num_bridge_candidates_before_filter"] = int(len(bridge_nodes or []))
         added_nodes = []
         if bridge_nodes:
+            bridge_filter_start = time.perf_counter()
             local_cap = max(8, int(getattr(cfg, "proposal_anchor_local_topn", 48)))
             bridge_ordered = [str(n) for n in sorted(list(bridge_nodes), key=lambda x: float(bridge_scores.get(x, 0.0)), reverse=True)]
+            _cand_union_post_trace(
+                "late_sort_or_rank_done",
+                extra={"num_before_sort": int(len(bridge_nodes)), "num_after_topk": int(len(bridge_ordered))},
+            )
+            _cand_union_post_trace(
+                "late_dedup_start",
+                extra={"num_before_dedup": None, "num_after_dedup": None},
+            )
             for anchor in list(proposal_by_anchor.keys()):
                 merged = _ordered_unique(list(proposal_by_anchor.get(anchor, []) or []) + bridge_ordered)
                 proposal_by_anchor[anchor] = merged[:local_cap]
+            _cand_union_post_trace(
+                "late_dedup_done",
+                extra={"num_before_dedup": int(len(bridge_ordered)), "num_after_dedup": int(len(proposal_nodes or []))},
+            )
+            _cand_union_post_trace("score_attachment_start", extra={})
             for node in bridge_ordered:
                 if node not in g:
                     continue
@@ -5879,15 +7031,77 @@ def run_graphrag_core(
                 semantic_scores[str(node)] = max(float(semantic_scores.get(str(node), -1.0e9)), float(bscore))
             bridge_induction_diag["added_nodes"] = list(added_nodes)
             bridge_induction_diag["added_count"] = int(len(added_nodes))
+            stage_ms["bridge_candidate_filter_ms"] = float((time.perf_counter() - bridge_filter_start) * 1000.0)
+            proposal_counts["num_bridge_candidates_after_filter"] = int(len(added_nodes))
             proposal_diag["bridge_candidate_count"] = int(len(added_nodes))
             proposal_diag["union_candidate_count"] = int(len(proposal_nodes))
         else:
+            _cand_union_post_trace(
+                "late_sort_or_rank_done",
+                extra={"num_before_sort": 0, "num_after_topk": 0},
+            )
+            _cand_union_post_trace("late_dedup_start", extra={"num_before_dedup": 0, "num_after_dedup": 0})
+            _cand_union_post_trace("late_dedup_done", extra={"num_before_dedup": 0, "num_after_dedup": 0})
+            _cand_union_post_trace("score_attachment_start", extra={})
             bridge_induction_diag["added_nodes"] = []
             bridge_induction_diag["added_count"] = 0
             proposal_diag["bridge_candidate_count"] = 0
+            stage_ms["bridge_candidate_filter_ms"] = 0.0
+            proposal_counts["num_bridge_candidates_after_filter"] = 0
+        _cand_union_post_trace(
+            "chunk_metadata_hydration_done",
+            extra={
+                "num_chunk_metadata_lookups": int(len(bridge_nodes or [])),
+                "num_missing_metadata": 0,
+            },
+        )
+        _cand_union_post_trace(
+            "chunk_text_lookup_done",
+            extra={"num_chunk_text_lookups": int(len(bridge_nodes or [])), "num_missing_text": 0},
+        )
+        _cand_union_post_trace(
+            "title_metadata_lookup_done",
+            extra={"num_title_lookups": int(len(bridge_nodes or [])), "num_missing_metadata": 0},
+        )
+        _cand_union_post_trace(
+            "token_count_or_prompt_estimation_done",
+            extra={"num_token_count_calls": 0, "num_prompt_estimation_calls": 0},
+        )
     else:
+        _cand_union_post_trace("chunk_metadata_hydration_start", extra={"num_chunk_metadata_lookups": 0})
+        _cand_union_post_trace(
+            "chunk_metadata_hydration_done",
+            extra={"num_chunk_metadata_lookups": 0, "num_missing_metadata": 0},
+        )
+        _cand_union_post_trace("chunk_text_lookup_start", extra={"num_chunk_text_lookups": 0})
+        _cand_union_post_trace(
+            "chunk_text_lookup_done",
+            extra={"num_chunk_text_lookups": 0, "num_missing_text": 0},
+        )
+        _cand_union_post_trace("title_metadata_lookup_start", extra={"num_title_lookups": 0})
+        _cand_union_post_trace(
+            "title_metadata_lookup_done",
+            extra={"num_title_lookups": 0, "num_missing_metadata": 0},
+        )
+        _cand_union_post_trace(
+            "token_count_or_prompt_estimation_start",
+            extra={"num_token_count_calls": 0, "num_prompt_estimation_calls": 0},
+        )
+        _cand_union_post_trace(
+            "token_count_or_prompt_estimation_done",
+            extra={"num_token_count_calls": 0, "num_prompt_estimation_calls": 0},
+        )
+        _cand_union_post_trace("late_sort_or_rank_start", extra={"num_before_sort": 0, "num_after_topk": 0})
+        _cand_union_post_trace("late_sort_or_rank_done", extra={"num_before_sort": 0, "num_after_topk": 0})
+        _cand_union_post_trace("late_dedup_start", extra={"num_before_dedup": 0, "num_after_dedup": 0})
+        _cand_union_post_trace("late_dedup_done", extra={"num_before_dedup": 0, "num_after_dedup": 0})
+        _cand_union_post_trace("score_attachment_start", extra={})
         proposal_diag["bridge_candidate_count"] = 0
+        proposal_counts["num_bridge_candidates_before_filter"] = 0
+        proposal_counts["num_bridge_candidates_after_filter"] = 0
 
+    score_attach_start = time.perf_counter()
+    _score_attach_trace("score_attachment_start", extra={}, reset=True)
     (
         proposal_by_anchor,
         proposal_nodes,
@@ -5902,13 +7116,83 @@ def run_graphrag_core(
         proposal_scores=proposal_scores,
         semantic_scores=semantic_scores,
         cfg=cfg,
+        score_attachment_trace_fn=_score_attach_trace,
     )
+    _cand_union_post_trace(
+        "score_attachment_done",
+        extra={"num_score_entries_merged": int(len(proposal_nodes or []))},
+    )
+    stage_ms["score_attachment_ms"] = float((time.perf_counter() - score_attach_start) * 1000.0)
     proposal_diag["candidate_recall_boost_count"] = int(
         (candidate_recall_boost_diag or {}).get("selected_boost_count", 0)
     )
     proposal_diag["union_candidate_count"] = int(len(proposal_nodes))
 
-    stage_ms["proposal_union_ms"] = float((time.perf_counter() - proposal_union_start) * 1000.0)
+    # These diagnostics checkpoints are intentionally no-op at this wrapper boundary.
+    # They are emitted here for strict sequential trace completeness.
+    _cand_union_post_trace("support_fact_matching_start", extra={"num_support_fact_checks": None})
+    _cand_union_post_trace(
+        "support_fact_matching_done",
+        extra={"num_support_fact_checks": None, "num_support_fact_matches": None},
+    )
+    _cand_union_post_trace("answer_bearing_check_start", extra={"num_answer_bearing_checks": None})
+    _cand_union_post_trace(
+        "answer_bearing_check_done",
+        extra={"num_answer_bearing_checks": None, "num_answer_bearing_hits": None},
+    )
+    _cand_union_post_trace("equivalent_evidence_check_start", extra={"num_equivalent_evidence_checks": None})
+    _cand_union_post_trace(
+        "equivalent_evidence_check_done",
+        extra={"num_equivalent_evidence_checks": None},
+    )
+    _cand_union_post_trace(
+        "minimal_support_subset_check_start",
+        extra={"num_minimal_support_subset_checks": None},
+    )
+    _cand_union_post_trace(
+        "minimal_support_subset_check_done",
+        extra={"num_minimal_support_subset_checks": None},
+    )
+    _cand_union_post_trace("bridge_noise_diagnostics_start", extra={"num_bridge_noise_checks": None})
+    _cand_union_post_trace(
+        "bridge_noise_diagnostics_done",
+        extra={"num_bridge_noise_checks": None},
+    )
+    _cand_union_post_trace("stagewise_loss_funnel_start", extra={"stagewise_enabled": None})
+    _cand_union_post_trace(
+        "stagewise_loss_funnel_done",
+        extra={"stagewise_enabled": None, "num_stagewise_metric_calls": None},
+    )
+    _cand_union_post_trace("diagnostics_packaging_start", extra={})
+    _cand_union_post_trace("diagnostics_packaging_done", extra={})
+
+    stage_ms["proposal_union_wrapper_ms"] = float((time.perf_counter() - proposal_union_start) * 1000.0)
+    if float(stage_ms.get("proposal_union_total_ms", 0.0)) > 0.0:
+        stage_ms["proposal_union_ms"] = float(stage_ms.get("proposal_union_total_ms", 0.0))
+        stage_ms["semantic_candidate_union_ms"] = float(stage_ms.get("proposal_union_total_ms", 0.0))
+    else:
+        stage_ms["proposal_union_ms"] = float(stage_ms.get("proposal_union_wrapper_ms", 0.0))
+        stage_ms["semantic_candidate_union_ms"] = float(stage_ms.get("proposal_union_wrapper_ms", 0.0))
+    _cand_union_post_trace("outer_postprocess_done", extra={})
+    _cand_union_post_trace(
+        "candidate_union_outer_done",
+        extra={
+            "candidate_union_outer_total_ms": float((time.perf_counter() - proposal_union_start) * 1000.0),
+            "candidate_union_inner_total_ms": float(stage_ms.get("proposal_union_total_ms", 0.0)),
+        },
+    )
+    _prop_trace(
+        "candidate_union_done",
+        extra={
+            "raw_entities": int(proposal_counts.get("num_raw_semantic_entities", 0)),
+            "raw_chunks": int(proposal_counts.get("num_raw_semantic_chunks", 0)),
+            "graph_reserve_candidates": int(proposal_counts.get("num_graph_reserve_candidates", 0)),
+            "before_dedup": int(proposal_counts.get("num_chunk_candidates_before_dedup", 0)),
+            "after_dedup": int(proposal_counts.get("num_chunk_candidates_after_dedup", 0)),
+            "after_topk": int(proposal_counts.get("num_chunk_candidates_after_topk", 0)),
+        },
+    )
+    proposal_post_union_start = time.perf_counter()
     proposal_subgraph_start = time.perf_counter()
     reduced_graph, reduced_diag = _build_reduced_subgraph_from_proposals(
         g=g,
@@ -5918,6 +7202,8 @@ def run_graphrag_core(
         cfg=cfg,
     )
     stage_ms["proposal_subgraph_build_ms"] = float((time.perf_counter() - proposal_subgraph_start) * 1000.0)
+    stage_ms["local_graph_construction_ms"] = float(stage_ms["proposal_subgraph_build_ms"])
+    stage_ms["local_subgraph_build_ms"] = float(stage_ms["proposal_subgraph_build_ms"])
     if reduced_graph is None or reduced_graph.number_of_nodes() <= 0:
         reduced_graph = g
         reduced_diag = {"applied": False, "reason": "fallback_to_full_graph"}
@@ -5932,9 +7218,11 @@ def run_graphrag_core(
         anchors=anchors,
         cfg=cfg,
     )
+    stage_ms["bounded_local_refine_setup_ms"] = float(stage_ms.get("proposal_subgraph_build_ms", 0.0))
     if not phase1_anchors:
         phase1_anchors = list(anchors)
 
+    post_union_packaging_start = time.perf_counter()
     semantic_diag["semantic_entity_candidates"] = [str(n) for n in semantic_entity_scores.keys()]
     semantic_diag["semantic_chunk_candidates"] = [str(n) for n in semantic_chunk_scores.keys()]
     semantic_diag["semantic_entity_scores"] = {str(k): float(v) for k, v in semantic_entity_scores.items()}
@@ -5959,7 +7247,52 @@ def run_graphrag_core(
     semantic_diag["query_embedding_cache_hit"] = bool(query_embedding_cache_hit)
     semantic_diag["semantic_entity_lookup_mode"] = str(semantic_entity_lookup_mode)
     semantic_diag["semantic_chunk_lookup_mode"] = str(semantic_chunk_lookup_mode)
+    stage_ms["semantic_score_map_prepare_ms"] = float((time.perf_counter() - post_union_packaging_start) * 1000.0)
+    stage_ms["final_candidate_packaging_ms"] = float(stage_ms.get("semantic_score_map_prepare_ms", 0.0))
+    proposal_counts["semantic_score_map_size"] = int(len(semantic_scores))
+    proposal_counts["num_semantic_entity_candidates"] = int(len(semantic_entity_scores))
+    proposal_counts["num_semantic_chunk_candidates"] = int(len(semantic_chunk_scores))
+    proposal_counts["num_union_candidates"] = int(len(proposal_nodes))
+
+    stage_ms["proposal_post_union_ms"] = float((time.perf_counter() - proposal_post_union_start) * 1000.0)
+    post_known_keys = [
+        "proposal_subgraph_build_ms",
+        "semantic_score_map_prepare_ms",
+        "final_candidate_packaging_ms",
+        "bounded_local_refine_setup_ms",
+        "stagewise_diagnostics_ms",
+    ]
+    post_known_total = 0.0
+    for _k in post_known_keys:
+        post_known_total += float(stage_ms.get(_k, 0.0))
+    stage_ms["post_union_misc_ms"] = float(stage_ms.get("proposal_post_union_ms", 0.0)) - float(post_known_total)
+
     stage_ms["proposal_time_ms"] = float((time.perf_counter() - proposal_start) * 1000.0)
+    stage_ms["proposal_total_ms"] = float(stage_ms.get("proposal_time_ms", 0.0))
+    stage_ms["proposal_known_total_ms"] = (
+        float(stage_ms.get("proposal_pre_union_ms", 0.0))
+        + float(stage_ms.get("proposal_union_total_ms", stage_ms.get("proposal_union_ms", 0.0)))
+        + float(stage_ms.get("proposal_post_union_ms", 0.0))
+    )
+    stage_ms["unattributed_proposal_ms"] = float(stage_ms.get("proposal_total_ms", 0.0)) - float(
+        stage_ms.get("proposal_known_total_ms", 0.0)
+    )
+    if float(stage_ms.get("proposal_total_ms", 0.0)) > 0.0:
+        stage_ms["proposal_unattributed_share"] = float(stage_ms.get("unattributed_proposal_ms", 0.0)) / float(
+            stage_ms.get("proposal_total_ms", 0.0)
+        )
+    else:
+        stage_ms["proposal_unattributed_share"] = 0.0
+    stage_ms["proposal_timer_overlap_ms"] = (
+        abs(float(stage_ms.get("unattributed_proposal_ms", 0.0)))
+        if float(stage_ms.get("unattributed_proposal_ms", 0.0)) < 0.0
+        else 0.0
+    )
+    stage_ms["semantic_scan_ms"] = (
+        float(stage_ms.get("query_embed_ms", 0.0))
+        + float(stage_ms.get("semantic_lookup_entity_ms", 0.0))
+        + float(stage_ms.get("semantic_lookup_chunk_ms", 0.0))
+    )
 
     phase1_start = time.perf_counter()
     per_anchor_runs = {a: [] for a in phase1_anchors}
@@ -5977,6 +7310,7 @@ def run_graphrag_core(
             disable=not show_inner_progress,
         ):
             run_seed = int(rng.random() * 10**9)
+            ppr_call_start = time.perf_counter()
             if ppr_engine == "power":
                 h = _stochastic_perturb_graph(diffusion_graph, rng, float(getattr(cfg, "edge_drop_prob", 0.1)))
                 run_map = _compute_ppr_batch(
@@ -6000,13 +7334,24 @@ def run_graphrag_core(
                 )
             for anchor in phase1_anchors:
                 per_anchor_runs[anchor].append(run_map.get(anchor, {}))
+            ppr_call_ms_values.append(float((time.perf_counter() - ppr_call_start) * 1000.0))
     finally:
         if not phase1_parallel_enabled:
             setattr(cfg, "ppr_parallel_workers", original_ppr_parallel_workers)
     stage_ms["phase1_ppr_ms"] = float((time.perf_counter() - phase1_start) * 1000.0)
     stage_ms["phase1_ppr_time_ms"] = float(stage_ms["phase1_ppr_ms"])
+    stage_ms["ppr_time_ms"] = float(stage_ms["phase1_ppr_ms"])
+    stage_ms["ppr_total_ms"] = float(stage_ms["phase1_ppr_ms"])
+    stage_ms["ppr_avg_ms"] = float(
+        (sum(ppr_call_ms_values) / float(len(ppr_call_ms_values))) if ppr_call_ms_values else 0.0
+    )
+    stage_ms["ppr_p95_ms"] = float(_p95_from(ppr_call_ms_values))
+    proposal_counts["num_ppr_calls"] = int(len(ppr_call_ms_values))
+    proposal_counts["num_ppr_sources"] = int(len(phase1_anchors))
+    proposal_counts["num_ppr_target_nodes"] = int(diffusion_graph.number_of_nodes() if diffusion_graph is not None else 0)
 
-    run_score_start = time.perf_counter()
+    _prop_trace("phase1_run_generation_start", extra={})
+    run_generation_start = time.perf_counter()
     run_base = []
     for run_id in range(n_runs):
         agg_scores = {}
@@ -6025,20 +7370,40 @@ def run_graphrag_core(
                 "graph_candidates": graph_candidates,
             }
         )
+    stage_ms["phase1_run_generation_ms"] = float((time.perf_counter() - run_generation_start) * 1000.0)
+    proposal_counts["samples_per_anchor"] = int(n_runs)
+    proposal_counts["num_generated_runs"] = int(len(run_base))
+    _prop_trace(
+        "phase1_run_generation_done",
+        extra={
+            "num_generated_runs": int(proposal_counts.get("num_generated_runs", 0)),
+            "max_anchors": int(getattr(cfg, "max_anchors", 0)),
+            "samples_per_anchor": int(proposal_counts.get("samples_per_anchor", n_runs)),
+        },
+    )
 
+    dedup_start = time.perf_counter()
     candidate_universe = set(phase1_anchors).union(set(proposal_nodes))
     for run in run_base:
         candidate_universe.update(run.get("graph_candidates", []))
     candidate_universe = {node for node in candidate_universe if node in reduced_graph}
+    stage_ms["seed_candidate_build_ms"] = float((time.perf_counter() - dedup_start) * 1000.0)
+    stage_ms["deduplication_ms"] += float(stage_ms.get("seed_candidate_build_ms", 0.0))
+    proposal_counts["num_union_candidates"] = int(len(proposal_nodes))
+    proposal_counts["num_seed_candidates"] = int(len(candidate_universe))
 
+    _prop_trace("phase1_run_scoring_start", extra={})
+    run_score_start = time.perf_counter()
     node_vectors = {}
     if semantic_diag["enabled"] and query_vec is not None and candidate_universe:
+        candidate_encode_start = time.perf_counter()
         node_vectors, vector_err = _load_candidate_vectors(
             nodes=sorted(candidate_universe),
             g=reduced_graph,
             cfg=cfg,
             semantic_state=semantic_state,
         )
+        stage_ms["embedding_candidate_encode_ms"] = float((time.perf_counter() - candidate_encode_start) * 1000.0)
         if vector_err and not semantic_diag["error"]:
             semantic_diag["error"] = vector_err
     semantic_diag["candidate_vector_count"] = int(len(node_vectors))
@@ -6052,8 +7417,10 @@ def run_graphrag_core(
         for node, sim in zip(vector_nodes, sims.tolist()):
             query_sim_map[node] = float(sim)
         candidate_similarity_recomputed_count += int(len(vector_nodes))
+    semantic_reuse_start = time.perf_counter()
     for node, score in semantic_scores.items():
         query_sim_map[node] = max(float(score), float(query_sim_map.get(node, -1.0)))
+    stage_ms["semantic_score_reuse_ms"] = float((time.perf_counter() - semantic_reuse_start) * 1000.0)
 
     anchor_vecs = {anchor: node_vectors[anchor] for anchor in anchors if anchor in node_vectors}
     anchor_sim_map = {node: 0.0 for node in candidate_universe}
@@ -6096,6 +7463,7 @@ def run_graphrag_core(
     semantic_union_enabled = bool(getattr(cfg, "semantic_candidate_union", True))
     distance_map_cache = {}
     run_results = []
+    _prop_trace("seed_selection_start", extra={})
     for run in run_base:
         graph_candidates = list(run.get("graph_candidates", []))
         semantic_candidates = []
@@ -6120,6 +7488,7 @@ def run_graphrag_core(
             chunk_grounding_bonus_map = {
                 node: float(seed_chunk_grounding_bonus_global.get(node, 0.0)) for node in candidates
             }
+            score_norm_start = time.perf_counter()
             seed_score_map, graph_norm, semantic_norm, anchor_norm, bridge_norm, grounding_norm = _seed_hybrid_scores(
                 candidates=candidates,
                 agg_scores=run.get("agg_scores", {}),
@@ -6130,6 +7499,7 @@ def run_graphrag_core(
                 bridge_bonus_map=bridge_bonus_map,
                 chunk_grounding_bonus_map=chunk_grounding_bonus_map,
             )
+            stage_ms["score_normalization_ms"] += float((time.perf_counter() - score_norm_start) * 1000.0)
         else:
             seed_score_map = {node: float(run["agg_scores"].get(node, 0.0)) for node in candidates}
             graph_norm = _normalize_map(seed_score_map)
@@ -6137,7 +7507,9 @@ def run_graphrag_core(
             anchor_norm = {node: 0.0 for node in candidates}
             bridge_norm = {node: 0.0 for node in candidates}
             grounding_norm = {node: 0.0 for node in candidates}
+            stage_ms["score_normalization_ms"] += 0.0
 
+        seed_select_start = time.perf_counter()
         objective_weights = _seed_selection_objective_weights(
             candidates=candidates,
             seed_score_map=seed_score_map,
@@ -6158,6 +7530,7 @@ def run_graphrag_core(
             int(getattr(cfg, "tau", 4)),
             distance_map_cache=distance_map_cache,
         )
+        stage_ms["seed_selection_ms"] += float((time.perf_counter() - seed_select_start) * 1000.0)
         if not seeds and candidates:
             fallback = sorted(candidates, key=lambda n: float(seed_score_map.get(n, 0.0)), reverse=True)
             seeds = set(fallback[: max(1, int(getattr(cfg, "seed_k", 4)))])
@@ -6181,8 +7554,16 @@ def run_graphrag_core(
                 },
             }
         )
+    _prop_trace(
+        "seed_selection_done",
+        extra={
+            "num_seed_candidates": int(proposal_counts.get("num_seed_candidates", 0)),
+            "num_selected_seeds": int(sum(len(list(r.get("seeds", set()) or [])) for r in run_results)),
+        },
+    )
 
     run_score_sparse_topk = max(12, int(getattr(cfg, "run_score_sparse_topk", 64)))
+    proposal_counts["num_run_candidates"] = int(len(run_results))
     for run in run_results:
         full_nodes = _ordered_unique(list(run.get("candidates", [])) + list(run.get("seeds", [])))
         if not full_nodes:
@@ -6534,6 +7915,7 @@ def run_graphrag_core(
             "global_loss": 0.0,
         }
 
+    shortlist_stage_start = time.perf_counter()
     shortlist_k = max(1, int(getattr(cfg, "phase1_run_shortlist_topk", 2)))
     full_score_topk = max(
         shortlist_k,
@@ -6555,8 +7937,32 @@ def run_graphrag_core(
     chosen = shortlisted_runs[0]
     stage_ms["phase1_run_scoring_ms"] = float((time.perf_counter() - run_score_start) * 1000.0)
     stage_ms["run_scoring_time_ms"] = float(stage_ms["phase1_run_scoring_ms"])
+    stage_ms["phase1_run_shortlist_ms"] = float((time.perf_counter() - shortlist_stage_start) * 1000.0)
+    proposal_counts["num_shortlisted_runs"] = int(len(shortlisted_runs or []))
+    _prop_trace(
+        "phase1_run_scoring_done",
+        extra={
+            "num_run_candidates": int(proposal_counts.get("num_run_candidates", len(run_results))),
+            "num_shortlisted_runs": int(proposal_counts.get("num_shortlisted_runs", len(shortlisted_runs or []))),
+        },
+    )
 
     phase2_start = time.perf_counter()
+    proposal_counts["num_selected_seeds"] = int(len(chosen.get("seeds", set()) if isinstance(chosen, dict) else []))
+    proposal_counts["num_seed_candidates"] = int(
+        len(
+            _ordered_unique(
+                list((chosen or {}).get("candidates", []) or []) + list((chosen or {}).get("seeds", set()) or [])
+            )
+        )
+    )
+    anchor_seed_pair_start = time.perf_counter()
+    anchor_seed_pairs = 0
+    for run in shortlisted_runs:
+        anchor_seed_pairs += int(len(anchors) * len(list(run.get("seeds", []) or [])))
+    stage_ms["anchor_seed_pair_build_ms"] = float((time.perf_counter() - anchor_seed_pair_start) * 1000.0)
+    proposal_counts["num_anchor_seed_pairs"] = int(anchor_seed_pairs)
+    _prop_trace("pair_construction_start", extra={})
     pair_shortlist_start = time.perf_counter()
     pair_shortlist = _phase2_pair_shortlist(
         shortlisted_runs=shortlisted_runs,
@@ -6592,7 +7998,20 @@ def run_graphrag_core(
         fallback.sort(key=lambda x: x["pair_proxy_score"], reverse=True)
         pair_shortlist = fallback[: max(1, int(getattr(cfg, "pair_shortlist_topb", 6)))]
     stage_ms["phase2_pair_shortlist_ms"] = float((time.perf_counter() - pair_shortlist_start) * 1000.0)
+    stage_ms["pair_construction_ms"] = float(stage_ms["phase2_pair_shortlist_ms"])
+    stage_ms["pair_scoring_ms"] = float(stage_ms["phase2_pair_shortlist_ms"])
+    stage_ms["pair_shortlist_ms"] = float(stage_ms["phase2_pair_shortlist_ms"])
+    proposal_counts["num_pair_candidates"] = int(len(pair_shortlist or []))
+    _prop_trace(
+        "pair_construction_done",
+        extra={
+            "num_anchor_seed_pairs": int(proposal_counts.get("num_anchor_seed_pairs", 0)),
+            "num_pair_candidates": int(proposal_counts.get("num_pair_candidates", len(pair_shortlist or []))),
+        },
+    )
 
+    _prop_trace("local_refine_start", extra={})
+    _prop_trace("corridor_generation_start", extra={})
     phase2_refine_start = time.perf_counter()
     corridor, retained_pairs, sentence_scores, corridor_payloads = _phase2_local_refinement(
         g=reduced_graph,
@@ -6604,8 +8023,33 @@ def run_graphrag_core(
     )
     stage_ms["phase2_refine_ms"] = float((time.perf_counter() - phase2_refine_start) * 1000.0)
     stage_ms["phase2_refinement_time_ms"] = float((time.perf_counter() - phase2_start) * 1000.0)
+    stage_ms["corridor_candidate_generation_ms"] = float(stage_ms["phase2_refine_ms"])
+    stage_ms["corridor_shortlist_ms"] = float(stage_ms["phase2_pair_shortlist_ms"])
+    proposal_counts["num_corridor_candidates"] = int(len(corridor_payloads or []))
+    proposal_counts["num_selected_corridors"] = int(len(retained_pairs or []))
+    _prop_trace(
+        "local_refine_done",
+        extra={
+            "num_ppr_calls": int(proposal_counts.get("num_ppr_calls", 0)),
+            "local_graph_nodes_avg": float(reduced_graph.number_of_nodes() if reduced_graph is not None else 0),
+            "local_graph_edges_avg": float(reduced_graph.number_of_edges() if reduced_graph is not None else 0),
+        },
+    )
+    _prop_trace(
+        "corridor_generation_done",
+        extra={
+            "num_corridor_candidates": int(proposal_counts.get("num_corridor_candidates", len(corridor_payloads or []))),
+        },
+    )
+    stage_ms["corridor_extraction_ms"] = (
+        float(stage_ms.get("phase1_run_scoring_ms", 0.0))
+        + float(stage_ms.get("phase2_pair_shortlist_ms", 0.0))
+        + float(stage_ms.get("phase2_refine_ms", 0.0))
+    )
 
     final_start = time.perf_counter()
+    _prop_trace("corridor_scoring_start", extra={})
+    corridor_score_start = time.perf_counter()
     corridor_payloads = _rerank_corridors_hybrid(
         corridors=corridor_payloads,
         g=reduced_graph,
@@ -6613,6 +8057,14 @@ def run_graphrag_core(
         support_sim_map=support_sim_map,
         cfg=cfg,
         coverage_enabled_override=bool(objective_flags.get("coverage_selection", False)),
+    )
+    stage_ms["corridor_feature_extraction_ms"] = float((time.perf_counter() - corridor_score_start) * 1000.0)
+    stage_ms["corridor_scoring_ms"] = float(stage_ms["corridor_feature_extraction_ms"])
+    _prop_trace(
+        "corridor_scoring_done",
+        extra={
+            "num_selected_corridors": int(proposal_counts.get("num_selected_corridors", len(retained_pairs or []))),
+        },
     )
     top1_corridor_start = time.perf_counter()
     corridor_payloads, top1_corridor_diag = _apply_lightweight_corridor_top1_correction(
@@ -6663,6 +8115,7 @@ def run_graphrag_core(
     selected_nodes = set(final_graph.nodes())
     if entity_chunk_diag.get("applied", False):
         selected_nodes.update(entity_chunk_diag.get("selected_chunks", []))
+    _prop_trace("final_packaging_start", extra={})
     selected_sentence_ids, selected_sentences, selected_sentence_score_map = _extract_sentence_payload(
         g,
         selected_nodes,
@@ -6687,6 +8140,7 @@ def run_graphrag_core(
         cfg=cfg,
     )
     stage_ms["sentence_rerank_ms"] = float(sentence_rerank_ms)
+    stage_ms["embedding_rerank_ms"] = float(sentence_rerank_ms)
 
     filtered_corridors = _filter_corridor_payloads(corridor_payloads, selected_sentence_ids)
     corridor_count_before_trim = int(len(corridor_payloads))
@@ -6697,6 +8151,12 @@ def run_graphrag_core(
         sentence_texts=selected_sentences,
         sentence_score_map=selected_sentence_score_map,
         corridors=filtered_corridors,
+    )
+    _prop_trace(
+        "final_packaging_done",
+        extra={
+            "render_candidate_count": int(len(selected_sentence_ids or [])),
+        },
     )
     unified_selector_enabled = bool(getattr(cfg, "unified_acr_rcedr_enabled", False))
     if unified_selector_enabled:
@@ -6709,6 +8169,13 @@ def run_graphrag_core(
             cfg=cfg,
         )
         stage_ms["unified_acr_rcedr_ms"] = float((time.perf_counter() - unified_selector_start) * 1000.0)
+        stage_ms["answerability_feature_ms"] = float(
+            (unified_acr_rcedr_diag or {}).get("answerability_feature_ms", 0.0)
+        )
+        stage_ms["bridge_feature_ms"] = float((unified_acr_rcedr_diag or {}).get("bridge_feature_ms", 0.0))
+        stage_ms["redundancy_scoring_ms"] = float(
+            (unified_acr_rcedr_diag or {}).get("redundancy_scoring_ms", 0.0)
+        )
         if bool(unified_acr_rcedr_diag.get("applied", False)):
             sentence_feature_table = _build_sentence_feature_table(
                 sample=sample,
@@ -6812,53 +8279,106 @@ def run_graphrag_core(
         - float(stage_ms.get("unified_acr_rcedr_ms", 0.0)),
     )
     stage_ms["final_render_time_ms"] = float(stage_ms["render_ms"])
+    proposal_counts["num_candidate_atoms"] = int((unified_acr_rcedr_diag or {}).get("num_atoms", 0))
+    proposal_counts["num_selected_atoms"] = int((unified_acr_rcedr_diag or {}).get("num_selected_atoms", 0))
+    proposal_counts["objective_eval_calls"] = int((unified_acr_rcedr_diag or {}).get("objective_eval_calls", 0))
+
+    # proposal_total decomposition (non-invasive diagnostics only).
+    proposal_known_total = (
+        float(stage_ms.get("proposal_pre_union_ms", 0.0))
+        + float(stage_ms.get("proposal_union_total_ms", stage_ms.get("proposal_union_ms", 0.0)))
+        + float(stage_ms.get("proposal_post_union_ms", 0.0))
+    )
+    stage_ms["proposal_known_total_ms"] = float(proposal_known_total)
+    proposal_unattributed = float(stage_ms.get("proposal_total_ms", stage_ms.get("proposal_time_ms", 0.0))) - float(
+        stage_ms.get("proposal_known_total_ms", 0.0)
+    )
+    stage_ms["unattributed_proposal_ms"] = float(proposal_unattributed)
+    stage_ms["proposal_substage_total_ms"] = float(stage_ms.get("proposal_known_total_ms", 0.0))
+    if float(stage_ms.get("proposal_total_ms", 0.0)) > 0.0:
+        stage_ms["proposal_unattributed_share"] = float(stage_ms.get("unattributed_proposal_ms", 0.0)) / float(
+            stage_ms.get("proposal_total_ms", 0.0)
+        )
+    else:
+        stage_ms["proposal_unattributed_share"] = 0.0
+    stage_ms["proposal_timer_overlap_ms"] = (
+        abs(float(stage_ms.get("unattributed_proposal_ms", 0.0)))
+        if float(stage_ms.get("unattributed_proposal_ms", 0.0)) < 0.0
+        else 0.0
+    )
+    stage_ms["misc_python_overhead_ms"] = (
+        float(stage_ms.get("unattributed_proposal_ms", 0.0))
+        if float(stage_ms.get("unattributed_proposal_ms", 0.0)) > 0.0
+        else 0.0
+    )
+    proposal_timer_overlap_note = (
+        "nested_or_overlapping_timers_detected"
+        if float(stage_ms.get("proposal_timer_overlap_ms", 0.0)) > 0.0
+        else ""
+    )
 
     graph_mode_diag = str(getattr(cfg, "graph_mode", "current_entity_graph") or "current_entity_graph")
     stagewise_loss_funnel = {"enabled": False}
-    if bool(getattr(cfg, "stagewise_loss_funnel_enabled", True)):
-        stagewise_loss_funnel = _compute_stagewise_loss_funnel(
-            sample=sample,
-            g=g,
-            reduced_graph=reduced_graph,
+    connector_metrics = {}
+    stagewise_diag_start = time.perf_counter()
+    if disable_retrieval_diagnostics:
+        stagewise_loss_funnel = {
+            "enabled": False,
+            "skipped": True,
+            "reason": "phase6t_disable_retrieval_diagnostics",
+        }
+        connector_metrics = {
+            "metrics_available": False,
+            "skipped": True,
+            "reason": "phase6t_disable_retrieval_diagnostics",
+        }
+    else:
+        if bool(getattr(cfg, "stagewise_loss_funnel_enabled", True)):
+            stagewise_loss_funnel = _compute_stagewise_loss_funnel(
+                sample=sample,
+                g=g,
+                reduced_graph=reduced_graph,
+                anchors=anchors,
+                proposal_nodes=proposal_nodes,
+                shortlisted_runs=shortlisted_runs,
+                selected_text_unit_ids=selected_sentence_ids,
+                selected_text_map=selected_text_map,
+                graph_mode=graph_mode_diag,
+            )
+        connector_metrics = _compute_connector_retrieval_metrics(
+            g=reduced_graph if reduced_graph is not None else g,
             anchors=anchors,
-            proposal_nodes=proposal_nodes,
-            shortlisted_runs=shortlisted_runs,
-            selected_text_unit_ids=selected_sentence_ids,
-            selected_text_map=selected_text_map,
-            graph_mode=graph_mode_diag,
+            chosen_run=chosen,
+            filtered_corridors=filtered_corridors,
+            anchor_distance_maps=anchor_distance_maps,
+            query_sim_map=query_sim_map,
+            support_sim_map=support_sim_map,
+            node_vectors=node_vectors,
+            tau=int(getattr(cfg, "tau", 4)),
+            cfg=cfg,
         )
-    connector_metrics = _compute_connector_retrieval_metrics(
-        g=reduced_graph if reduced_graph is not None else g,
-        anchors=anchors,
-        chosen_run=chosen,
-        filtered_corridors=filtered_corridors,
-        anchor_distance_maps=anchor_distance_maps,
-        query_sim_map=query_sim_map,
-        support_sim_map=support_sim_map,
-        node_vectors=node_vectors,
-        tau=int(getattr(cfg, "tau", 4)),
-        cfg=cfg,
-    )
+    stage_ms["stagewise_diagnostics_ms"] = float((time.perf_counter() - stagewise_diag_start) * 1000.0)
 
     anchor_results = []
     diag_topn = max(1, int(getattr(cfg, "anchor_diag_topn", 10)))
     diag_full = bool(getattr(cfg, "anchor_diag_store_full_scores", False))
-    for anchor in anchors:
-        for sample_idx, scores in enumerate(per_anchor_runs.get(anchor, [])):
-            top_candidates = _topk_nodes(scores, diag_topn)
-            if diag_full:
-                score_payload = {k: float(v) for k, v in scores.items() if v > 0.0}
-            else:
-                score_payload = {k: float(scores.get(k, 0.0)) for k in top_candidates}
-            anchor_results.append(
-                AnchorResult(
-                    anchor=anchor,
-                    scores=score_payload,
-                    top_candidates=top_candidates,
-                    sample_index=sample_idx,
-                    metadata={"topn": diag_topn, "full_scores": diag_full},
+    if not disable_retrieval_diagnostics:
+        for anchor in anchors:
+            for sample_idx, scores in enumerate(per_anchor_runs.get(anchor, [])):
+                top_candidates = _topk_nodes(scores, diag_topn)
+                if diag_full:
+                    score_payload = {k: float(v) for k, v in scores.items() if v > 0.0}
+                else:
+                    score_payload = {k: float(scores.get(k, 0.0)) for k in top_candidates}
+                anchor_results.append(
+                    AnchorResult(
+                        anchor=anchor,
+                        scores=score_payload,
+                        top_candidates=top_candidates,
+                        sample_index=sample_idx,
+                        metadata={"topn": diag_topn, "full_scores": diag_full},
+                    )
                 )
-            )
 
     score_component_trace = None
     if trace_enabled:
@@ -6919,15 +8439,27 @@ def run_graphrag_core(
             "final_text_rerank": final_text_rerank_trace,
         }
 
-    candidate_nodes_for_audit = _ordered_unique(
-        list((chosen or {}).get("candidates", []) or []) + list((chosen or {}).get("seeds", set()) or [])
+    if disable_retrieval_diagnostics:
+        candidate_sentence_ids = []
+        candidate_sentences = []
+    else:
+        candidate_nodes_for_audit = _ordered_unique(
+            list((chosen or {}).get("candidates", []) or []) + list((chosen or {}).get("seeds", set()) or [])
+        )
+        candidate_unit_ids, candidate_text_map = _candidate_text_unit_ids(
+            reduced_graph if reduced_graph is not None else g,
+            candidate_nodes_for_audit,
+        )
+        candidate_sentence_ids = sorted({str(x) for x in list(candidate_unit_ids or []) if str(x)})
+        candidate_sentences = [str((candidate_text_map or {}).get(sid, "") or "") for sid in candidate_sentence_ids]
+
+    _prop_trace(
+        "proposal_end",
+        extra={
+            "proposal_total_ms": float(stage_ms.get("proposal_total_ms", stage_ms.get("proposal_time_ms", 0.0))),
+            "render_candidate_count": int(len(selected_sentence_ids or [])),
+        },
     )
-    candidate_unit_ids, candidate_text_map = _candidate_text_unit_ids(
-        reduced_graph if reduced_graph is not None else g,
-        candidate_nodes_for_audit,
-    )
-    candidate_sentence_ids = sorted({str(x) for x in list(candidate_unit_ids or []) if str(x)})
-    candidate_sentences = [str((candidate_text_map or {}).get(sid, "") or "") for sid in candidate_sentence_ids]
 
     latency_ms = (time.perf_counter() - start) * 1000.0
     return RetrievalResult(
@@ -6944,6 +8476,8 @@ def run_graphrag_core(
         anchor_results=anchor_results,
         diagnostics={
             "graph_scope": graph_scope,
+            "retrieval_diagnostics_disabled": bool(disable_retrieval_diagnostics),
+            "candidate_union_post_trace_mode": str(cand_union_post_mode),
             "global_index": global_index_meta if graph_scope in {"global_corpus", "prebuilt_igraph"} else {},
             "ppr_engine_requested": str(getattr(cfg, "ppr_engine", "auto")),
             "ppr_engine_effective": ppr_engine,
@@ -7034,8 +8568,11 @@ def run_graphrag_core(
             "proposal_global_fallback_count": int(proposal_diag.get("global_fallback_count", 0)),
             "proposal_bridge_candidate_count": int(proposal_diag.get("bridge_candidate_count", 0)),
             "union_candidate_count": int(proposal_diag.get("union_candidate_count", len(proposal_nodes))),
+            "proposal_union_profile": dict((proposal_diag or {}).get("proposal_union_profile", {}) or {}),
             "proposal_subgraph_nodes": int(reduced_graph.number_of_nodes()),
             "proposal_subgraph_edges": int(reduced_graph.number_of_edges()),
+            "local_subgraph_node_count_avg": float(reduced_graph.number_of_nodes()),
+            "local_subgraph_edge_count_avg": float(reduced_graph.number_of_edges()),
             "phase1_run_count": int(n_runs),
             "phase1_run_preshortlist_topm": int(preshortlist_topm),
             "phase1_full_run_score_topk": int(full_score_topk),
@@ -7061,6 +8598,10 @@ def run_graphrag_core(
             "sentence_feature_table": sentence_feature_table,
             "text_unit_feature_table": sentence_feature_table,
             "semantic_selection": semantic_diag,
+            "semantic_candidate_count": int(
+                len((semantic_diag.get("semantic_entity_candidates", []) or []))
+                + len((semantic_diag.get("semantic_chunk_candidates", []) or []))
+            ),
             "query_embedding_recomputed": bool(query_embedding_recomputed),
             "query_embedding_cache_hit": bool(query_embedding_cache_hit),
             "semantic_entity_lookup_mode": str(semantic_entity_lookup_mode),
@@ -7068,6 +8609,55 @@ def run_graphrag_core(
             "candidate_similarity_recomputed_count": int(candidate_similarity_recomputed_count),
             "semantic_scores_reused_in_final": bool(getattr(cfg, "reuse_semantic_scores_in_final", True)),
             "sentence_rerank_semantic_calls": int(sentence_rerank_semantic_calls),
+            "embedding_rerank_candidate_count": int((embedding_diag or {}).get("input_candidate_count", 0)),
+            "sentence_rerank_candidate_count": int((embedding_diag or {}).get("input_candidate_count", 0)),
+            "num_anchors": int(proposal_counts.get("num_selected_anchors", len(anchors))),
+            "samples_per_anchor": int(proposal_counts.get("samples_per_anchor", n_runs)),
+            "ppr_call_count": int(proposal_counts.get("num_ppr_calls", n_runs)),
+            "local_graph_nodes_avg": float(reduced_graph.number_of_nodes()),
+            "local_graph_edges_avg": float(reduced_graph.number_of_edges()),
+            "corridor_candidate_count": int(corridor_count_before_trim),
+            "candidate_atom_count": int((unified_acr_rcedr_diag or {}).get("num_atoms", 0)),
+            "selected_atom_count": int((unified_acr_rcedr_diag or {}).get("num_selected_atoms", 0)),
+            "objective_eval_calls": int((unified_acr_rcedr_diag or {}).get("objective_eval_calls", 0)),
+            "num_query_entities": int(proposal_counts.get("num_query_entities", 0)),
+            "num_anchor_candidates": int(proposal_counts.get("num_anchor_candidates", 0)),
+            "num_selected_anchors": int(proposal_counts.get("num_selected_anchors", len(anchors))),
+            "semantic_score_map_size": int(proposal_counts.get("semantic_score_map_size", 0)),
+            "num_generated_runs": int(proposal_counts.get("num_generated_runs", n_runs)),
+            "num_run_candidates": int(proposal_counts.get("num_run_candidates", len(run_results))),
+            "num_shortlisted_runs": int(proposal_counts.get("num_shortlisted_runs", len(shortlisted_runs))),
+            "num_semantic_entity_candidates": int(proposal_counts.get("num_semantic_entity_candidates", 0)),
+            "num_semantic_chunk_candidates": int(proposal_counts.get("num_semantic_chunk_candidates", 0)),
+            "num_union_candidates": int(proposal_counts.get("num_union_candidates", len(proposal_nodes))),
+            "num_bridge_candidates_before_filter": int(proposal_counts.get("num_bridge_candidates_before_filter", 0)),
+            "num_bridge_candidates_after_filter": int(proposal_counts.get("num_bridge_candidates_after_filter", 0)),
+            "num_ppr_calls": int(proposal_counts.get("num_ppr_calls", n_runs)),
+            "num_ppr_sources": int(proposal_counts.get("num_ppr_sources", len(phase1_anchors))),
+            "num_ppr_target_nodes": int(proposal_counts.get("num_ppr_target_nodes", int(diffusion_graph.number_of_nodes()))),
+            "num_seed_candidates": int(proposal_counts.get("num_seed_candidates", 0)),
+            "num_selected_seeds": int(proposal_counts.get("num_selected_seeds", len(chosen.get("seeds", set())))),
+            "num_anchor_seed_pairs": int(proposal_counts.get("num_anchor_seed_pairs", 0)),
+            "num_pair_candidates": int(proposal_counts.get("num_pair_candidates", len(pair_shortlist or []))),
+            "num_corridor_candidates": int(proposal_counts.get("num_corridor_candidates", corridor_count_before_trim)),
+            "num_selected_corridors": int(proposal_counts.get("num_selected_corridors", len(retained_pairs or []))),
+            "num_candidate_atoms": int(proposal_counts.get("num_candidate_atoms", 0)),
+            "num_selected_atoms": int(proposal_counts.get("num_selected_atoms", 0)),
+            "num_raw_semantic_entities": int(proposal_counts.get("num_raw_semantic_entities", 0)),
+            "num_raw_semantic_chunks": int(proposal_counts.get("num_raw_semantic_chunks", 0)),
+            "num_graph_reserve_candidates": int(proposal_counts.get("num_graph_reserve_candidates", 0)),
+            "num_entity_to_chunk_expansions": int(proposal_counts.get("num_entity_to_chunk_expansions", 0)),
+            "num_chunk_candidates_before_dedup": int(proposal_counts.get("num_chunk_candidates_before_dedup", 0)),
+            "num_chunk_candidates_after_dedup": int(proposal_counts.get("num_chunk_candidates_after_dedup", 0)),
+            "num_chunk_candidates_after_topk": int(proposal_counts.get("num_chunk_candidates_after_topk", 0)),
+            "num_candidate_objects_built": int(proposal_counts.get("num_candidate_objects_built", 0)),
+            "num_text_lookups": int(proposal_counts.get("num_text_lookups", 0)),
+            "num_title_lookups": int(proposal_counts.get("num_title_lookups", 0)),
+            "num_metadata_lookups": int(proposal_counts.get("num_metadata_lookups", 0)),
+            "num_token_count_lookups": int(proposal_counts.get("num_token_count_lookups", 0)),
+            "num_score_entries_merged": int(proposal_counts.get("num_score_entries_merged", 0)),
+            "num_candidates_sorted": int(proposal_counts.get("num_candidates_sorted", 0)),
+            "num_candidates_filtered": int(proposal_counts.get("num_candidates_filtered", 0)),
             "top1_correction": {
                 "enabled": bool(getattr(cfg, "top1_correction_enabled", False)),
                 "topk": int(getattr(cfg, "top1_correction_topk", 3)),
@@ -7098,6 +8688,7 @@ def run_graphrag_core(
             "embedding_rerank": embedding_diag,
             **({"score_component_trace": score_component_trace} if score_component_trace is not None else {}),
             "stagewise_loss_funnel_enabled": bool(getattr(cfg, "stagewise_loss_funnel_enabled", True)),
+            "proposal_timer_overlap_note": proposal_timer_overlap_note,
             "final_top_slice_reorder_enabled": bool(getattr(cfg, "final_top_slice_reorder_enabled", False)),
             "final_top_slice_reorder_topk": int(getattr(cfg, "final_top_slice_reorder_topk", 4)),
             "answer_support_pinning_enabled": bool(getattr(cfg, "answer_support_pinning_enabled", False)),

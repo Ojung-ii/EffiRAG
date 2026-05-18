@@ -434,27 +434,55 @@ def _marginal_delta(
     lambda_bridge: float,
     mu_redundancy: float,
     answerability_weight: float,
+    timing_diag: Dict[str, float] | None = None,
 ) -> Tuple[float, Dict[str, float]]:
-    current_a = _question_coverage_score(
-        selected_token_union=selected_union_tokens,
-        selected_answer_type_compat=selected_answer_type_compat,
-        question_tokens=question_tokens,
-        question_entities=question_entities,
-        relation_tokens=relation_tokens,
-    )
-    next_union = set(selected_union_tokens)
-    next_union.update(atom.token_set)
-    next_answer = max(float(selected_answer_type_compat), float(atom.answer_type_compat))
-    next_a = _question_coverage_score(
-        selected_token_union=next_union,
-        selected_answer_type_compat=next_answer,
-        question_tokens=question_tokens,
-        question_entities=question_entities,
-        relation_tokens=relation_tokens,
-    )
-    a_gain = float(max(0.0, next_a - current_a)) if use_answerability_gain else 0.0
-    b_gain = _bridge_gain(atom, selected_atoms) if use_bridge_gain else 0.0
-    redundancy = _redundancy_penalty(atom, selected_atoms) if use_redundancy_penalty else 0.0
+    if use_answerability_gain:
+        t0 = time.perf_counter()
+        current_a = _question_coverage_score(
+            selected_token_union=selected_union_tokens,
+            selected_answer_type_compat=selected_answer_type_compat,
+            question_tokens=question_tokens,
+            question_entities=question_entities,
+            relation_tokens=relation_tokens,
+        )
+        next_union = set(selected_union_tokens)
+        next_union.update(atom.token_set)
+        next_answer = max(float(selected_answer_type_compat), float(atom.answer_type_compat))
+        next_a = _question_coverage_score(
+            selected_token_union=next_union,
+            selected_answer_type_compat=next_answer,
+            question_tokens=question_tokens,
+            question_entities=question_entities,
+            relation_tokens=relation_tokens,
+        )
+        a_gain = float(max(0.0, next_a - current_a))
+        if timing_diag is not None:
+            timing_diag["answerability_feature_ms"] = float(
+                timing_diag.get("answerability_feature_ms", 0.0) + ((time.perf_counter() - t0) * 1000.0)
+            )
+    else:
+        a_gain = 0.0
+
+    if use_bridge_gain:
+        t0 = time.perf_counter()
+        b_gain = _bridge_gain(atom, selected_atoms)
+        if timing_diag is not None:
+            timing_diag["bridge_feature_ms"] = float(
+                timing_diag.get("bridge_feature_ms", 0.0) + ((time.perf_counter() - t0) * 1000.0)
+            )
+    else:
+        b_gain = 0.0
+
+    if use_redundancy_penalty:
+        t0 = time.perf_counter()
+        redundancy = _redundancy_penalty(atom, selected_atoms)
+        if timing_diag is not None:
+            timing_diag["redundancy_scoring_ms"] = float(
+                timing_diag.get("redundancy_scoring_ms", 0.0) + ((time.perf_counter() - t0) * 1000.0)
+            )
+    else:
+        redundancy = 0.0
+
     cost = _cost_penalty(
         selected_tokens=selected_tokens,
         candidate_tokens=int(atom.token_count),
@@ -520,6 +548,11 @@ def _select_greedy(
     score_total = 0.0
     objective_eval_calls = 0
     score_trace: List[Dict[str, Any]] = []
+    timing_diag = {
+        "answerability_feature_ms": 0.0,
+        "bridge_feature_ms": 0.0,
+        "redundancy_scoring_ms": 0.0,
+    }
 
     while len(selected_indices) < max_atoms:
         best_idx = None
@@ -554,6 +587,7 @@ def _select_greedy(
                 lambda_bridge=lambda_bridge,
                 mu_redundancy=mu_redundancy,
                 answerability_weight=answerability_weight,
+                timing_diag=timing_diag,
             )
             objective_eval_calls += 1
             if (delta > best_delta) or (
@@ -614,6 +648,7 @@ def _select_greedy(
                 lambda_bridge=lambda_bridge,
                 mu_redundancy=mu_redundancy,
                 answerability_weight=answerability_weight,
+                timing_diag=timing_diag,
             )
             objective_eval_calls += 1
             if delta > best_delta:
@@ -649,6 +684,9 @@ def _select_greedy(
         "score_total": float(score_total),
         "objective_eval_calls": int(objective_eval_calls),
         "score_trace": list(score_trace),
+        "answerability_feature_ms": float(timing_diag.get("answerability_feature_ms", 0.0)),
+        "bridge_feature_ms": float(timing_diag.get("bridge_feature_ms", 0.0)),
+        "redundancy_scoring_ms": float(timing_diag.get("redundancy_scoring_ms", 0.0)),
     }
 
 
@@ -672,6 +710,11 @@ def _select_beam(
 ) -> Tuple[List[int], Dict[str, Any]]:
     beam_k = max(1, int(beam_size))
     objective_eval_calls = 0
+    timing_diag = {
+        "answerability_feature_ms": 0.0,
+        "bridge_feature_ms": 0.0,
+        "redundancy_scoring_ms": 0.0,
+    }
 
     # tuple(indices) -> state
     beams: Dict[Tuple[int, ...], Dict[str, Any]] = {
@@ -724,6 +767,7 @@ def _select_beam(
                     lambda_bridge=lambda_bridge,
                     mu_redundancy=mu_redundancy,
                     answerability_weight=answerability_weight,
+                    timing_diag=timing_diag,
                 )
                 objective_eval_calls += 1
                 if delta <= 0.0 and state_indices:
@@ -779,6 +823,9 @@ def _select_beam(
             "score_total": float(best_state["score_total"]),
             "objective_eval_calls": int(objective_eval_calls),
             "score_trace": list(best_state["score_trace"]),
+            "answerability_feature_ms": float(timing_diag.get("answerability_feature_ms", 0.0)),
+            "bridge_feature_ms": float(timing_diag.get("bridge_feature_ms", 0.0)),
+            "redundancy_scoring_ms": float(timing_diag.get("redundancy_scoring_ms", 0.0)),
         }
 
     greedy_indices, greedy_state = _select_greedy(
@@ -799,6 +846,18 @@ def _select_beam(
     )
     greedy_state["objective_eval_calls"] = int(
         _safe_int(greedy_state.get("objective_eval_calls", 0), 0) + objective_eval_calls
+    )
+    greedy_state["answerability_feature_ms"] = float(
+        _safe_float(greedy_state.get("answerability_feature_ms", 0.0), 0.0)
+        + float(timing_diag.get("answerability_feature_ms", 0.0))
+    )
+    greedy_state["bridge_feature_ms"] = float(
+        _safe_float(greedy_state.get("bridge_feature_ms", 0.0), 0.0)
+        + float(timing_diag.get("bridge_feature_ms", 0.0))
+    )
+    greedy_state["redundancy_scoring_ms"] = float(
+        _safe_float(greedy_state.get("redundancy_scoring_ms", 0.0), 0.0)
+        + float(timing_diag.get("redundancy_scoring_ms", 0.0))
     )
     return greedy_indices, greedy_state
 
@@ -936,6 +995,9 @@ def apply_unified_acr_rcedr_selection(
             "score_total": float(score_diag.get("score_total", 0.0)),
             "objective_eval_calls": int(score_diag.get("objective_eval_calls", 0)),
             "selection_ms": float((time.perf_counter() - started) * 1000.0),
+            "answerability_feature_ms": float(score_diag.get("answerability_feature_ms", 0.0)),
+            "bridge_feature_ms": float(score_diag.get("bridge_feature_ms", 0.0)),
+            "redundancy_scoring_ms": float(score_diag.get("redundancy_scoring_ms", 0.0)),
             "score_trace": list(score_diag.get("score_trace", [])),
             "ordering_type": str(ordering_type),
             "use_answerability_gain": bool(use_answerability_gain),
@@ -946,4 +1008,3 @@ def apply_unified_acr_rcedr_selection(
         }
     )
     return out_ids, out_texts, diag
-

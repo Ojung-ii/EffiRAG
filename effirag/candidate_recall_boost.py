@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from collections import Counter
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence, Tuple
 
@@ -83,6 +84,11 @@ def _safe_shortest_path(g, src: str, dst: str, cutoff: int) -> List[str]:
         return []
 
 
+def _score_attachment_opt_enabled() -> bool:
+    raw = str(os.environ.get("PHASE6T_SCORE_ATTACHMENT_OPT", "1") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
 def _collect_path_candidates(
     g,
     anchors: Sequence[str],
@@ -96,15 +102,28 @@ def _collect_path_candidates(
     if cap <= 0:
         return {}
     out: Dict[str, float] = {}
+    use_optimized = _score_attachment_opt_enabled()
     for anchor in list(anchors or []):
         if anchor not in g:
             continue
+        anchor_paths = {}
+        if use_optimized:
+            cutoff = max(1, int(max_hops))
+            try:
+                # Build shortest paths from this anchor once, then reuse per target.
+                # This preserves shortest-path semantics while removing repeated graph traversals.
+                anchor_paths = nx.single_source_shortest_path(g, anchor, cutoff=cutoff)
+            except Exception:
+                anchor_paths = {}
         for target in list(ranked_targets or []):
             if len(out) >= cap:
                 return out
             if target == anchor or target not in g:
                 continue
-            path = _safe_shortest_path(g, anchor, target, cutoff=max_hops)
+            if use_optimized:
+                path = [str(x) for x in list(anchor_paths.get(target, []) or [])]
+            else:
+                path = _safe_shortest_path(g, anchor, target, cutoff=max_hops)
             if len(path) < 3:
                 continue
             plen = max(1, len(path) - 1)
@@ -241,7 +260,22 @@ def apply_candidate_recall_boost(
     proposal_scores: MutableMapping[str, float],
     semantic_scores: MutableMapping[str, float],
     cfg: Any,
+    score_attachment_trace_fn=None,
 ) -> Tuple[Dict[str, List[str]], set[str], Dict[str, float], Dict[str, float], Dict[str, Any]]:
+    def _score_trace(step: str, extra: Mapping[str, Any] | None = None, reset: bool = False) -> None:
+        if not callable(score_attachment_trace_fn):
+            return
+        payload = dict(extra or {})
+        try:
+            score_attachment_trace_fn(step=str(step), extra=payload, reset=bool(reset))
+        except TypeError:
+            try:
+                score_attachment_trace_fn(str(step), payload, bool(reset))
+            except Exception:
+                return
+        except Exception:
+            return
+
     flags = {
         "path_candidate_expansion_enabled": bool(getattr(cfg, "path_candidate_expansion_enabled", False)),
         "anchor_expansion_enabled": bool(getattr(cfg, "anchor_expansion_enabled", False)),
@@ -259,7 +293,87 @@ def apply_candidate_recall_boost(
             flags["source_diversity_enabled"],
         ]
     )
+    _score_trace("candidate_input_inspect_start", extra={})
     if not enabled:
+        existing_nodes_short = [str(x) for x in _ordered_unique(proposal_nodes) if str(x)]
+        _score_trace(
+            "candidate_input_inspect_done",
+            extra={
+                "num_candidates": int(len(existing_nodes_short)),
+                "candidate_type": str(type(proposal_nodes).__name__),
+                "num_unique_candidate_ids": int(len(set(existing_nodes_short))),
+            },
+        )
+        _score_trace("score_map_prepare_start", extra={})
+        _score_trace(
+            "score_map_prepare_done",
+            extra={"num_score_maps": 2, "score_map_keys": ["proposal_scores", "semantic_scores"]},
+        )
+        _score_trace("semantic_score_index_build_start", extra={})
+        _score_trace(
+            "semantic_score_index_build_done",
+            extra={
+                "num_semantic_scores": int(len(semantic_scores or {})),
+                "semantic_index_size": int(len(semantic_scores or {})),
+                "semantic_index_rebuilt": False,
+            },
+        )
+        _score_trace("graph_score_index_build_start", extra={})
+        _score_trace(
+            "graph_score_index_build_done",
+            extra={
+                "num_graph_scores": int(len(proposal_scores or {})),
+                "graph_index_size": int(len(proposal_scores or {})),
+                "graph_index_rebuilt": False,
+            },
+        )
+        _score_trace("bridge_score_index_build_start", extra={})
+        _score_trace(
+            "bridge_score_index_build_done",
+            extra={"num_bridge_scores": 0, "bridge_index_size": 0, "bridge_index_rebuilt": False},
+        )
+        _score_trace("corridor_score_index_build_start", extra={})
+        _score_trace(
+            "corridor_score_index_build_done",
+            extra={"num_corridor_scores": 0, "corridor_index_size": 0, "corridor_index_rebuilt": False},
+        )
+        _score_trace("redundancy_feature_prepare_start", extra={})
+        _score_trace("redundancy_feature_prepare_done", extra={})
+        _score_trace("normalization_prepare_start", extra={})
+        _score_trace("normalization_prepare_done", extra={})
+        _score_trace("candidate_loop_start", extra={})
+        _score_trace("candidate_semantic_attach_start", extra={})
+        _score_trace("candidate_semantic_attach_done", extra={})
+        _score_trace("candidate_graph_attach_start", extra={})
+        _score_trace("candidate_graph_attach_done", extra={})
+        _score_trace("candidate_bridge_attach_start", extra={})
+        _score_trace("candidate_bridge_attach_done", extra={})
+        _score_trace("candidate_corridor_attach_start", extra={})
+        _score_trace("candidate_corridor_attach_done", extra={})
+        _score_trace("candidate_redundancy_attach_start", extra={})
+        _score_trace("candidate_redundancy_attach_done", extra={})
+        _score_trace("candidate_object_update_start", extra={})
+        _score_trace("candidate_object_update_done", extra={})
+        _score_trace(
+            "candidate_loop_done",
+            extra={
+                "num_candidates_processed": int(len(existing_nodes_short)),
+                "num_semantic_lookups": 0,
+                "num_graph_lookups": 0,
+                "num_bridge_lookups": 0,
+                "num_corridor_lookups": 0,
+                "num_missing_scores": 0,
+                "num_full_map_scans": 0,
+            },
+        )
+        _score_trace(
+            "score_attachment_done",
+            extra={
+                "num_candidates": int(len(existing_nodes_short)),
+                "selected_boost_count": 0,
+                "num_full_map_scans": 0,
+            },
+        )
         return (
             dict(proposal_by_anchor),
             {str(x) for x in list(proposal_nodes or []) if str(x)},
@@ -273,12 +387,59 @@ def apply_candidate_recall_boost(
             },
         )
 
+    raw_candidate_nodes = [str(n) for n in list(proposal_nodes or []) if str(n)]
+    _score_trace(
+        "candidate_input_inspect_done",
+        extra={
+            "num_candidates": int(len(raw_candidate_nodes)),
+            "candidate_type": str(type(proposal_nodes).__name__),
+            "num_unique_candidate_ids": int(len(set(raw_candidate_nodes))),
+        },
+    )
+
+    _score_trace("score_map_prepare_start", extra={})
+    score_maps = {
+        "proposal_scores": {str(k): float(v) for k, v in dict(proposal_scores or {}).items()},
+        "semantic_scores": {str(k): float(v) for k, v in dict(semantic_scores or {}).items()},
+    }
+    _score_trace(
+        "score_map_prepare_done",
+        extra={"num_score_maps": 2, "score_map_keys": sorted(list(score_maps.keys()))},
+    )
+    _score_trace("semantic_score_index_build_start", extra={})
+    semantic_score_index = dict(score_maps["semantic_scores"])
+    _score_trace(
+        "semantic_score_index_build_done",
+        extra={
+            "num_semantic_scores": int(len(semantic_score_index)),
+            "semantic_index_size": int(len(semantic_score_index)),
+            "semantic_index_rebuilt": True,
+        },
+    )
+    _score_trace("graph_score_index_build_start", extra={})
+    graph_score_index = dict(score_maps["proposal_scores"])
+    _score_trace(
+        "graph_score_index_build_done",
+        extra={
+            "num_graph_scores": int(len(graph_score_index)),
+            "graph_index_size": int(len(graph_score_index)),
+            "graph_index_rebuilt": True,
+        },
+    )
     anchors_in_graph = [str(a) for a in _ordered_unique(anchors) if str(a) in g]
     existing_nodes = [str(n) for n in _ordered_unique(proposal_nodes) if str(n) in g]
     ranked_existing = sorted(
         existing_nodes,
-        key=lambda n: float(proposal_scores.get(n, semantic_scores.get(n, 0.0))),
+        key=lambda n: float(graph_score_index.get(n, semantic_score_index.get(n, 0.0))),
         reverse=True,
+    )
+    _score_trace(
+        "bridge_score_prepare_start",
+        extra={
+            "num_anchors_in_graph": int(len(anchors_in_graph)),
+            "num_existing_nodes": int(len(existing_nodes)),
+            "num_ranked_existing": int(len(ranked_existing)),
+        },
     )
     max_expanded = max(0, int(getattr(cfg, "max_expanded_candidates", 64)))
     max_path = max(0, int(getattr(cfg, "max_path_candidates", 24)))
@@ -291,6 +452,14 @@ def apply_candidate_recall_boost(
     if flags["path_candidate_expansion_enabled"] and max_path > 0:
         target_limit = max(4, min(len(ranked_existing), max_path * 3))
         target_nodes = ranked_existing[:target_limit]
+        _score_trace(
+            "path_candidate_expansion_start",
+            extra={
+                "target_limit": int(target_limit),
+                "max_path_candidates": int(min(max_path, max_bridge if max_bridge > 0 else max_path)),
+                "max_hops": int(tau_hops),
+            },
+        )
         path_scores = _collect_path_candidates(
             g,
             anchors_in_graph,
@@ -300,24 +469,73 @@ def apply_candidate_recall_boost(
             max_path_candidates=min(max_path, max_bridge if max_bridge > 0 else max_path),
             max_hops=tau_hops,
         )
+        _score_trace(
+            "path_candidate_expansion_done",
+            extra={"path_candidate_count": int(len(path_scores))},
+        )
+    else:
+        _score_trace("path_candidate_expansion_start", extra={"target_limit": 0, "max_path_candidates": 0, "max_hops": int(tau_hops)})
+        _score_trace("path_candidate_expansion_done", extra={"path_candidate_count": 0})
     if flags["anchor_expansion_enabled"] and max_hops > 0:
+        _score_trace(
+            "anchor_candidate_expansion_start",
+            extra={"max_hops": int(max_hops)},
+        )
         anchor_scores = _collect_anchor_expansion_candidates(
             g,
             anchors_in_graph,
             semantic_scores,
             max_hops=max_hops,
         )
+        _score_trace(
+            "anchor_candidate_expansion_done",
+            extra={"anchor_expansion_candidate_count": int(len(anchor_scores))},
+        )
+    else:
+        _score_trace("anchor_candidate_expansion_start", extra={"max_hops": int(max_hops)})
+        _score_trace("anchor_candidate_expansion_done", extra={"anchor_expansion_candidate_count": 0})
+    _score_trace(
+        "bridge_score_prepare_done",
+        extra={
+            "path_candidate_count": int(len(path_scores)),
+            "anchor_expansion_candidate_count": int(len(anchor_scores)),
+        },
+    )
+
+    _score_trace("bridge_score_index_build_start", extra={})
+    bridge_score_index = dict(path_scores or {})
+    _score_trace(
+        "bridge_score_index_build_done",
+        extra={
+            "num_bridge_scores": int(len(bridge_score_index)),
+            "bridge_index_size": int(len(bridge_score_index)),
+            "bridge_index_rebuilt": True,
+        },
+    )
+    _score_trace("corridor_score_index_build_start", extra={})
+    corridor_score_index = dict(anchor_scores or {})
+    _score_trace(
+        "corridor_score_index_build_done",
+        extra={
+            "num_corridor_scores": int(len(corridor_score_index)),
+            "corridor_index_size": int(len(corridor_score_index)),
+            "corridor_index_rebuilt": True,
+        },
+    )
 
     combined_scores: Dict[str, float] = {}
+    _score_trace("normalization_prepare_start", extra={})
     for node, score in list(path_scores.items()):
         combined_scores[str(node)] = max(float(combined_scores.get(str(node), -1.0e9)), float(score))
     for node, score in list(anchor_scores.items()):
         combined_scores[str(node)] = max(float(combined_scores.get(str(node), -1.0e9)), float(score))
     for node in list(existing_nodes):
         if node not in combined_scores:
-            combined_scores[node] = float(proposal_scores.get(node, semantic_scores.get(node, 0.0)))
+            combined_scores[node] = float(graph_score_index.get(node, semantic_score_index.get(node, 0.0)))
+    _score_trace("normalization_prepare_done", extra={})
 
     ranked_combined = sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)
+    _score_trace("redundancy_feature_prepare_start", extra={})
     selected_boost, skip_diag = _select_diverse(
         g,
         ranked_combined,
@@ -326,6 +544,13 @@ def apply_candidate_recall_boost(
         entity_diversity_enabled=flags["entity_diversity_enabled"],
         source_diversity_enabled=flags["source_diversity_enabled"],
         candidate_dedup_enabled=flags["candidate_dedup_enabled"],
+    )
+    _score_trace(
+        "redundancy_feature_prepare_done",
+        extra={
+            "dedup_skipped": int(skip_diag.get("dedup_skipped", 0)),
+            "diversity_skipped": int(skip_diag.get("diversity_skipped", 0)),
+        },
     )
     selected_boost_set = {str(node) for node in list(selected_boost or []) if str(node) in g}
 
@@ -338,16 +563,70 @@ def apply_candidate_recall_boost(
         target_anchor_keys = ["__global__"]
         proposal_by_anchor["__global__"] = []
 
+    num_candidates_processed = 0
+    num_semantic_lookups = 0
+    num_graph_lookups = 0
+    num_bridge_lookups = 0
+    num_corridor_lookups = 0
+    num_missing_scores = 0
+    num_full_map_scans = 0
+
+    _score_trace("candidate_loop_start", extra={"num_candidate_loops": int(len(target_anchor_keys))})
+    _score_trace("candidate_semantic_attach_start", extra={})
+    ranking_by_anchor: Dict[str, List[Tuple[str, float, int]]] = {}
     for anchor in target_anchor_keys:
         existing = list(proposal_by_anchor.get(anchor, []) or [])
         ranking: List[Tuple[str, float, int]] = []
         for idx, node in enumerate(existing):
             node_id = str(node)
-            base = float(proposal_scores.get(node_id, semantic_scores.get(node_id, 0.0)))
+            gval = graph_score_index.get(node_id, None)
+            sval = semantic_score_index.get(node_id, None)
+            num_graph_lookups += 1
+            num_semantic_lookups += 1
+            if gval is None and sval is None:
+                num_missing_scores += 1
+                base = 0.0
+            else:
+                base = float(gval if gval is not None else sval)
             ranking.append((node_id, base + 0.0005 * (1.0 / float(idx + 1)), 0))
+            num_candidates_processed += 1
+        ranking_by_anchor[str(anchor)] = ranking
+    _score_trace("candidate_semantic_attach_done", extra={})
+
+    _score_trace("candidate_graph_attach_start", extra={})
+    for anchor in target_anchor_keys:
+        ranking = ranking_by_anchor.get(str(anchor), [])
         for node_id in selected_boost_set:
-            base = float(proposal_scores.get(node_id, semantic_scores.get(node_id, 0.0)))
+            gval = graph_score_index.get(node_id, None)
+            sval = semantic_score_index.get(node_id, None)
+            num_graph_lookups += 1
+            num_semantic_lookups += 1
+            if gval is None and sval is None:
+                num_missing_scores += 1
+                base = 0.0
+            else:
+                base = float(gval if gval is not None else sval)
             ranking.append((node_id, base + 0.03, 1))
+            num_candidates_processed += 1
+        ranking_by_anchor[str(anchor)] = ranking
+    _score_trace("candidate_graph_attach_done", extra={})
+
+    _score_trace("candidate_bridge_attach_start", extra={})
+    _score_trace(
+        "candidate_bridge_attach_done",
+        extra={"num_bridge_scores": int(len(bridge_score_index)), "num_bridge_lookups": int(num_bridge_lookups)},
+    )
+    _score_trace("candidate_corridor_attach_start", extra={})
+    _score_trace(
+        "candidate_corridor_attach_done",
+        extra={"num_corridor_scores": int(len(corridor_score_index)), "num_corridor_lookups": int(num_corridor_lookups)},
+    )
+    _score_trace("candidate_redundancy_attach_start", extra={})
+    _score_trace("candidate_redundancy_attach_done", extra={"num_full_map_scans": int(num_full_map_scans)})
+    _score_trace("candidate_object_update_start", extra={})
+    updated_by_anchor = {}
+    for anchor in target_anchor_keys:
+        ranking = list(ranking_by_anchor.get(str(anchor), []))
         ranking.sort(key=lambda x: (x[1], x[2]), reverse=True)
         ordered_nodes = _ordered_unique([node for node, _, _ in ranking if node in g and _is_candidate_node(g, node)])
         if anchor in g and _is_candidate_node(g, anchor):
@@ -355,6 +634,7 @@ def apply_candidate_recall_boost(
         else:
             merged = list(ordered_nodes)
         updated_by_anchor[str(anchor)] = merged[:local_cap]
+    _score_trace("candidate_object_update_done", extra={})
 
     updated_nodes = {str(x) for x in existing_nodes}
     updated_nodes.update({str(x) for x in selected_boost_set})
@@ -364,9 +644,27 @@ def apply_candidate_recall_boost(
     updated_proposal_scores = {str(k): float(v) for k, v in dict(proposal_scores or {}).items()}
     updated_semantic_scores = {str(k): float(v) for k, v in dict(semantic_scores or {}).items()}
     for node in updated_nodes:
-        node_score = float(combined_scores.get(node, proposal_scores.get(node, semantic_scores.get(node, 0.0))))
+        num_graph_lookups += 1
+        num_semantic_lookups += 1
+        gval = graph_score_index.get(node, None)
+        sval = semantic_score_index.get(node, None)
+        if gval is None and sval is None:
+            num_missing_scores += 1
+        node_score = float(combined_scores.get(node, gval if gval is not None else (sval if sval is not None else 0.0)))
         updated_proposal_scores[node] = max(float(updated_proposal_scores.get(node, -1.0e9)), float(node_score))
         updated_semantic_scores[node] = max(float(updated_semantic_scores.get(node, -1.0e9)), float(node_score))
+    _score_trace(
+        "candidate_loop_done",
+        extra={
+            "num_candidates_processed": int(num_candidates_processed),
+            "num_semantic_lookups": int(num_semantic_lookups),
+            "num_graph_lookups": int(num_graph_lookups),
+            "num_bridge_lookups": int(num_bridge_lookups),
+            "num_corridor_lookups": int(num_corridor_lookups),
+            "num_missing_scores": int(num_missing_scores),
+            "num_full_map_scans": int(num_full_map_scans),
+        },
+    )
 
     diag = {
         "enabled": True,
@@ -385,4 +683,12 @@ def apply_candidate_recall_boost(
         "diversity_skipped": int(skip_diag.get("diversity_skipped", 0)),
         "selected_boost_nodes": [str(x) for x in selected_boost[: min(len(selected_boost), 64)]],
     }
+    _score_trace(
+        "score_attachment_done",
+        extra={
+            "num_candidates": int(len(updated_nodes)),
+            "selected_boost_count": int(len(selected_boost_set)),
+            "num_full_map_scans": int(num_full_map_scans),
+        },
+    )
     return updated_by_anchor, updated_nodes, updated_proposal_scores, updated_semantic_scores, diag
