@@ -135,6 +135,17 @@ def _iter_jsonl(path: Path) -> Iterable[Dict[str, Any]]:
     return out
 
 
+def _load_methodology_audit(out_root: Path) -> Dict[str, Any]:
+    path = out_root / "phase6s_methodology_audit.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return dict(payload) if isinstance(payload, Mapping) else {}
+
+
 def _extract_stage_means(query_jsonl_path: Path) -> Dict[str, float]:
     sentence_rerank_ms: List[float] = []
     top1_correction_ms: List[float] = []
@@ -417,41 +428,74 @@ def _artifact_warning_rows(report: Mapping[str, Any], completed_rows: Sequence[M
             }
         )
 
+    rows.sort(key=lambda x: (_safe_text(x.get("status")), _safe_text(x.get("run_name"))))
+    return rows
+
+
+def _result_warning_rows(completed_rows: Sequence[Mapping[str, Any]]) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
     for row in completed_rows:
+        run_name = _safe_text(row.get("run_name"))
+        dataset = _safe_text(row.get("dataset"))
+        profile = _safe_text(row.get("profile"))
+
         if not bool(row.get("qa_available", False)):
             rows.append(
                 {
-                    "run_name": _safe_text(row.get("run_name")),
-                    "dataset": _safe_text(row.get("dataset")),
-                    "profile": _safe_text(row.get("profile")),
-                    "status": "qa_available_false",
-                    "attempt_count": _safe_int(row.get("attempt_count", 0), 0),
-                    "complete_attempt_count": _safe_int(row.get("complete_attempt_count", 0), 0),
-                    "incomplete_attempt_count": _safe_int(row.get("incomplete_attempt_count", 0), 0),
+                    "run_name": run_name,
+                    "dataset": dataset,
+                    "profile": profile,
+                    "warning": "qa_available_false",
+                    "value": _safe_int(row.get("qa_num_queries", 0), 0),
                     "path": _safe_text(row.get("summary_path")),
                 }
             )
-        zero_context = _safe_float(row.get("avg_context_tokens", 0.0), 0.0) <= 0.0
-        zero_timing = (
-            _safe_float(row.get("retrieval_ms", 0.0), 0.0) <= 0.0
-            or _safe_float(row.get("generation_ms", 0.0), 0.0) <= 0.0
-            or _safe_float(row.get("total_ms", 0.0), 0.0) <= 0.0
-        )
-        if zero_context or zero_timing:
+        if _safe_float(row.get("avg_context_tokens", 0.0), 0.0) <= 0.0:
             rows.append(
                 {
-                    "run_name": _safe_text(row.get("run_name")),
-                    "dataset": _safe_text(row.get("dataset")),
-                    "profile": _safe_text(row.get("profile")),
-                    "status": "empty_context_or_zero_timing",
-                    "attempt_count": _safe_int(row.get("attempt_count", 0), 0),
-                    "complete_attempt_count": _safe_int(row.get("complete_attempt_count", 0), 0),
-                    "incomplete_attempt_count": _safe_int(row.get("incomplete_attempt_count", 0), 0),
+                    "run_name": run_name,
+                    "dataset": dataset,
+                    "profile": profile,
+                    "warning": "empty_context",
+                    "value": _safe_float(row.get("avg_context_tokens", 0.0), 0.0),
+                    "path": _safe_text(row.get("summary_path")),
+                }
+            )
+        if _safe_float(row.get("retrieval_ms", 0.0), 0.0) <= 0.0:
+            rows.append(
+                {
+                    "run_name": run_name,
+                    "dataset": dataset,
+                    "profile": profile,
+                    "warning": "zero_retrieval_ms",
+                    "value": _safe_float(row.get("retrieval_ms", 0.0), 0.0),
+                    "path": _safe_text(row.get("summary_path")),
+                }
+            )
+        if _safe_float(row.get("generation_ms", 0.0), 0.0) <= 0.0:
+            rows.append(
+                {
+                    "run_name": run_name,
+                    "dataset": dataset,
+                    "profile": profile,
+                    "warning": "zero_generation_ms",
+                    "value": _safe_float(row.get("generation_ms", 0.0), 0.0),
+                    "path": _safe_text(row.get("summary_path")),
+                }
+            )
+        if _safe_float(row.get("total_ms", 0.0), 0.0) <= 0.0:
+            rows.append(
+                {
+                    "run_name": run_name,
+                    "dataset": dataset,
+                    "profile": profile,
+                    "warning": "zero_total_ms",
+                    "value": _safe_float(row.get("total_ms", 0.0), 0.0),
                     "path": _safe_text(row.get("summary_path")),
                 }
             )
 
-    rows.sort(key=lambda x: (_safe_text(x.get("status")), _safe_text(x.get("run_name"))))
+    rows.sort(key=lambda x: (_safe_text(x.get("warning")), _safe_text(x.get("run_name"))))
     return rows
 
 
@@ -461,8 +505,10 @@ def _markdown(
     completed_rows: Sequence[Mapping[str, Any]],
     completeness_rows: Sequence[Mapping[str, Any]],
     artifact_warning_rows: Sequence[Mapping[str, Any]],
+    result_warning_rows: Sequence[Mapping[str, Any]],
     datasets: Sequence[str],
     profiles: Sequence[str],
+    methodology_audit: Mapping[str, Any],
 ) -> str:
     executed_rows = _rows_for_table(completed_rows, datasets=datasets)
     main_rows = _main_comparison_rows(completed_rows)
@@ -627,7 +673,27 @@ def _markdown(
         lines.append("No artifact warnings.")
     lines.append("")
 
-    lines.append("## 8. Compared Profiles")
+    lines.append("## 8. Result Warnings")
+    lines.append("")
+    if result_warning_rows:
+        lines.append("| run_name | dataset | profile | warning | value | path |")
+        lines.append("|---|---|---|---|---:|---|")
+        for row in result_warning_rows:
+            lines.append(
+                "| {} | {} | {} | {} | {} | {} |".format(
+                    _safe_text(row.get("run_name")),
+                    _safe_text(row.get("dataset")),
+                    _safe_text(row.get("profile")),
+                    _safe_text(row.get("warning")),
+                    _fmt(row.get("value", 0.0), 4),
+                    _safe_text(row.get("path")),
+                )
+            )
+    else:
+        lines.append("No result warnings.")
+    lines.append("")
+
+    lines.append("## 9. Compared Profiles")
     lines.append("")
     lines.append("| profile | role |")
     lines.append("|---|---|")
@@ -635,7 +701,7 @@ def _markdown(
         lines.append(f"| {profile} | {_profile_role(profile)} |")
     lines.append("")
 
-    lines.append("## 9. Decision Checklist")
+    lines.append("## 10. Decision Checklist")
     lines.append("")
     lines.append("| dataset | method | F1 | avg_context_tokens | F1_per_1k_context_tokens | retrieval_ms | note |")
     lines.append("|---|---|---:|---:|---:|---:|---|")
@@ -674,6 +740,43 @@ def _markdown(
             )
     lines.append("")
 
+    lines.append("## 11. Methodology Audit Result")
+    lines.append("")
+    if methodology_audit:
+        lines.append("| item | value |")
+        lines.append("|---|---|")
+        lines.append(f"| status | {_safe_text(methodology_audit.get('status'))} |")
+        lines.append(f"| main_profile | {_safe_text(methodology_audit.get('main_profile'))} |")
+        lines.append(
+            f"| dataset_specific_main_profile | {bool(methodology_audit.get('dataset_specific_main_profile', False))} |"
+        )
+        lines.append(f"| unified_selector_active | {bool(methodology_audit.get('unified_selector_active', False))} |")
+        lines.append(f"| old_cascade_active | {bool(methodology_audit.get('old_cascade_active', False))} |")
+        lines.append(
+            f"| hard_token_budget_enabled | {bool(methodology_audit.get('hard_token_budget_enabled', False))} |"
+        )
+        lines.append(
+            f"| repeated_cost_penalty_warning | {bool(methodology_audit.get('repeated_cost_penalty_warning', False))} |"
+        )
+        lines.append(
+            f"| new_score_terms_detected | {bool(methodology_audit.get('new_score_terms_detected', False))} |"
+        )
+        lines.append(
+            f"| ablation_profiles_used_as_main | {bool(methodology_audit.get('ablation_profiles_used_as_main', False))} |"
+        )
+        warnings = list(methodology_audit.get("warnings", []) or [])
+        errors = list(methodology_audit.get("errors", []) or [])
+        lines.append("")
+        lines.append(f"- warnings: {len(warnings)}")
+        for w in warnings:
+            lines.append(f"  - {w}")
+        lines.append(f"- errors: {len(errors)}")
+        for e in errors:
+            lines.append(f"  - {e}")
+    else:
+        lines.append("Methodology audit file not found: `phase6s_methodology_audit.json`")
+    lines.append("")
+
     return "\n".join(lines)
 
 
@@ -704,9 +807,11 @@ def main() -> None:
     profiles = _tokens(args.profiles)
 
     report = collect_phase6s_artifacts(out_root)
+    methodology_audit = _load_methodology_audit(out_root)
     completed_rows = _build_completed_rows(report, datasets)
     completeness_rows = _completeness_rows(report=report, completed_rows=completed_rows, datasets=datasets)
     artifact_warning_rows = _artifact_warning_rows(report, completed_rows)
+    result_warning_rows = _result_warning_rows(completed_rows)
 
     output_md.parent.mkdir(parents=True, exist_ok=True)
     output_json.parent.mkdir(parents=True, exist_ok=True)
@@ -716,8 +821,10 @@ def main() -> None:
         completed_rows=completed_rows,
         completeness_rows=completeness_rows,
         artifact_warning_rows=artifact_warning_rows,
+        result_warning_rows=result_warning_rows,
         datasets=datasets,
         profiles=profiles,
+        methodology_audit=methodology_audit,
     )
     output_md.write_text(markdown + "\n", encoding="utf-8")
 
@@ -738,11 +845,14 @@ def main() -> None:
         "duplicate_run_names": list(report.get("duplicate_run_names", []) or []),
         "artifact_counts": dict(report.get("counts", {}) or {}),
         "completed_row_count": int(len(completed_rows)),
-        "warning_row_count": int(len(artifact_warning_rows)),
+        "artifact_warning_row_count": int(len(artifact_warning_rows)),
+        "result_warning_row_count": int(len(result_warning_rows)),
         "completeness_status_counts": status_counts,
+        "methodology_audit": methodology_audit,
         "completed_rows": completed_rows,
         "completeness_rows": completeness_rows,
         "artifact_warnings": artifact_warning_rows,
+        "result_warnings": result_warning_rows,
         "report": report,
     }
     output_json.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

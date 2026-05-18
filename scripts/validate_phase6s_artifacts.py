@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
 """Validate Phase-6S artifact consistency.
 
-Strict mode fails when any artifact consistency rule is violated.
+Modes:
+- strict-clean: fail on any hygiene violation
+- allow-stale: report warnings only (exit 0)
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Tuple
 
 
 def _safe_text(value: Any) -> str:
@@ -67,16 +68,14 @@ def load_scheduled_runs(out_root: Path) -> Dict[str, Any]:
                         manifest_errors.append("root_manifest_run_row_not_mapping")
                         continue
                     run_name = _safe_text(row.get("run_name"))
-                    dataset = _safe_text(row.get("dataset"))
-                    profile = _safe_text(row.get("profile"))
                     if not run_name:
                         manifest_errors.append("root_manifest_run_name_missing")
                         continue
                     runs.append(
                         {
                             "run_name": run_name,
-                            "dataset": dataset,
-                            "profile": profile,
+                            "dataset": _safe_text(row.get("dataset")),
+                            "profile": _safe_text(row.get("profile")),
                             "gpu": _safe_text(row.get("gpu")),
                             "process_group": _safe_text(row.get("process_group")),
                             "role": _safe_text(row.get("role")),
@@ -111,13 +110,11 @@ def load_scheduled_runs(out_root: Path) -> Dict[str, Any]:
             for record in records:
                 if not isinstance(record, Mapping):
                     continue
-                dataset = _safe_text(record.get("dataset"))
-                profile = _infer_profile_from_manifest(manifest, record, run_name)
                 runs.append(
                     {
                         "run_name": run_name,
-                        "dataset": dataset,
-                        "profile": profile,
+                        "dataset": _safe_text(record.get("dataset")),
+                        "profile": _infer_profile_from_manifest(manifest, record, run_name),
                         "gpu": "",
                         "process_group": "",
                         "role": "unknown",
@@ -126,7 +123,6 @@ def load_scheduled_runs(out_root: Path) -> Dict[str, Any]:
                     }
                 )
 
-    # duplicate run_name detection
     seen: Dict[str, int] = {}
     for row in runs:
         name = _safe_text(row.get("run_name"))
@@ -154,7 +150,6 @@ class AttemptEntry:
     summary_path: str
     query_path: str
     summary_parse_error: str
-
 
 
 def scan_run_attempts(out_root: Path) -> Dict[str, Dict[str, Any]]:
@@ -216,10 +211,7 @@ def scan_run_attempts(out_root: Path) -> Dict[str, Dict[str, Any]]:
         complete_entries = [e for e in entries if e.has_summary and e.has_query]
         incomplete_entries = [e for e in entries if (e.has_summary or e.has_query) and not (e.has_summary and e.has_query)]
         parse_error_entries = [e for e in entries if e.summary_parse_error]
-
-        latest_complete: AttemptEntry | None = None
-        if complete_entries:
-            latest_complete = sorted(complete_entries, key=lambda e: e.path)[-1]
+        latest_complete: AttemptEntry | None = sorted(complete_entries, key=lambda e: e.path)[-1] if complete_entries else None
 
         run_attempts[run_name] = {
             "run_name": run_name,
@@ -260,6 +252,7 @@ def collect_phase6s_artifacts(out_root: Path) -> Dict[str, Any]:
         dataset = _safe_text(run.get("dataset"))
         profile = _safe_text(run.get("profile"))
         info = run_attempts.get(run_name)
+
         if info is None:
             statuses.append(
                 {
@@ -288,7 +281,7 @@ def collect_phase6s_artifacts(out_root: Path) -> Dict[str, Any]:
                     "attempt_count": attempt_count,
                     "complete_attempt_count": complete_count,
                     "incomplete_attempt_count": incomplete_count,
-                    "path": "; ".join(info.get("complete_attempt_paths", []) or []),
+                    "path": "; ".join(info.get("complete_attempt_paths", []) or info.get("incomplete_attempt_paths", [])),
                 }
             )
         if complete_count > 1:
@@ -318,79 +311,79 @@ def collect_phase6s_artifacts(out_root: Path) -> Dict[str, Any]:
                 }
             )
 
-        if complete_count >= 1:
-            if not latest_summary_path.exists() or not latest_query_path.exists():
-                statuses.append(
-                    {
-                        "run_name": run_name,
-                        "dataset": dataset,
-                        "profile": profile,
-                        "status": "scheduled_but_incomplete",
-                        "reason": "latest_complete_paths_missing",
-                    }
-                )
-                continue
-            summary_payload, parse_err = _read_json_with_error(latest_summary_path)
-            if parse_err:
-                statuses.append(
-                    {
-                        "run_name": run_name,
-                        "dataset": dataset,
-                        "profile": profile,
-                        "status": "parse_error",
-                        "reason": f"latest_complete_summary_{parse_err}",
-                        "path": str(latest_summary_path),
-                    }
-                )
-                artifact_warnings.append(
-                    {
-                        "run_name": run_name,
-                        "dataset": dataset,
-                        "profile": profile,
-                        "status": "parse_error",
-                        "attempt_count": attempt_count,
-                        "complete_attempt_count": complete_count,
-                        "incomplete_attempt_count": incomplete_count,
-                        "path": str(latest_summary_path),
-                    }
-                )
-                continue
-
+        if complete_count <= 0:
             statuses.append(
                 {
                     "run_name": run_name,
                     "dataset": dataset,
                     "profile": profile,
-                    "status": "completed",
-                    "reason": "latest_complete_attempt",
+                    "status": "scheduled_but_incomplete" if attempt_count > 0 else "scheduled_but_missing",
+                    "reason": "attempts_exist_without_complete_pair" if attempt_count > 0 else "no_attempt_directory",
                 }
             )
-            completed_runs.append(
+            continue
+
+        if not latest_summary_path.exists() or not latest_query_path.exists():
+            statuses.append(
                 {
                     "run_name": run_name,
                     "dataset": dataset,
                     "profile": profile,
-                    "summary_path": str(latest_summary_path),
-                    "query_path": str(latest_query_path),
-                    "summary": summary_payload,
+                    "status": "scheduled_but_incomplete",
+                    "reason": "latest_complete_paths_missing",
+                }
+            )
+            continue
+
+        summary_payload, parse_err = _read_json_with_error(latest_summary_path)
+        if parse_err:
+            statuses.append(
+                {
+                    "run_name": run_name,
+                    "dataset": dataset,
+                    "profile": profile,
+                    "status": "parse_error",
+                    "reason": f"latest_complete_summary_{parse_err}",
+                    "path": str(latest_summary_path),
+                }
+            )
+            artifact_warnings.append(
+                {
+                    "run_name": run_name,
+                    "dataset": dataset,
+                    "profile": profile,
+                    "status": "parse_error",
                     "attempt_count": attempt_count,
                     "complete_attempt_count": complete_count,
                     "incomplete_attempt_count": incomplete_count,
-                    "latest_complete_path": _safe_text(info.get("latest_complete_path")),
+                    "path": str(latest_summary_path),
                 }
             )
-        else:
-            status = "scheduled_but_incomplete" if attempt_count > 0 else "scheduled_but_missing"
-            reason = "attempts_exist_without_complete_pair" if attempt_count > 0 else "no_attempt_directory"
-            statuses.append(
-                {
-                    "run_name": run_name,
-                    "dataset": dataset,
-                    "profile": profile,
-                    "status": status,
-                    "reason": reason,
-                }
-            )
+            continue
+
+        statuses.append(
+            {
+                "run_name": run_name,
+                "dataset": dataset,
+                "profile": profile,
+                "status": "completed",
+                "reason": "latest_complete_attempt",
+            }
+        )
+        completed_runs.append(
+            {
+                "run_name": run_name,
+                "dataset": dataset,
+                "profile": profile,
+                "summary_path": str(latest_summary_path),
+                "query_path": str(latest_query_path),
+                "summary": summary_payload,
+                "attempt_count": attempt_count,
+                "complete_attempt_count": complete_count,
+                "incomplete_attempt_count": incomplete_count,
+                "latest_complete_path": _safe_text(info.get("latest_complete_path")),
+            }
+        )
 
     extra_names = sorted(list(attempt_name_set - scheduled_name_set))
     for run_name in extra_names:
@@ -417,39 +410,33 @@ def collect_phase6s_artifacts(out_root: Path) -> Dict[str, Any]:
             }
         )
 
-    parse_error_count = 0
-    incomplete_attempt_total = 0
-    multi_attempt_run_names = 0
-    for run_name, info in run_attempts.items():
-        incomplete_attempt_total += int(info.get("incomplete_attempt_count", 0))
-        if int(info.get("attempt_count", 0)) > 1:
-            multi_attempt_run_names += 1
-        parse_error_count += len(info.get("parse_error_entries", []) or [])
-
+    parse_error_total = sum(len(info.get("parse_error_entries", []) or []) for info in run_attempts.values())
+    incomplete_attempt_total = sum(int(info.get("incomplete_attempt_count", 0)) for info in run_attempts.values())
+    multi_attempt_run_names = sum(1 for info in run_attempts.values() if int(info.get("attempt_count", 0)) > 1)
     completed_run_names = sorted([_safe_text(r.get("run_name")) for r in completed_runs if _safe_text(r.get("run_name"))])
 
-    strict_errors: List[str] = []
+    strict_clean_errors: List[str] = []
     if not bool(schedule_info.get("root_manifest_exists", False)):
-        strict_errors.append("root_manifest_missing")
+        strict_clean_errors.append("root_manifest_missing")
     for err in list(schedule_info.get("manifest_errors", []) or []):
-        strict_errors.append(f"manifest_error:{err}")
+        strict_clean_errors.append(f"manifest_error:{err}")
     for dup in list(schedule_info.get("duplicate_run_names", []) or []):
-        strict_errors.append(f"duplicate_run_name:{dup}")
+        strict_clean_errors.append(f"duplicate_run_name:{dup}")
 
-    status_by_run = {(_safe_text(r.get("run_name"))): _safe_text(r.get("status")) for r in statuses}
+    status_by_run = {_safe_text(r.get("run_name")): _safe_text(r.get("status")) for r in statuses}
     for run_name in sorted(scheduled_name_set):
         st = status_by_run.get(run_name, "scheduled_but_missing")
         if st != "completed":
-            strict_errors.append(f"scheduled_not_completed:{run_name}:{st}")
+            strict_clean_errors.append(f"scheduled_not_completed:{run_name}:{st}")
 
     for run_name in extra_names:
-        strict_errors.append(f"extra_not_in_manifest:{run_name}")
+        strict_clean_errors.append(f"extra_not_in_manifest:{run_name}")
     if multi_attempt_run_names > 0:
-        strict_errors.append(f"multi_attempt_run_names:{multi_attempt_run_names}")
+        strict_clean_errors.append(f"multi_attempt_run_names:{multi_attempt_run_names}")
     if incomplete_attempt_total > 0:
-        strict_errors.append(f"incomplete_attempts:{incomplete_attempt_total}")
-    if parse_error_count > 0:
-        strict_errors.append(f"parse_errors:{parse_error_count}")
+        strict_clean_errors.append(f"incomplete_attempts:{incomplete_attempt_total}")
+    if parse_error_total > 0:
+        strict_clean_errors.append(f"parse_errors:{parse_error_total}")
 
     counts = {
         "scheduled_runs": len(scheduled_names),
@@ -458,7 +445,7 @@ def collect_phase6s_artifacts(out_root: Path) -> Dict[str, Any]:
         "incomplete_attempts": int(incomplete_attempt_total),
         "extra_not_in_manifest": len(extra_names),
         "multi_attempt_run_names": int(multi_attempt_run_names),
-        "parse_errors": int(parse_error_count),
+        "parse_errors": int(parse_error_total),
     }
 
     return {
@@ -475,7 +462,7 @@ def collect_phase6s_artifacts(out_root: Path) -> Dict[str, Any]:
         "completed_runs": completed_runs,
         "artifact_warnings": artifact_warnings,
         "counts": counts,
-        "strict_errors": strict_errors,
+        "strict_clean_errors": strict_clean_errors,
     }
 
 
@@ -505,9 +492,9 @@ def _print_report(report: Mapping[str, Any]) -> None:
         for err in manifest_errors:
             print(f"- {err}")
 
-    strict_errors = list(report.get("strict_errors", []) or [])
+    strict_errors = list(report.get("strict_clean_errors", []) or [])
     if strict_errors:
-        print("strict_errors:")
+        print("strict_clean_errors:")
         for err in strict_errors:
             print(f"- {err}")
 
@@ -515,12 +502,19 @@ def _print_report(report: Mapping[str, Any]) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Validate Phase-6S artifacts")
     parser.add_argument("--out-root", required=True)
-    parser.add_argument("--strict", action="store_true")
+    parser.add_argument("--strict-clean", action="store_true", help="Fail on any hygiene violation")
+    parser.add_argument("--allow-stale", action="store_true", help="Warn-only mode for stale output roots")
+    parser.add_argument("--strict", action="store_true", help="Backward-compatible alias for --strict-clean")
     parser.add_argument("--json", default="", help="Optional path to dump validation JSON")
     args = parser.parse_args()
 
+    strict_clean = bool(args.strict_clean or args.strict)
+    if strict_clean and args.allow_stale:
+        raise SystemExit("Cannot set both --strict-clean and --allow-stale")
+
     out_root = Path(_safe_text(args.out_root)).resolve()
     report = collect_phase6s_artifacts(out_root)
+    report["mode"] = "strict-clean" if strict_clean else "allow-stale"
 
     if _safe_text(args.json):
         out_json = Path(_safe_text(args.json)).resolve()
@@ -529,7 +523,7 @@ def main() -> None:
 
     _print_report(report)
 
-    if args.strict and list(report.get("strict_errors", []) or []):
+    if strict_clean and list(report.get("strict_clean_errors", []) or []):
         raise SystemExit(1)
 
 

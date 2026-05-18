@@ -12,7 +12,18 @@ GPU_D="${GPU_D:-1}"
 EXTRA_POPQA="${EXTRA_POPQA:-0}"
 SMOKE_CORE_ONLY="${SMOKE_CORE_ONLY:-auto}"
 STRICT_VALIDATE="${STRICT_VALIDATE:-1}"
+COST_BASED_ASSIGN="${COST_BASED_ASSIGN:-1}"
+COST_SOURCE_ROOT="${COST_SOURCE_ROOT:-outputs/phase6s_debug20}"
+COST_SOURCE_SUMMARY_JSON="${COST_SOURCE_SUMMARY_JSON:-}"
+COST_DEFAULT_RETRIEVAL_MS="${COST_DEFAULT_RETRIEVAL_MS:-12000}"
+PLAN_ONLY="${PLAN_ONLY:-0}"
 PYTHON="${PYTHON:-/home/ojungii/miniconda3/envs/effirag/bin/python}"
+
+if [[ -d "${OUT_ROOT}/qa_runs" ]] && [[ "${ALLOW_REUSE_OUT_ROOT:-0}" != "1" ]]; then
+  echo "[ERROR] OUT_ROOT already contains qa_runs: ${OUT_ROOT}" >&2
+  echo "Use a fresh OUT_ROOT or set ALLOW_REUSE_OUT_ROOT=1 explicitly." >&2
+  exit 1
+fi
 
 mkdir -p "${OUT_ROOT}/logs"
 SCHEDULE_JSONL="${OUT_ROOT}/_phase6s_scheduled_runs.jsonl"
@@ -36,6 +47,11 @@ echo "GPU_A=${GPU_A} GPU_B=${GPU_B} GPU_C=${GPU_C} GPU_D=${GPU_D}"
 echo "EXTRA_POPQA=${EXTRA_POPQA}"
 echo "SMOKE_CORE_ONLY=${SMOKE_CORE_ONLY}"
 echo "STRICT_VALIDATE=${STRICT_VALIDATE}"
+echo "COST_BASED_ASSIGN=${COST_BASED_ASSIGN}"
+echo "COST_SOURCE_ROOT=${COST_SOURCE_ROOT}"
+echo "COST_SOURCE_SUMMARY_JSON=${COST_SOURCE_SUMMARY_JSON:-<auto>}"
+echo "COST_DEFAULT_RETRIEVAL_MS=${COST_DEFAULT_RETRIEVAL_MS}"
+echo "PLAN_ONLY=${PLAN_ONLY}"
 
 if [[ "${SMOKE_CORE_ONLY}" == "auto" ]]; then
   if [[ "${SAMPLE_SIZE}" -le 5 ]]; then
@@ -151,6 +167,9 @@ PY
 run_task () {
   local spec="$1"
   IFS='|' read -r kind profile dataset tag gpu group role <<< "${spec}"
+  local run_dir="${OUT_ROOT}/qa_runs/${tag}"
+  rm -rf "${run_dir}"
+  mkdir -p "${run_dir}"
   if [[ "${kind}" == "legacy" ]]; then
     run_legacy_qa_one_dataset "${gpu}" "${dataset}" "${tag}"
   else
@@ -159,100 +178,85 @@ run_task () {
   normalize_run_attempt_artifacts "${tag}"
 }
 
-# Balanced core matrix for HotpotQA/2Wiki + lighter PopQA/MuSiQue coverage.
-TASKS_A=(
-  "legacy|legacy_sota|hotpotqa|legacy_sota_hotpotqa|${GPU_A}|A|reference"
-  "legacy|legacy_sota|2wikimultihopqa|legacy_sota_2wikimultihopqa|${GPU_A}|A|reference"
-  "unified|unified_large|hotpotqa|unified_large_hotpotqa|${GPU_A}|A|baseline"
-  "unified|unified_acr_rcedr_v12|hotpotqa|v12_hotpotqa|${GPU_A}|A|main"
-  "unified|unified_acr_rcedr_v12_beam3_no_sentence_rerank|hotpotqa|v12_beam3_no_sentence_rerank_hotpotqa|${GPU_A}|A|ablation"
-  "unified|unified_acr_rcedr_v12|musique|v12_musique|${GPU_A}|A|stress"
-)
-
-TASKS_B=(
-  "unified|unified_large|2wikimultihopqa|unified_large_2wiki|${GPU_B}|B|baseline"
-  "unified|unified_gl_rcedr_v1_adaptive_support_span_no_bridge|hotpotqa|gl_ref_hotpotqa|${GPU_B}|B|reference"
-  "unified|unified_acr_v11|hotpotqa|acr_v11_hotpotqa|${GPU_B}|B|cascade_ref"
-  "unified|unified_acr_rcedr_v12|2wikimultihopqa|v12_2wiki|${GPU_B}|B|main"
-  "unified|unified_acr_rcedr_v12_no_bridge|hotpotqa|v12_no_bridge_hotpotqa|${GPU_B}|B|ablation"
-  "unified|unified_acr_rcedr_v12_beam3|popqa|v12_beam3_popqa|${GPU_B}|B|robustness"
-  "unified|unified_acr_rcedr_v12_beam3|musique|v12_beam3_musique|${GPU_B}|B|stress"
-)
-
-TASKS_C=(
-  "unified|unified_gl_rcedr_v1_adaptive_support_span_no_bridge|2wikimultihopqa|gl_ref_2wiki|${GPU_C}|C|reference"
-  "unified|unified_gl_rcedr_v1_adaptive_support_span_no_bridge|popqa|gl_ref_popqa|${GPU_C}|C|reference"
-  "unified|unified_large|popqa|unified_large_popqa|${GPU_C}|C|baseline"
-  "unified|unified_acr_v11|2wikimultihopqa|acr_v11_2wiki|${GPU_C}|C|cascade_ref"
-  "unified|unified_acr_rcedr_v12_answerability_only|2wikimultihopqa|v12_answerability_only_2wiki|${GPU_C}|C|ablation"
-  "unified|unified_acr_rcedr_v12_no_sentence_rerank|hotpotqa|v12_no_sentence_rerank_hotpotqa|${GPU_C}|C|ablation"
-  "unified|unified_acr_rcedr_v12_no_redundancy|2wikimultihopqa|v12_no_redundancy_2wiki|${GPU_C}|C|ablation"
-  "unified|unified_acr_rcedr_v12_beam3_no_sentence_rerank|2wikimultihopqa|v12_beam3_no_sentence_rerank_2wiki|${GPU_C}|C|ablation"
-)
-
-TASKS_D=(
-  "unified|unified_large|musique|unified_large_musique|${GPU_D}|D|stress"
-  "unified|unified_acr_v11_beam3|hotpotqa|acr_v11_beam3_hotpotqa|${GPU_D}|D|cascade_ref"
-  "unified|unified_acr_v11_beam3|2wikimultihopqa|acr_v11_beam3_2wiki|${GPU_D}|D|cascade_ref"
-  "unified|unified_acr_rcedr_v12_answerability_only|hotpotqa|v12_answerability_only_hotpotqa|${GPU_D}|D|ablation"
-  "unified|unified_acr_rcedr_v12_no_redundancy|hotpotqa|v12_no_redundancy_hotpotqa|${GPU_D}|D|ablation"
-  "unified|unified_acr_rcedr_v12_no_bridge|2wikimultihopqa|v12_no_bridge_2wiki|${GPU_D}|D|ablation"
-  "unified|unified_acr_rcedr_v12_no_sentence_rerank|2wikimultihopqa|v12_no_sentence_rerank_2wiki|${GPU_D}|D|ablation"
-  "unified|unified_acr_rcedr_v12_beam3|hotpotqa|v12_beam3_hotpotqa|${GPU_D}|D|ablation"
-  "unified|unified_acr_rcedr_v12_beam3|2wikimultihopqa|v12_beam3_2wiki|${GPU_D}|D|ablation"
-  "unified|unified_acr_rcedr_v12|popqa|v12_popqa|${GPU_D}|D|robustness"
-  "unified|unified_acr_rcedr_v12_beam3_no_sentence_rerank|popqa|v12_beam3_no_sentence_rerank_popqa|${GPU_D}|D|robustness"
-  "unified|unified_acr_rcedr_v12_beam3_no_sentence_rerank|musique|v12_beam3_no_sentence_rerank_musique|${GPU_D}|D|stress"
+# Base task set: kind|profile|dataset|run_name|role
+BASE_TASKS=(
+  "legacy|legacy_sota|hotpotqa|legacy_sota_hotpotqa|reference"
+  "legacy|legacy_sota|2wikimultihopqa|legacy_sota_2wikimultihopqa|reference"
+  "unified|unified_large|hotpotqa|unified_large_hotpotqa|baseline"
+  "unified|unified_large|2wikimultihopqa|unified_large_2wiki|baseline"
+  "unified|unified_large|popqa|unified_large_popqa|baseline"
+  "unified|unified_large|musique|unified_large_musique|stress"
+  "unified|unified_gl_rcedr_v1_adaptive_support_span_no_bridge|hotpotqa|gl_ref_hotpotqa|reference"
+  "unified|unified_gl_rcedr_v1_adaptive_support_span_no_bridge|2wikimultihopqa|gl_ref_2wiki|reference"
+  "unified|unified_gl_rcedr_v1_adaptive_support_span_no_bridge|popqa|gl_ref_popqa|reference"
+  "unified|unified_acr_v11|hotpotqa|acr_v11_hotpotqa|cascade_ref"
+  "unified|unified_acr_v11|2wikimultihopqa|acr_v11_2wiki|cascade_ref"
+  "unified|unified_acr_v11_beam3|hotpotqa|acr_v11_beam3_hotpotqa|cascade_ref"
+  "unified|unified_acr_v11_beam3|2wikimultihopqa|acr_v11_beam3_2wiki|cascade_ref"
+  "unified|unified_acr_rcedr_v12|hotpotqa|v12_hotpotqa|main"
+  "unified|unified_acr_rcedr_v12|2wikimultihopqa|v12_2wiki|main"
+  "unified|unified_acr_rcedr_v12|popqa|v12_popqa|robustness"
+  "unified|unified_acr_rcedr_v12|musique|v12_musique|stress"
+  "unified|unified_acr_rcedr_v12_answerability_only|hotpotqa|v12_answerability_only_hotpotqa|ablation"
+  "unified|unified_acr_rcedr_v12_answerability_only|2wikimultihopqa|v12_answerability_only_2wiki|ablation"
+  "unified|unified_acr_rcedr_v12_no_bridge|hotpotqa|v12_no_bridge_hotpotqa|ablation"
+  "unified|unified_acr_rcedr_v12_no_bridge|2wikimultihopqa|v12_no_bridge_2wiki|ablation"
+  "unified|unified_acr_rcedr_v12_no_redundancy|hotpotqa|v12_no_redundancy_hotpotqa|ablation"
+  "unified|unified_acr_rcedr_v12_no_redundancy|2wikimultihopqa|v12_no_redundancy_2wiki|ablation"
+  "unified|unified_acr_rcedr_v12_no_sentence_rerank|hotpotqa|v12_no_sentence_rerank_hotpotqa|ablation"
+  "unified|unified_acr_rcedr_v12_no_sentence_rerank|2wikimultihopqa|v12_no_sentence_rerank_2wiki|ablation"
+  "unified|unified_acr_rcedr_v12_beam3|hotpotqa|v12_beam3_hotpotqa|ablation"
+  "unified|unified_acr_rcedr_v12_beam3|2wikimultihopqa|v12_beam3_2wiki|ablation"
+  "unified|unified_acr_rcedr_v12_beam3|popqa|v12_beam3_popqa|robustness"
+  "unified|unified_acr_rcedr_v12_beam3|musique|v12_beam3_musique|stress"
+  "unified|unified_acr_rcedr_v12_beam3_no_sentence_rerank|hotpotqa|v12_beam3_no_sentence_rerank_hotpotqa|ablation"
+  "unified|unified_acr_rcedr_v12_beam3_no_sentence_rerank|2wikimultihopqa|v12_beam3_no_sentence_rerank_2wiki|ablation"
+  "unified|unified_acr_rcedr_v12_beam3_no_sentence_rerank|popqa|v12_beam3_no_sentence_rerank_popqa|robustness"
+  "unified|unified_acr_rcedr_v12_beam3_no_sentence_rerank|musique|v12_beam3_no_sentence_rerank_musique|stress"
 )
 
 if [[ "${SMOKE_CORE_ONLY}" == "1" ]]; then
   # Keep all HotpotQA/2Wiki core rows for smoke reliability; trim optional PopQA/MuSiQue coverage.
-  TASKS_A=(
-    "legacy|legacy_sota|hotpotqa|legacy_sota_hotpotqa|${GPU_A}|A|reference"
-    "legacy|legacy_sota|2wikimultihopqa|legacy_sota_2wikimultihopqa|${GPU_A}|A|reference"
-    "unified|unified_large|hotpotqa|unified_large_hotpotqa|${GPU_A}|A|baseline"
-    "unified|unified_acr_rcedr_v12|hotpotqa|v12_hotpotqa|${GPU_A}|A|main"
-    "unified|unified_acr_rcedr_v12_beam3_no_sentence_rerank|hotpotqa|v12_beam3_no_sentence_rerank_hotpotqa|${GPU_A}|A|ablation"
-  )
-  TASKS_B=(
-    "unified|unified_large|2wikimultihopqa|unified_large_2wiki|${GPU_B}|B|baseline"
-    "unified|unified_gl_rcedr_v1_adaptive_support_span_no_bridge|hotpotqa|gl_ref_hotpotqa|${GPU_B}|B|reference"
-    "unified|unified_acr_v11|hotpotqa|acr_v11_hotpotqa|${GPU_B}|B|cascade_ref"
-    "unified|unified_acr_rcedr_v12|2wikimultihopqa|v12_2wiki|${GPU_B}|B|main"
-    "unified|unified_acr_rcedr_v12_no_bridge|hotpotqa|v12_no_bridge_hotpotqa|${GPU_B}|B|ablation"
-  )
-  TASKS_C=(
-    "unified|unified_gl_rcedr_v1_adaptive_support_span_no_bridge|2wikimultihopqa|gl_ref_2wiki|${GPU_C}|C|reference"
-    "unified|unified_acr_v11|2wikimultihopqa|acr_v11_2wiki|${GPU_C}|C|cascade_ref"
-    "unified|unified_acr_rcedr_v12_answerability_only|2wikimultihopqa|v12_answerability_only_2wiki|${GPU_C}|C|ablation"
-    "unified|unified_acr_rcedr_v12_no_sentence_rerank|hotpotqa|v12_no_sentence_rerank_hotpotqa|${GPU_C}|C|ablation"
-    "unified|unified_acr_rcedr_v12_no_redundancy|2wikimultihopqa|v12_no_redundancy_2wiki|${GPU_C}|C|ablation"
-    "unified|unified_acr_rcedr_v12_beam3_no_sentence_rerank|2wikimultihopqa|v12_beam3_no_sentence_rerank_2wiki|${GPU_C}|C|ablation"
-  )
-  TASKS_D=(
-    "unified|unified_acr_v11_beam3|hotpotqa|acr_v11_beam3_hotpotqa|${GPU_D}|D|cascade_ref"
-    "unified|unified_acr_v11_beam3|2wikimultihopqa|acr_v11_beam3_2wiki|${GPU_D}|D|cascade_ref"
-    "unified|unified_acr_rcedr_v12_answerability_only|hotpotqa|v12_answerability_only_hotpotqa|${GPU_D}|D|ablation"
-    "unified|unified_acr_rcedr_v12_no_redundancy|hotpotqa|v12_no_redundancy_hotpotqa|${GPU_D}|D|ablation"
-    "unified|unified_acr_rcedr_v12_no_bridge|2wikimultihopqa|v12_no_bridge_2wiki|${GPU_D}|D|ablation"
-    "unified|unified_acr_rcedr_v12_no_sentence_rerank|2wikimultihopqa|v12_no_sentence_rerank_2wiki|${GPU_D}|D|ablation"
-    "unified|unified_acr_rcedr_v12_beam3|hotpotqa|v12_beam3_hotpotqa|${GPU_D}|D|ablation"
-    "unified|unified_acr_rcedr_v12_beam3|2wikimultihopqa|v12_beam3_2wiki|${GPU_D}|D|ablation"
+  BASE_TASKS=(
+    "legacy|legacy_sota|hotpotqa|legacy_sota_hotpotqa|reference"
+    "legacy|legacy_sota|2wikimultihopqa|legacy_sota_2wikimultihopqa|reference"
+    "unified|unified_large|hotpotqa|unified_large_hotpotqa|baseline"
+    "unified|unified_large|2wikimultihopqa|unified_large_2wiki|baseline"
+    "unified|unified_gl_rcedr_v1_adaptive_support_span_no_bridge|hotpotqa|gl_ref_hotpotqa|reference"
+    "unified|unified_gl_rcedr_v1_adaptive_support_span_no_bridge|2wikimultihopqa|gl_ref_2wiki|reference"
+    "unified|unified_acr_v11|hotpotqa|acr_v11_hotpotqa|cascade_ref"
+    "unified|unified_acr_v11|2wikimultihopqa|acr_v11_2wiki|cascade_ref"
+    "unified|unified_acr_v11_beam3|hotpotqa|acr_v11_beam3_hotpotqa|cascade_ref"
+    "unified|unified_acr_v11_beam3|2wikimultihopqa|acr_v11_beam3_2wiki|cascade_ref"
+    "unified|unified_acr_rcedr_v12|hotpotqa|v12_hotpotqa|main"
+    "unified|unified_acr_rcedr_v12|2wikimultihopqa|v12_2wiki|main"
+    "unified|unified_acr_rcedr_v12_answerability_only|hotpotqa|v12_answerability_only_hotpotqa|ablation"
+    "unified|unified_acr_rcedr_v12_answerability_only|2wikimultihopqa|v12_answerability_only_2wiki|ablation"
+    "unified|unified_acr_rcedr_v12_no_bridge|hotpotqa|v12_no_bridge_hotpotqa|ablation"
+    "unified|unified_acr_rcedr_v12_no_bridge|2wikimultihopqa|v12_no_bridge_2wiki|ablation"
+    "unified|unified_acr_rcedr_v12_no_redundancy|hotpotqa|v12_no_redundancy_hotpotqa|ablation"
+    "unified|unified_acr_rcedr_v12_no_redundancy|2wikimultihopqa|v12_no_redundancy_2wiki|ablation"
+    "unified|unified_acr_rcedr_v12_no_sentence_rerank|hotpotqa|v12_no_sentence_rerank_hotpotqa|ablation"
+    "unified|unified_acr_rcedr_v12_no_sentence_rerank|2wikimultihopqa|v12_no_sentence_rerank_2wiki|ablation"
+    "unified|unified_acr_rcedr_v12_beam3|hotpotqa|v12_beam3_hotpotqa|ablation"
+    "unified|unified_acr_rcedr_v12_beam3|2wikimultihopqa|v12_beam3_2wiki|ablation"
+    "unified|unified_acr_rcedr_v12_beam3_no_sentence_rerank|hotpotqa|v12_beam3_no_sentence_rerank_hotpotqa|ablation"
+    "unified|unified_acr_rcedr_v12_beam3_no_sentence_rerank|2wikimultihopqa|v12_beam3_no_sentence_rerank_2wiki|ablation"
   )
 fi
 
 if [[ "${EXTRA_POPQA}" == "1" ]]; then
-  TASKS_B+=("unified|unified_acr_rcedr_v12_answerability_only|popqa|v12_answerability_only_popqa|${GPU_B}|B|optional")
-  TASKS_C+=("unified|unified_acr_rcedr_v12_no_bridge|popqa|v12_no_bridge_popqa|${GPU_C}|C|optional")
-  TASKS_D+=("unified|unified_acr_rcedr_v12_no_redundancy|popqa|v12_no_redundancy_popqa|${GPU_D}|D|optional")
+  BASE_TASKS+=("unified|unified_acr_rcedr_v12_answerability_only|popqa|v12_answerability_only_popqa|optional")
+  BASE_TASKS+=("unified|unified_acr_rcedr_v12_no_bridge|popqa|v12_no_bridge_popqa|optional")
+  BASE_TASKS+=("unified|unified_acr_rcedr_v12_no_redundancy|popqa|v12_no_redundancy_popqa|optional")
 fi
 
-ALL_TASKS=("${TASKS_A[@]}" "${TASKS_B[@]}" "${TASKS_C[@]}" "${TASKS_D[@]}")
+ALL_TASKS=("${BASE_TASKS[@]}")
 
 # Fail-fast duplicate run_name detection before any run directory cleanup.
 declare -A RUN_NAME_COUNT
 for spec in "${ALL_TASKS[@]}"; do
-  IFS='|' read -r _kind _profile _dataset _tag _gpu _group _role <<< "${spec}"
+  IFS='|' read -r _kind _profile _dataset _tag _role <<< "${spec}"
   RUN_NAME_COUNT["${_tag}"]=$(( ${RUN_NAME_COUNT["${_tag}"]:-0} + 1 ))
 done
 for run_name in "${!RUN_NAME_COUNT[@]}"; do
@@ -262,15 +266,261 @@ for run_name in "${!RUN_NAME_COUNT[@]}"; do
   fi
 done
 
-# Ensure per-run directory hygiene to avoid multi-attempt residue in smoke/debug/full runs.
-for spec in "${ALL_TASKS[@]}"; do
-  IFS='|' read -r _kind _profile _dataset _tag _gpu _group _role <<< "${spec}"
-  rm -rf "${OUT_ROOT}/qa_runs/${_tag}"
-done
+TASKS_FILE="${OUT_ROOT}/_phase6s_tasks.txt"
+ASSIGNED_JSONL="${OUT_ROOT}/_phase6s_assigned_runs.jsonl"
+GROUP_A_FILE="${OUT_ROOT}/_phase6s_tasks_A.txt"
+GROUP_B_FILE="${OUT_ROOT}/_phase6s_tasks_B.txt"
+GROUP_C_FILE="${OUT_ROOT}/_phase6s_tasks_C.txt"
+GROUP_D_FILE="${OUT_ROOT}/_phase6s_tasks_D.txt"
+PLAN_JSON="${OUT_ROOT}/phase6s_cost_allocation_plan.json"
+
+: > "${TASKS_FILE}"
+: > "${SCHEDULE_JSONL}"
+: > "${ASSIGNED_JSONL}"
+: > "${GROUP_A_FILE}"
+: > "${GROUP_B_FILE}"
+: > "${GROUP_C_FILE}"
+: > "${GROUP_D_FILE}"
 
 for spec in "${ALL_TASKS[@]}"; do
-  IFS='|' read -r kind profile dataset tag gpu group role <<< "${spec}"
-  register_run "${kind}" "${profile}" "${dataset}" "${tag}" "${gpu}" "${group}" "${role}"
+  echo "${spec}" >> "${TASKS_FILE}"
+done
+
+export OUT_ROOT SAMPLE_SIZE SCHEDULE_JSONL ASSIGNED_JSONL TASKS_FILE
+export GROUP_A_FILE GROUP_B_FILE GROUP_C_FILE GROUP_D_FILE PLAN_JSON
+export COST_BASED_ASSIGN COST_SOURCE_ROOT COST_SOURCE_SUMMARY_JSON COST_DEFAULT_RETRIEVAL_MS
+export GPU_A GPU_B GPU_C GPU_D
+PYTHONPATH=. "${PYTHON}" - <<'PY'
+import json
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Tuple
+
+def _safe_text(value: Any) -> str:
+    return str(value or "").strip()
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        x = float(value)
+    except Exception:
+        return float(default)
+    if x < 0:
+        return float(default)
+    return x
+
+def _load_json(path: Path) -> Dict[str, Any]:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return dict(payload) if isinstance(payload, dict) else {}
+
+out_root = Path(os.environ["OUT_ROOT"]).resolve()
+tasks_file = Path(os.environ["TASKS_FILE"]).resolve()
+schedule_jsonl = Path(os.environ["SCHEDULE_JSONL"]).resolve()
+assigned_jsonl = Path(os.environ["ASSIGNED_JSONL"]).resolve()
+group_files = {
+    "A": Path(os.environ["GROUP_A_FILE"]).resolve(),
+    "B": Path(os.environ["GROUP_B_FILE"]).resolve(),
+    "C": Path(os.environ["GROUP_C_FILE"]).resolve(),
+    "D": Path(os.environ["GROUP_D_FILE"]).resolve(),
+}
+plan_json = Path(os.environ["PLAN_JSON"]).resolve()
+
+gpu_by_group = {
+    "A": _safe_text(os.environ.get("GPU_A", "0")) or "0",
+    "B": _safe_text(os.environ.get("GPU_B", "1")) or "1",
+    "C": _safe_text(os.environ.get("GPU_C", "1")) or "1",
+    "D": _safe_text(os.environ.get("GPU_D", "1")) or "1",
+}
+cost_based_assign = _safe_text(os.environ.get("COST_BASED_ASSIGN", "1")) not in {"0", "false", "False"}
+cost_source_root = Path(_safe_text(os.environ.get("COST_SOURCE_ROOT", "outputs/phase6s_debug20")) or "outputs/phase6s_debug20")
+summary_json_env = _safe_text(os.environ.get("COST_SOURCE_SUMMARY_JSON", ""))
+if summary_json_env:
+    summary_path = Path(summary_json_env).resolve()
+else:
+    summary_path = (cost_source_root / "phase6s_unified_acr_rcedr_summary.json").resolve()
+default_cost = _safe_float(os.environ.get("COST_DEFAULT_RETRIEVAL_MS", "12000"), 12000.0)
+
+tasks: List[Dict[str, Any]] = []
+for line in tasks_file.read_text(encoding="utf-8").splitlines():
+    line = _safe_text(line)
+    if not line:
+        continue
+    parts = line.split("|")
+    if len(parts) != 5:
+        raise SystemExit(f"invalid_task_spec:{line}")
+    kind, profile, dataset, run_name, role = [p.strip() for p in parts]
+    tasks.append(
+        {
+            "kind": kind,
+            "profile": profile,
+            "dataset": dataset,
+            "run_name": run_name,
+            "role": role,
+        }
+    )
+
+# Cost priors from n=20 summary.
+cost_by_run: Dict[str, float] = {}
+cost_by_pair: Dict[Tuple[str, str], List[float]] = {}
+cost_by_profile: Dict[str, List[float]] = {}
+cost_by_dataset: Dict[str, List[float]] = {}
+all_costs: List[float] = []
+
+if summary_path.exists():
+    payload = _load_json(summary_path)
+    rows = payload.get("completed_rows", [])
+    if isinstance(rows, list):
+        for row in rows:
+            if not isinstance(row, dict):
+                continue
+            run_name = _safe_text(row.get("run_name"))
+            profile = _safe_text(row.get("profile"))
+            dataset = _safe_text(row.get("dataset"))
+            c = _safe_float(row.get("retrieval_ms"), 0.0)
+            if c <= 0:
+                continue
+            if run_name:
+                cost_by_run[run_name] = c
+            if profile and dataset:
+                cost_by_pair.setdefault((profile, dataset), []).append(c)
+            if profile:
+                cost_by_profile.setdefault(profile, []).append(c)
+            if dataset:
+                cost_by_dataset.setdefault(dataset, []).append(c)
+            all_costs.append(c)
+
+def _mean(values: List[float]) -> float:
+    return float(sum(values) / len(values)) if values else 0.0
+
+pair_mean = {k: _mean(v) for k, v in cost_by_pair.items() if v}
+profile_mean = {k: _mean(v) for k, v in cost_by_profile.items() if v}
+dataset_mean = {k: _mean(v) for k, v in cost_by_dataset.items() if v}
+global_mean = _mean(all_costs) if all_costs else default_cost
+
+def estimate_cost(task: Dict[str, Any]) -> Tuple[float, str]:
+    run_name = _safe_text(task.get("run_name"))
+    profile = _safe_text(task.get("profile"))
+    dataset = _safe_text(task.get("dataset"))
+    if run_name in cost_by_run:
+        return cost_by_run[run_name], "run_name"
+    key = (profile, dataset)
+    if key in pair_mean:
+        return pair_mean[key], "profile_dataset_mean"
+    if profile in profile_mean:
+        return profile_mean[profile], "profile_mean"
+    if dataset in dataset_mean:
+        return dataset_mean[dataset], "dataset_mean"
+    return (global_mean if global_mean > 0 else default_cost), "default"
+
+scored_tasks: List[Dict[str, Any]] = []
+for task in tasks:
+    c, source = estimate_cost(task)
+    row = dict(task)
+    row["estimated_retrieval_ms"] = float(c)
+    row["cost_source"] = source
+    scored_tasks.append(row)
+
+if cost_based_assign:
+    ordered = sorted(scored_tasks, key=lambda x: (-float(x["estimated_retrieval_ms"]), _safe_text(x.get("run_name"))))
+else:
+    ordered = list(scored_tasks)
+
+bins: Dict[str, List[Dict[str, Any]]] = {"A": [], "B": [], "C": [], "D": []}
+totals: Dict[str, float] = {"A": 0.0, "B": 0.0, "C": 0.0, "D": 0.0}
+
+def _pick_group() -> str:
+    return sorted(totals.items(), key=lambda kv: (kv[1], kv[0]))[0][0]
+
+for row in ordered:
+    group = _pick_group()
+    row["process_group"] = group
+    row["gpu"] = gpu_by_group[group]
+    bins[group].append(row)
+    totals[group] += float(row["estimated_retrieval_ms"])
+
+for path in group_files.values():
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("", encoding="utf-8")
+for group, rows in bins.items():
+    out_lines = []
+    for row in rows:
+        out_lines.append(
+            "|".join(
+                [
+                    _safe_text(row.get("kind")),
+                    _safe_text(row.get("profile")),
+                    _safe_text(row.get("dataset")),
+                    _safe_text(row.get("run_name")),
+                    _safe_text(row.get("gpu")),
+                    _safe_text(row.get("process_group")),
+                    _safe_text(row.get("role")),
+                ]
+            )
+        )
+    if out_lines:
+        group_files[group].write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+
+schedule_rows: List[Dict[str, Any]] = []
+for group in ["A", "B", "C", "D"]:
+    for row in bins[group]:
+        schedule_rows.append(
+            {
+                "run_name": _safe_text(row.get("run_name")),
+                "dataset": _safe_text(row.get("dataset")),
+                "profile": _safe_text(row.get("profile")),
+                "gpu": _safe_text(row.get("gpu")),
+                "process_group": _safe_text(row.get("process_group")),
+                "role": _safe_text(row.get("role")),
+                "kind": _safe_text(row.get("kind")),
+                "scheduled": True,
+                "estimated_retrieval_ms": float(row.get("estimated_retrieval_ms", 0.0)),
+                "cost_source": _safe_text(row.get("cost_source")),
+            }
+        )
+
+schedule_jsonl.write_text(
+    "\n".join(json.dumps(row, ensure_ascii=False) for row in schedule_rows) + ("\n" if schedule_rows else ""),
+    encoding="utf-8",
+)
+assigned_jsonl.write_text(
+    "\n".join(json.dumps(row, ensure_ascii=False) for row in schedule_rows) + ("\n" if schedule_rows else ""),
+    encoding="utf-8",
+)
+plan_json.write_text(
+    json.dumps(
+        {
+            "cost_based_assign": cost_based_assign,
+            "cost_source_root": str(cost_source_root.resolve()) if cost_source_root.exists() else str(cost_source_root),
+            "cost_source_summary_json": str(summary_path),
+            "default_cost_ms": float(default_cost),
+            "global_mean_cost_ms": float(global_mean),
+            "group_totals_ms": totals,
+            "runs": schedule_rows,
+        },
+        ensure_ascii=False,
+        indent=2,
+    )
+    + "\n",
+    encoding="utf-8",
+)
+
+print(f"[Phase-6S planner] tasks={len(schedule_rows)} cost_based_assign={cost_based_assign}")
+print(f"[Phase-6S planner] cost_source_summary_json={summary_path}")
+for group in ["A", "B", "C", "D"]:
+    print(f"[Phase-6S planner] group={group} gpu={gpu_by_group[group]} runs={len(bins[group])} est_total_ms={totals[group]:.2f}")
+PY
+
+mapfile -t TASKS_A < "${GROUP_A_FILE}"
+mapfile -t TASKS_B < "${GROUP_B_FILE}"
+mapfile -t TASKS_C < "${GROUP_C_FILE}"
+mapfile -t TASKS_D < "${GROUP_D_FILE}"
+
+# Ensure per-run directory hygiene to avoid multi-attempt residue in smoke/debug/full runs.
+for spec in "${TASKS_A[@]}" "${TASKS_B[@]}" "${TASKS_C[@]}" "${TASKS_D[@]}"; do
+  IFS='|' read -r _kind _profile _dataset _tag _gpu _group _role <<< "${spec}"
+  rm -rf "${OUT_ROOT}/qa_runs/${_tag}"
 done
 
 export OUT_ROOT SAMPLE_SIZE SCHEDULE_JSONL
@@ -306,6 +556,13 @@ manifest_path = out_root / "phase6s_run_manifest.json"
 manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 print(str(manifest_path))
 PY
+
+if [[ "${PLAN_ONLY}" == "1" ]]; then
+  echo "[Phase-6S] PLAN_ONLY=1 -> wrote schedule/manifest without launching workers."
+  echo "[Phase-6S] manifest: ${OUT_ROOT}/phase6s_run_manifest.json"
+  echo "[Phase-6S] allocation plan: ${PLAN_JSON}"
+  exit 0
+fi
 
 group_a () { local spec; for spec in "${TASKS_A[@]}"; do run_task "${spec}"; done; }
 group_b () { local spec; for spec in "${TASKS_B[@]}"; do run_task "${spec}"; done; }
@@ -408,7 +665,7 @@ if [[ "${STRICT_VALIDATE}" == "1" ]]; then
   echo "[Phase-6S] artifact consistency strict validation:"
   PYTHONPATH=. "${PYTHON}" scripts/validate_phase6s_artifacts.py \
     --out-root "${OUT_ROOT}" \
-    --strict \
+    --strict-clean \
     2>&1 | tee "${OUT_ROOT}/logs/validate_phase6s_artifacts_strict.log"
 fi
 
