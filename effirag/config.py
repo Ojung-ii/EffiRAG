@@ -519,6 +519,14 @@ class RagConfig(RetrievalConfig):
     unified_acr_rcedr_lambda_bridge: float = 0.28
     unified_acr_rcedr_mu_redundancy: float = 0.22
     unified_acr_rcedr_answerability_weight: float = 1.0
+    unified_acr_rcedr_chain_aware_enabled: bool = False
+    unified_acr_rcedr_chain_aware_mode: str = "legacy"  # legacy | conservative
+    unified_acr_rcedr_role_aware_redundancy_enabled: bool = False
+    unified_acr_rcedr_chain_gain_weight: float = 0.15
+    unified_acr_rcedr_role_redundancy_relax: float = 0.5
+    unified_acr_rcedr_chain_gain_require_missing_role: bool = False
+    unified_acr_rcedr_chain_gain_require_signal: bool = False
+    unified_acr_rcedr_chain_gain_max_per_step: float = 1.0
     unified_acr_rcedr_atom_span_max_sentences: int = 2
     unified_acr_rcedr_length_penalty_weight: float = 0.04
     unified_acr_rcedr_log_diagnostics: bool = True
@@ -679,10 +687,18 @@ def apply_cli_overrides(config_dict, args_namespace):
         "unified_acr_rcedr_use_bridge_gain",
         "unified_acr_rcedr_use_redundancy_penalty",
         "unified_acr_rcedr_use_cost_penalty",
+        "unified_acr_rcedr_chain_aware_enabled",
+        "unified_acr_rcedr_role_aware_redundancy_enabled",
+        "unified_acr_rcedr_chain_gain_require_missing_role",
+        "unified_acr_rcedr_chain_gain_require_signal",
         "unified_acr_rcedr_log_diagnostics",
     ):
         if key in merged:
             merged[key] = parse_bool(merged[key])
+    if "unified_acr_rcedr_chain_aware_mode" in merged:
+        merged["unified_acr_rcedr_chain_aware_mode"] = str(
+            merged["unified_acr_rcedr_chain_aware_mode"]
+        ).strip().lower()
     if "adaptive_support_span_bridge_mode" in merged:
         merged["adaptive_support_span_bridge_mode"] = str(merged["adaptive_support_span_bridge_mode"]).strip().lower()
     if "answerability_selection_mode" in merged:

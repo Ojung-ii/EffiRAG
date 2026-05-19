@@ -4092,6 +4092,39 @@ def _append_phase6t_score_attach_trace_line(
         return
 
 
+def _append_phase6t_score_parity_rows(
+    *,
+    dump_path: str,
+    mode: str,
+    sample_id: str,
+    question: str,
+    candidate_rows,
+    selected_sentence_ids,
+    rendered_sentence_ids,
+) -> None:
+    if not dump_path:
+        return
+    try:
+        path = Path(str(dump_path))
+        path.parent.mkdir(parents=True, exist_ok=True)
+        selected_set = {str(x) for x in list(selected_sentence_ids or []) if str(x)}
+        rendered_set = {str(x) for x in list(rendered_sentence_ids or []) if str(x)}
+        with path.open("a", encoding="utf-8") as f:
+            for row in list(candidate_rows or []):
+                if not isinstance(row, Mapping):
+                    continue
+                payload = dict(row)
+                cid = str(payload.get("candidate_id", "") or "")
+                payload["mode"] = str(mode or "")
+                payload["sample_id"] = str(sample_id or "")
+                payload["question"] = str(question or "")
+                payload["selected"] = bool(cid in selected_set)
+                payload["rendered"] = bool(cid in rendered_set)
+                f.write(json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n")
+    except Exception:
+        return
+
+
 def _build_anchor_proposals_lazy_experimental(
     g,
     anchors,
@@ -8122,6 +8155,8 @@ def run_graphrag_core(
         sentence_scores,
     )
     selected_text_map = {sid: text for sid, text in zip(selected_sentence_ids, selected_sentences) if sid and text}
+    sentence_candidates_before_text_rerank_ids = list(selected_sentence_ids or [])
+    sentence_candidates_before_text_rerank_texts = list(selected_sentences or [])
 
     sentence_rerank_enabled = bool(getattr(cfg, "sentence_rerank_enabled", True))
     ablation_no_final_text_rerank = bool(getattr(cfg, "ablation_no_final_text_rerank", False))
@@ -8141,6 +8176,10 @@ def run_graphrag_core(
     )
     stage_ms["sentence_rerank_ms"] = float(sentence_rerank_ms)
     stage_ms["embedding_rerank_ms"] = float(sentence_rerank_ms)
+    sentence_candidates_after_text_rerank_ids = list(selected_sentence_ids or [])
+    sentence_candidates_after_text_rerank_texts = list(selected_sentences or [])
+    evidence_atoms_before_abr_ids = list(selected_sentence_ids or [])
+    evidence_atoms_before_abr_texts = list(selected_sentences or [])
 
     filtered_corridors = _filter_corridor_payloads(corridor_payloads, selected_sentence_ids)
     corridor_count_before_trim = int(len(corridor_payloads))
@@ -8270,6 +8309,8 @@ def run_graphrag_core(
     selected_text_map = {
         sid: text for sid, text in zip(selected_sentence_ids, selected_sentences) if sid and text
     }
+    abr_selected_evidence_ids = list(selected_sentence_ids or [])
+    abr_selected_evidence_texts = list(selected_sentences or [])
     final_total_ms = float((time.perf_counter() - final_start) * 1000.0)
     stage_ms["render_ms"] = max(
         0.0,
@@ -8453,6 +8494,62 @@ def run_graphrag_core(
         candidate_sentence_ids = sorted({str(x) for x in list(candidate_unit_ids or []) if str(x)})
         candidate_sentences = [str((candidate_text_map or {}).get(sid, "") or "") for sid in candidate_sentence_ids]
 
+    def _phase6u_corridor_unit_ids(payloads):
+        ids = []
+        for item in list(payloads or []):
+            if not isinstance(item, dict):
+                continue
+            for key in (
+                "main_path_unit_ids",
+                "support_unit_ids",
+                "connector_adjacent_unit_ids",
+                "main_path_sentence_ids",
+                "support_sentence_ids",
+                "connector_adjacent_sentence_ids",
+            ):
+                for sid in list(item.get(key, []) or []):
+                    sid_s = str(sid or "").strip()
+                    if sid_s:
+                        ids.append(sid_s)
+        return _ordered_unique(ids)
+
+    proposal_unit_ids_for_audit, proposal_text_map_for_audit = _candidate_text_unit_ids(g, proposal_nodes)
+    proposal_unit_ids_for_audit = sorted({str(x) for x in list(proposal_unit_ids_for_audit or []) if str(x)})
+    proposal_unit_texts_for_audit = [
+        str((proposal_text_map_for_audit or {}).get(sid, "") or "") for sid in proposal_unit_ids_for_audit
+    ]
+
+    phase1_nodes_for_audit = _phase1_candidate_nodes(shortlisted_runs)
+    phase1_unit_ids_for_audit, phase1_text_map_for_audit = _candidate_text_unit_ids(
+        reduced_graph if reduced_graph is not None else g,
+        phase1_nodes_for_audit,
+    )
+    phase1_unit_ids_for_audit = sorted({str(x) for x in list(phase1_unit_ids_for_audit or []) if str(x)})
+    phase1_unit_texts_for_audit = [
+        str((phase1_text_map_for_audit or {}).get(sid, "") or "") for sid in phase1_unit_ids_for_audit
+    ]
+
+    pair_seed_unit_ids_for_audit = []
+    pair_seed_unit_text_map = {}
+    for item in list(pair_shortlist or []):
+        if not isinstance(item, dict):
+            continue
+        for node in (item.get("anchor"), item.get("seed")):
+            sid = _text_unit_id(reduced_graph if reduced_graph is not None else g, node)
+            sid = str(sid or "").strip()
+            if not sid:
+                continue
+            pair_seed_unit_ids_for_audit.append(sid)
+            if sid not in pair_seed_unit_text_map:
+                pair_seed_unit_text_map[sid] = str((selected_text_map or {}).get(sid, "") or "")
+    pair_seed_unit_ids_for_audit = _ordered_unique(pair_seed_unit_ids_for_audit)
+    pair_seed_unit_texts_for_audit = [str(pair_seed_unit_text_map.get(sid, "") or "") for sid in pair_seed_unit_ids_for_audit]
+
+    corridor_before_unit_ids_for_audit = _phase6u_corridor_unit_ids(corridor_payloads)
+    corridor_after_unit_ids_for_audit = _phase6u_corridor_unit_ids(filtered_corridors)
+    corridor_before_unit_texts_for_audit = [str((selected_text_map or {}).get(sid, "") or "") for sid in corridor_before_unit_ids_for_audit]
+    corridor_after_unit_texts_for_audit = [str((selected_text_map or {}).get(sid, "") or "") for sid in corridor_after_unit_ids_for_audit]
+
     _prop_trace(
         "proposal_end",
         extra={
@@ -8460,6 +8557,17 @@ def run_graphrag_core(
             "render_candidate_count": int(len(selected_sentence_ids or [])),
         },
     )
+
+    if _env_truthy("PHASE6T_SCORE_ATTACHMENT_PARITY_DUMP", False):
+        _append_phase6t_score_parity_rows(
+            dump_path=str(os.environ.get("PHASE6T_SCORE_PARITY_DUMP_PATH", "") or ""),
+            mode=str(os.environ.get("PHASE6T_SCORE_PARITY_MODE", "") or ""),
+            sample_id=str(getattr(sample, "qid", "") or ""),
+            question=str(getattr(sample, "question", "") or ""),
+            candidate_rows=list((candidate_recall_boost_diag or {}).get("candidate_score_table", []) or []),
+            selected_sentence_ids=list(selected_sentence_ids or []),
+            rendered_sentence_ids=list(selected_sentence_ids or []),
+        )
 
     latency_ms = (time.perf_counter() - start) * 1000.0
     return RetrievalResult(
@@ -8513,6 +8621,25 @@ def run_graphrag_core(
             "selected_texts": list(selected_sentences),
             "candidate_text_unit_ids": list(candidate_sentence_ids),
             "candidate_texts": list(candidate_sentences),
+            # PHASE6U stagewise evidence audit snapshots (read-only diagnostics).
+            "phase6u_proposal_candidate_unit_ids": list(proposal_unit_ids_for_audit),
+            "phase6u_proposal_candidate_texts": list(proposal_unit_texts_for_audit),
+            "phase6u_phase1_shortlist_unit_ids": list(phase1_unit_ids_for_audit),
+            "phase6u_phase1_shortlist_texts": list(phase1_unit_texts_for_audit),
+            "phase6u_pair_shortlist_unit_ids": list(pair_seed_unit_ids_for_audit),
+            "phase6u_pair_shortlist_texts": list(pair_seed_unit_texts_for_audit),
+            "phase6u_corridor_before_trim_unit_ids": list(corridor_before_unit_ids_for_audit),
+            "phase6u_corridor_before_trim_texts": list(corridor_before_unit_texts_for_audit),
+            "phase6u_corridor_after_trim_unit_ids": list(corridor_after_unit_ids_for_audit),
+            "phase6u_corridor_after_trim_texts": list(corridor_after_unit_texts_for_audit),
+            "phase6u_sentence_candidates_before_text_rerank_ids": list(sentence_candidates_before_text_rerank_ids),
+            "phase6u_sentence_candidates_before_text_rerank_texts": list(sentence_candidates_before_text_rerank_texts),
+            "phase6u_sentence_candidates_after_text_rerank_ids": list(sentence_candidates_after_text_rerank_ids),
+            "phase6u_sentence_candidates_after_text_rerank_texts": list(sentence_candidates_after_text_rerank_texts),
+            "phase6u_evidence_atoms_before_abr_ids": list(evidence_atoms_before_abr_ids),
+            "phase6u_evidence_atoms_before_abr_texts": list(evidence_atoms_before_abr_texts),
+            "phase6u_abr_selected_evidence_ids": list(abr_selected_evidence_ids),
+            "phase6u_abr_selected_evidence_texts": list(abr_selected_evidence_texts),
             "stagewise_loss_funnel": stagewise_loss_funnel,
             "anchor_hit_rate": float((stagewise_loss_funnel or {}).get("anchor_hit_rate", 0.0)),
             "proposal_hit_rate": float((stagewise_loss_funnel or {}).get("proposal_hit_rate", 0.0)),

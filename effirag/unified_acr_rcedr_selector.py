@@ -361,6 +361,35 @@ def _bridge_gain(
     return float(max(atom.bridge_gain, corridor_overlap, path_closure, anchor_bridge_pair_gain))
 
 
+def _chain_complement_gain(
+    atom: UnifiedEvidenceAtom,
+    selected_atoms: Sequence[UnifiedEvidenceAtom],
+) -> float:
+    """Reward complementary anchor/bridge evidence that closes a chain."""
+    if not selected_atoms:
+        return float(max(atom.structure_anchor, atom.structure_bridge))
+
+    atom_corridors = set(atom.corridor_ids)
+    has_anchor = any(item.structure_anchor > 0.0 for item in selected_atoms)
+    has_bridge = any(item.structure_bridge > 0.0 for item in selected_atoms)
+    atom_is_anchor = atom.structure_anchor > 0.0
+    atom_is_bridge = atom.structure_bridge > 0.0
+
+    role_complement = 1.0 if ((atom_is_anchor and has_bridge) or (atom_is_bridge and has_anchor)) else 0.0
+
+    corridor_complement = 0.0
+    if atom_corridors:
+        for item in selected_atoms:
+            if set(item.corridor_ids).intersection(atom_corridors):
+                if (item.structure_anchor > 0.0 and atom_is_bridge) or (item.structure_bridge > 0.0 and atom_is_anchor):
+                    corridor_complement = 1.0
+                    break
+                corridor_complement = max(corridor_complement, 0.6)
+
+    bridge_synergy = float(max(atom.bridge_gain, atom.bridge_overlap, atom.structure_bridge))
+    return float(max(role_complement, corridor_complement, bridge_synergy * 0.5))
+
+
 def _token_jaccard(a: set[str], b: set[str]) -> float:
     union = len(a.union(b))
     if union <= 0:
@@ -431,8 +460,12 @@ def _marginal_delta(
     use_bridge_gain: bool,
     use_redundancy_penalty: bool,
     use_cost_penalty: bool,
+    chain_aware_enabled: bool,
+    role_aware_redundancy_enabled: bool,
     lambda_bridge: float,
     mu_redundancy: float,
+    chain_gain_weight: float,
+    role_redundancy_relax: float,
     answerability_weight: float,
     timing_diag: Dict[str, float] | None = None,
 ) -> Tuple[float, Dict[str, float]]:
@@ -473,6 +506,10 @@ def _marginal_delta(
     else:
         b_gain = 0.0
 
+    chain_gain = 0.0
+    if chain_aware_enabled:
+        chain_gain = _chain_complement_gain(atom, selected_atoms)
+
     if use_redundancy_penalty:
         t0 = time.perf_counter()
         redundancy = _redundancy_penalty(atom, selected_atoms)
@@ -483,6 +520,19 @@ def _marginal_delta(
     else:
         redundancy = 0.0
 
+    redundancy_effective = float(redundancy)
+    redundancy_relax_applied = 0.0
+    if role_aware_redundancy_enabled and use_redundancy_penalty and selected_atoms:
+        atom_is_anchor = atom.structure_anchor > 0.0
+        atom_is_bridge = atom.structure_bridge > 0.0
+        has_anchor = any(item.structure_anchor > 0.0 for item in selected_atoms)
+        has_bridge = any(item.structure_bridge > 0.0 for item in selected_atoms)
+        complementary = (atom_is_anchor and has_bridge) or (atom_is_bridge and has_anchor)
+        if complementary:
+            relax = max(0.0, min(1.0, float(role_redundancy_relax)))
+            redundancy_relax_applied = float(relax)
+            redundancy_effective = float(redundancy * (1.0 - relax))
+
     cost = _cost_penalty(
         selected_tokens=selected_tokens,
         candidate_tokens=int(atom.token_count),
@@ -492,13 +542,17 @@ def _marginal_delta(
     delta = float(
         (answerability_weight * a_gain)
         + (lambda_bridge * b_gain)
-        - (mu_redundancy * redundancy)
+        + (chain_gain_weight * chain_gain)
+        - (mu_redundancy * redundancy_effective)
         - cost
     )
     return delta, {
         "a_gain": float(a_gain),
         "b_gain": float(b_gain),
-        "redundancy": float(redundancy),
+        "chain_gain": float(chain_gain),
+        "redundancy": float(redundancy_effective),
+        "redundancy_raw": float(redundancy),
+        "redundancy_relax_applied": float(redundancy_relax_applied),
         "cost": float(cost),
     }
 
@@ -534,8 +588,12 @@ def _select_greedy(
     use_bridge_gain: bool,
     use_redundancy_penalty: bool,
     use_cost_penalty: bool,
+    chain_aware_enabled: bool,
+    role_aware_redundancy_enabled: bool,
     lambda_bridge: float,
     mu_redundancy: float,
+    chain_gain_weight: float,
+    role_redundancy_relax: float,
     answerability_weight: float,
 ) -> Tuple[List[int], Dict[str, Any]]:
     selected_indices: List[int] = []
@@ -544,7 +602,10 @@ def _select_greedy(
     selected_answer_type_compat = 0.0
     a_gain_total = 0.0
     b_gain_total = 0.0
+    chain_gain_total = 0.0
     redundancy_total = 0.0
+    redundancy_raw_total = 0.0
+    role_redundancy_relax_applied_total = 0.0
     score_total = 0.0
     objective_eval_calls = 0
     score_trace: List[Dict[str, Any]] = []
@@ -584,8 +645,12 @@ def _select_greedy(
                 use_bridge_gain=use_bridge_gain,
                 use_redundancy_penalty=use_redundancy_penalty,
                 use_cost_penalty=use_cost_penalty,
+                chain_aware_enabled=chain_aware_enabled,
+                role_aware_redundancy_enabled=role_aware_redundancy_enabled,
                 lambda_bridge=lambda_bridge,
                 mu_redundancy=mu_redundancy,
+                chain_gain_weight=chain_gain_weight,
+                role_redundancy_relax=role_redundancy_relax,
                 answerability_weight=answerability_weight,
                 timing_diag=timing_diag,
             )
@@ -609,7 +674,10 @@ def _select_greedy(
         selected_answer_type_compat = max(float(selected_answer_type_compat), float(chosen.answer_type_compat))
         a_gain_total += float(best_components["a_gain"])
         b_gain_total += float(best_components["b_gain"])
+        chain_gain_total += float(best_components.get("chain_gain", 0.0))
         redundancy_total += float(best_components["redundancy"])
+        redundancy_raw_total += float(best_components.get("redundancy_raw", best_components.get("redundancy", 0.0)))
+        role_redundancy_relax_applied_total += float(best_components.get("redundancy_relax_applied", 0.0))
         score_total += float(best_delta)
         score_trace.append(
             {
@@ -618,7 +686,10 @@ def _select_greedy(
                 "delta": float(best_delta),
                 "a_gain": float(best_components["a_gain"]),
                 "b_gain": float(best_components["b_gain"]),
+                "chain_gain": float(best_components.get("chain_gain", 0.0)),
                 "redundancy": float(best_components["redundancy"]),
+                "redundancy_raw": float(best_components.get("redundancy_raw", best_components.get("redundancy", 0.0))),
+                "redundancy_relax_applied": float(best_components.get("redundancy_relax_applied", 0.0)),
                 "cost": float(best_components["cost"]),
                 "selected_tokens": int(selected_tokens),
             }
@@ -645,8 +716,12 @@ def _select_greedy(
                 use_bridge_gain=use_bridge_gain,
                 use_redundancy_penalty=use_redundancy_penalty,
                 use_cost_penalty=use_cost_penalty,
+                chain_aware_enabled=chain_aware_enabled,
+                role_aware_redundancy_enabled=role_aware_redundancy_enabled,
                 lambda_bridge=lambda_bridge,
                 mu_redundancy=mu_redundancy,
+                chain_gain_weight=chain_gain_weight,
+                role_redundancy_relax=role_redundancy_relax,
                 answerability_weight=answerability_weight,
                 timing_diag=timing_diag,
             )
@@ -661,7 +736,10 @@ def _select_greedy(
             selected_tokens = int(chosen.token_count)
             a_gain_total = float(best_components["a_gain"])
             b_gain_total = float(best_components["b_gain"])
+            chain_gain_total = float(best_components.get("chain_gain", 0.0))
             redundancy_total = float(best_components["redundancy"])
+            redundancy_raw_total = float(best_components.get("redundancy_raw", best_components.get("redundancy", 0.0)))
+            role_redundancy_relax_applied_total = float(best_components.get("redundancy_relax_applied", 0.0))
             score_total = float(best_delta)
             score_trace = [
                 {
@@ -670,7 +748,10 @@ def _select_greedy(
                     "delta": float(best_delta),
                     "a_gain": float(best_components["a_gain"]),
                     "b_gain": float(best_components["b_gain"]),
+                    "chain_gain": float(best_components.get("chain_gain", 0.0)),
                     "redundancy": float(best_components["redundancy"]),
+                    "redundancy_raw": float(best_components.get("redundancy_raw", best_components.get("redundancy", 0.0))),
+                    "redundancy_relax_applied": float(best_components.get("redundancy_relax_applied", 0.0)),
                     "cost": float(best_components["cost"]),
                     "selected_tokens": int(selected_tokens),
                 }
@@ -680,7 +761,10 @@ def _select_greedy(
         "selected_tokens": int(selected_tokens),
         "A_gain_total": float(a_gain_total),
         "B_gain_total": float(b_gain_total),
+        "chain_gain_total": float(chain_gain_total),
         "redundancy_total": float(redundancy_total),
+        "redundancy_raw_total": float(redundancy_raw_total),
+        "role_aware_redundancy_applied_total": float(role_redundancy_relax_applied_total),
         "score_total": float(score_total),
         "objective_eval_calls": int(objective_eval_calls),
         "score_trace": list(score_trace),
@@ -704,8 +788,12 @@ def _select_beam(
     use_bridge_gain: bool,
     use_redundancy_penalty: bool,
     use_cost_penalty: bool,
+    chain_aware_enabled: bool,
+    role_aware_redundancy_enabled: bool,
     lambda_bridge: float,
     mu_redundancy: float,
+    chain_gain_weight: float,
+    role_redundancy_relax: float,
     answerability_weight: float,
 ) -> Tuple[List[int], Dict[str, Any]]:
     beam_k = max(1, int(beam_size))
@@ -723,7 +811,10 @@ def _select_beam(
             "selected_tokens": 0,
             "A_gain_total": 0.0,
             "B_gain_total": 0.0,
+            "chain_gain_total": 0.0,
             "redundancy_total": 0.0,
+            "redundancy_raw_total": 0.0,
+            "role_aware_redundancy_applied_total": 0.0,
             "score_trace": [],
         }
     }
@@ -764,8 +855,12 @@ def _select_beam(
                     use_bridge_gain=use_bridge_gain,
                     use_redundancy_penalty=use_redundancy_penalty,
                     use_cost_penalty=use_cost_penalty,
+                    chain_aware_enabled=chain_aware_enabled,
+                    role_aware_redundancy_enabled=role_aware_redundancy_enabled,
                     lambda_bridge=lambda_bridge,
                     mu_redundancy=mu_redundancy,
+                    chain_gain_weight=chain_gain_weight,
+                    role_redundancy_relax=role_redundancy_relax,
                     answerability_weight=answerability_weight,
                     timing_diag=timing_diag,
                 )
@@ -783,7 +878,15 @@ def _select_beam(
                     "selected_tokens": int(state["selected_tokens"]) + int(atom.token_count),
                     "A_gain_total": float(state["A_gain_total"]) + float(components["a_gain"]),
                     "B_gain_total": float(state["B_gain_total"]) + float(components["b_gain"]),
+                    "chain_gain_total": float(state.get("chain_gain_total", 0.0))
+                    + float(components.get("chain_gain", 0.0)),
                     "redundancy_total": float(state["redundancy_total"]) + float(components["redundancy"]),
+                    "redundancy_raw_total": float(state.get("redundancy_raw_total", 0.0))
+                    + float(components.get("redundancy_raw", components.get("redundancy", 0.0))),
+                    "role_aware_redundancy_applied_total": float(
+                        state.get("role_aware_redundancy_applied_total", 0.0)
+                    )
+                    + float(components.get("redundancy_relax_applied", 0.0)),
                     "score_trace": list(state["score_trace"])
                     + [
                         {
@@ -792,7 +895,10 @@ def _select_beam(
                             "delta": float(delta),
                             "a_gain": float(components["a_gain"]),
                             "b_gain": float(components["b_gain"]),
+                            "chain_gain": float(components.get("chain_gain", 0.0)),
                             "redundancy": float(components["redundancy"]),
+                            "redundancy_raw": float(components.get("redundancy_raw", components.get("redundancy", 0.0))),
+                            "redundancy_relax_applied": float(components.get("redundancy_relax_applied", 0.0)),
                             "cost": float(components["cost"]),
                             "selected_tokens": int(state["selected_tokens"]) + int(atom.token_count),
                         }
@@ -819,7 +925,12 @@ def _select_beam(
             "selected_tokens": int(best_state["selected_tokens"]),
             "A_gain_total": float(best_state["A_gain_total"]),
             "B_gain_total": float(best_state["B_gain_total"]),
+            "chain_gain_total": float(best_state.get("chain_gain_total", 0.0)),
             "redundancy_total": float(best_state["redundancy_total"]),
+            "redundancy_raw_total": float(best_state.get("redundancy_raw_total", 0.0)),
+            "role_aware_redundancy_applied_total": float(
+                best_state.get("role_aware_redundancy_applied_total", 0.0)
+            ),
             "score_total": float(best_state["score_total"]),
             "objective_eval_calls": int(objective_eval_calls),
             "score_trace": list(best_state["score_trace"]),
@@ -840,8 +951,12 @@ def _select_beam(
         use_bridge_gain=use_bridge_gain,
         use_redundancy_penalty=use_redundancy_penalty,
         use_cost_penalty=use_cost_penalty,
+        chain_aware_enabled=chain_aware_enabled,
+        role_aware_redundancy_enabled=role_aware_redundancy_enabled,
         lambda_bridge=lambda_bridge,
         mu_redundancy=mu_redundancy,
+        chain_gain_weight=chain_gain_weight,
+        role_redundancy_relax=role_redundancy_relax,
         answerability_weight=answerability_weight,
     )
     greedy_state["objective_eval_calls"] = int(
@@ -906,8 +1021,15 @@ def apply_unified_acr_rcedr_selection(
     use_bridge_gain = _safe_bool(getattr(cfg, "unified_acr_rcedr_use_bridge_gain", True), True)
     use_redundancy_penalty = _safe_bool(getattr(cfg, "unified_acr_rcedr_use_redundancy_penalty", True), True)
     use_cost_penalty = _safe_bool(getattr(cfg, "unified_acr_rcedr_use_cost_penalty", False), False)
+    chain_aware_enabled = _safe_bool(getattr(cfg, "unified_acr_rcedr_chain_aware_enabled", False), False)
+    role_aware_redundancy_enabled = _safe_bool(
+        getattr(cfg, "unified_acr_rcedr_role_aware_redundancy_enabled", False),
+        False,
+    )
     lambda_bridge = _safe_float(getattr(cfg, "unified_acr_rcedr_lambda_bridge", 0.28), 0.28)
     mu_redundancy = _safe_float(getattr(cfg, "unified_acr_rcedr_mu_redundancy", 0.22), 0.22)
+    chain_gain_weight = _safe_float(getattr(cfg, "unified_acr_rcedr_chain_gain_weight", 0.15), 0.15)
+    role_redundancy_relax = _safe_float(getattr(cfg, "unified_acr_rcedr_role_redundancy_relax", 0.5), 0.5)
     answerability_weight = _safe_float(getattr(cfg, "unified_acr_rcedr_answerability_weight", 1.0), 1.0)
 
     atoms = _atomize_selected_evidence(
@@ -944,8 +1066,12 @@ def apply_unified_acr_rcedr_selection(
             use_bridge_gain=use_bridge_gain,
             use_redundancy_penalty=use_redundancy_penalty,
             use_cost_penalty=use_cost_penalty,
+            chain_aware_enabled=chain_aware_enabled,
+            role_aware_redundancy_enabled=role_aware_redundancy_enabled,
             lambda_bridge=lambda_bridge,
             mu_redundancy=mu_redundancy,
+            chain_gain_weight=chain_gain_weight,
+            role_redundancy_relax=role_redundancy_relax,
             answerability_weight=answerability_weight,
         )
         selection_mode = "beam"
@@ -962,8 +1088,12 @@ def apply_unified_acr_rcedr_selection(
             use_bridge_gain=use_bridge_gain,
             use_redundancy_penalty=use_redundancy_penalty,
             use_cost_penalty=use_cost_penalty,
+            chain_aware_enabled=chain_aware_enabled,
+            role_aware_redundancy_enabled=role_aware_redundancy_enabled,
             lambda_bridge=lambda_bridge,
             mu_redundancy=mu_redundancy,
+            chain_gain_weight=chain_gain_weight,
+            role_redundancy_relax=role_redundancy_relax,
             answerability_weight=answerability_weight,
         )
         selection_mode = "greedy"
@@ -991,7 +1121,12 @@ def apply_unified_acr_rcedr_selection(
             "objective": "A_gain + lambda*B_gain - mu*Redundancy under hard token budget",
             "A_gain_total": float(score_diag.get("A_gain_total", 0.0)),
             "B_gain_total": float(score_diag.get("B_gain_total", 0.0)),
+            "chain_gain_total_avg": float(score_diag.get("chain_gain_total", 0.0)),
             "redundancy_total": float(score_diag.get("redundancy_total", 0.0)),
+            "redundancy_raw_total": float(score_diag.get("redundancy_raw_total", 0.0)),
+            "role_aware_redundancy_applied_avg": float(
+                score_diag.get("role_aware_redundancy_applied_total", 0.0)
+            ),
             "score_total": float(score_diag.get("score_total", 0.0)),
             "objective_eval_calls": int(score_diag.get("objective_eval_calls", 0)),
             "selection_ms": float((time.perf_counter() - started) * 1000.0),
@@ -1004,6 +1139,10 @@ def apply_unified_acr_rcedr_selection(
             "use_bridge_gain": bool(use_bridge_gain),
             "use_redundancy_penalty": bool(use_redundancy_penalty),
             "use_cost_penalty": bool(use_cost_penalty),
+            "chain_aware_enabled": bool(chain_aware_enabled),
+            "role_aware_redundancy_enabled": bool(role_aware_redundancy_enabled),
+            "chain_gain_weight": float(chain_gain_weight),
+            "role_redundancy_relax": float(role_redundancy_relax),
             "hard_token_budget_enabled": bool(hard_budget_enabled),
         }
     )

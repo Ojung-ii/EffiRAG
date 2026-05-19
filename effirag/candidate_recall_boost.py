@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from collections import Counter
 from typing import Any, Dict, Iterable, List, Mapping, MutableMapping, Sequence, Tuple
@@ -84,9 +85,124 @@ def _safe_shortest_path(g, src: str, dst: str, cutoff: int) -> List[str]:
         return []
 
 
+def _safe_shortest_path_with_reach(
+    g,
+    src: str,
+    dst: str,
+    reachable_within_cutoff: Mapping[str, int] | None,
+) -> List[str]:
+    if src not in g or dst not in g:
+        return []
+    if src == dst:
+        return [src]
+    if reachable_within_cutoff is not None and dst not in reachable_within_cutoff:
+        return []
+    try:
+        return [str(x) for x in nx.shortest_path(g, src, dst)]
+    except Exception:
+        return []
+
+
 def _score_attachment_opt_enabled() -> bool:
     raw = str(os.environ.get("PHASE6T_SCORE_ATTACHMENT_OPT", "1") or "").strip().lower()
     return raw in {"1", "true", "yes", "on"}
+
+
+def _score_attachment_stable_order_enabled() -> bool:
+    raw = str(os.environ.get("PHASE6T_SCORE_ATTACHMENT_STABLE_ORDER", "0") or "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _score_attachment_stable_eps() -> float:
+    raw = str(os.environ.get("PHASE6T_SCORE_ATTACHMENT_STABLE_EPS", "1e-12") or "").strip()
+    try:
+        val = float(raw)
+    except Exception:
+        return 1.0e-12
+    if val <= 0.0:
+        return 1.0e-12
+    return float(val)
+
+
+def _chunk_id_from_sentence_id(sentence_id: str) -> str:
+    sid = str(sentence_id or "").strip()
+    if not sid:
+        return ""
+    if sid.startswith("chunk::") and "::" in sid:
+        left, right = sid.rsplit("::", 1)
+        if right.isdigit():
+            return left
+    if sid.startswith("c::"):
+        head, sep, tail = sid.rpartition(":")
+        if sep and tail.isdigit():
+            return head
+    return ""
+
+
+def _normalize_candidate_key(candidate_id: str) -> str:
+    text = str(candidate_id or "").strip()
+    if not text:
+        return ""
+    return text.lower()
+
+
+def _node_source_title(g, node: str) -> str:
+    if node not in g:
+        return ""
+    data = g.nodes[node] or {}
+    for key in ("title", "doc_title", "source", "source_id", "doc_id", "document_id"):
+        value = str(data.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _node_sentence_id(g, node: str) -> str:
+    if node not in g:
+        return ""
+    ntype = _node_type(g, node)
+    if ntype == "sentence":
+        return str(node)
+    return ""
+
+
+def _node_chunk_id(g, node: str) -> str:
+    node_id = str(node or "")
+    if not node_id:
+        return ""
+    if node_id.startswith("chunk::") or node_id.startswith("c::"):
+        return node_id
+    if node not in g:
+        return _chunk_id_from_sentence_id(node_id)
+    ntype = _node_type(g, node)
+    if ntype in {"chunk", "passage", "document"}:
+        return node_id
+    return _chunk_id_from_sentence_id(node_id)
+
+
+def _node_text_hash(g, node: str) -> str:
+    sig = _node_text_signature(g, node)
+    if not sig:
+        return ""
+    try:
+        return hashlib.sha1(sig.encode("utf-8", errors="ignore")).hexdigest()
+    except Exception:
+        return ""
+
+
+def _stable_tiebreak_key(g, node: str) -> Tuple[str, str, str, str]:
+    node_id = str(node or "")
+    source_key = _node_source_key(g, node_id) or ""
+    chunk_id = _chunk_id_from_sentence_id(node_id)
+    text_sig = _node_text_signature(g, node_id)
+    text_hash = hashlib.sha1(text_sig.encode("utf-8", errors="ignore")).hexdigest() if text_sig else ""
+    return (source_key, chunk_id, node_id, text_hash)
+
+
+def _stable_score_key(g, node: str, score: float, eps: float) -> Tuple[int, str, str, str, str]:
+    bucket = int(round(float(score) / float(eps)))
+    source_key, chunk_id, node_id, text_hash = _stable_tiebreak_key(g, node)
+    return (-bucket, source_key, chunk_id, node_id, text_hash)
 
 
 def _collect_path_candidates(
@@ -106,22 +222,22 @@ def _collect_path_candidates(
     for anchor in list(anchors or []):
         if anchor not in g:
             continue
-        anchor_paths = {}
+        anchor_reach = None
         if use_optimized:
             cutoff = max(1, int(max_hops))
             try:
-                # Build shortest paths from this anchor once, then reuse per target.
-                # This preserves shortest-path semantics while removing repeated graph traversals.
-                anchor_paths = nx.single_source_shortest_path(g, anchor, cutoff=cutoff)
+                # Keep baseline shortest-path semantics (nx.shortest_path for each target)
+                # but avoid repeatedly recomputing source reachability for cutoff filtering.
+                anchor_reach = nx.single_source_shortest_path_length(g, anchor, cutoff=cutoff)
             except Exception:
-                anchor_paths = {}
+                anchor_reach = {}
         for target in list(ranked_targets or []):
             if len(out) >= cap:
                 return out
             if target == anchor or target not in g:
                 continue
             if use_optimized:
-                path = [str(x) for x in list(anchor_paths.get(target, []) or [])]
+                path = _safe_shortest_path_with_reach(g, anchor, target, anchor_reach)
             else:
                 path = _safe_shortest_path(g, anchor, target, cutoff=max_hops)
             if len(path) < 3:
@@ -284,6 +400,114 @@ def apply_candidate_recall_boost(
         "source_diversity_enabled": bool(getattr(cfg, "source_diversity_enabled", False)),
         "candidate_dedup_enabled": bool(getattr(cfg, "candidate_dedup_enabled", True)),
     }
+    stable_order_enabled = _score_attachment_stable_order_enabled()
+    stable_eps = _score_attachment_stable_eps()
+
+    def _build_candidate_score_rows(
+        *,
+        candidate_nodes: Sequence[str],
+        proposal_map: Mapping[str, float],
+        semantic_map: Mapping[str, float],
+        bridge_map: Mapping[str, float],
+        corridor_map: Mapping[str, float],
+        selected_boost_nodes: set[str],
+        pre_score_nodes: set[str],
+    ) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for node in list(candidate_nodes or []):
+            node_id = str(node or "").strip()
+            if not node_id:
+                continue
+            semantic_val = semantic_map.get(node_id, None)
+            graph_val = proposal_map.get(node_id, None)
+            bridge_val = bridge_map.get(node_id, None)
+            corridor_val = corridor_map.get(node_id, None)
+
+            semantic_missing = semantic_val is None
+            graph_missing = graph_val is None
+            bridge_missing = bridge_val is None
+            corridor_missing = corridor_val is None
+
+            final_val = graph_val if graph_val is not None else semantic_val
+            if final_val is None:
+                final_val = 0.0
+
+            if node_id in bridge_map:
+                source_stage = "bridge"
+            elif node_id in corridor_map:
+                source_stage = "corridor"
+            elif node_id in proposal_map:
+                source_stage = "graph"
+            elif node_id in semantic_map:
+                source_stage = "semantic"
+            else:
+                source_stage = "fallback"
+
+            row = {
+                "candidate_id": node_id,
+                "candidate_key_raw": node_id,
+                "candidate_key_normalized": _normalize_candidate_key(node_id),
+                "candidate_type": (_node_type(g, node_id) or "unknown"),
+                "source_title": _node_source_title(g, node_id),
+                "chunk_id": _node_chunk_id(g, node_id),
+                "sentence_id": _node_sentence_id(g, node_id),
+                "text_hash": _node_text_hash(g, node_id),
+                "source_stage": str(source_stage),
+                "included_before_score_attachment": bool(node_id in pre_score_nodes),
+                "included_after_score_attachment": True,
+                "final_score": float(final_val),
+                "semantic_score": (None if semantic_missing else float(semantic_val)),
+                "graph_score": (None if graph_missing else float(graph_val)),
+                "bridge_score": (None if bridge_missing else float(bridge_val)),
+                "corridor_score": (None if corridor_missing else float(corridor_val)),
+                "redundancy_score": None,
+                "answerability_score": None,
+                "score_source": {
+                    "semantic": ("semantic_scores" if not semantic_missing else "none"),
+                    "graph": ("proposal_scores" if not graph_missing else "none"),
+                    "bridge": ("path_scores" if not bridge_missing else "none"),
+                    "corridor": ("anchor_scores" if not corridor_missing else "none"),
+                    "redundancy": "none",
+                },
+                "missing_flags": {
+                    "semantic_missing": bool(semantic_missing),
+                    "graph_missing": bool(graph_missing),
+                    "bridge_missing": bool(bridge_missing),
+                    "corridor_missing": bool(corridor_missing),
+                    "redundancy_missing": True,
+                },
+                "selected_boost": bool(node_id in selected_boost_nodes),
+                "score_merge_priority": [
+                    "proposal_scores",
+                    "semantic_scores",
+                    "path_scores",
+                    "anchor_scores",
+                    "default_zero",
+                ],
+            }
+            rows.append(row)
+
+        if stable_order_enabled:
+            rows.sort(
+                key=lambda r: _stable_score_key(
+                    g,
+                    str(r.get("candidate_id", "")),
+                    float(r.get("final_score", 0.0)),
+                    stable_eps,
+                )
+            )
+        else:
+            rows.sort(
+                key=lambda r: (
+                    float(r.get("final_score", 0.0)),
+                    str(r.get("candidate_id", "")),
+                ),
+                reverse=True,
+            )
+        for idx, row in enumerate(rows):
+            row["rank_before_render"] = int(idx + 1)
+        return rows
+
     enabled = any(
         [
             flags["path_candidate_expansion_enabled"],
@@ -374,6 +598,15 @@ def apply_candidate_recall_boost(
                 "num_full_map_scans": 0,
             },
         )
+        base_rows = _build_candidate_score_rows(
+            candidate_nodes=list(existing_nodes_short),
+            proposal_map={str(k): float(v) for k, v in dict(proposal_scores or {}).items()},
+            semantic_map={str(k): float(v) for k, v in dict(semantic_scores or {}).items()},
+            bridge_map={},
+            corridor_map={},
+            selected_boost_nodes=set(),
+            pre_score_nodes=set(existing_nodes_short),
+        )
         return (
             dict(proposal_by_anchor),
             {str(x) for x in list(proposal_nodes or []) if str(x)},
@@ -383,6 +616,10 @@ def apply_candidate_recall_boost(
                 "enabled": False,
                 "applied": False,
                 "reason": "disabled",
+                "score_attachment_opt_enabled": bool(_score_attachment_opt_enabled()),
+                "score_attachment_stable_order_enabled": bool(stable_order_enabled),
+                "score_attachment_stable_eps": float(stable_eps),
+                "candidate_score_table": list(base_rows),
                 **flags,
             },
         )
@@ -427,12 +664,21 @@ def apply_candidate_recall_boost(
         },
     )
     anchors_in_graph = [str(a) for a in _ordered_unique(anchors) if str(a) in g]
+    if stable_order_enabled:
+        anchors_in_graph = sorted(anchors_in_graph, key=lambda n: _stable_tiebreak_key(g, n))
     existing_nodes = [str(n) for n in _ordered_unique(proposal_nodes) if str(n) in g]
-    ranked_existing = sorted(
-        existing_nodes,
-        key=lambda n: float(graph_score_index.get(n, semantic_score_index.get(n, 0.0))),
-        reverse=True,
-    )
+    if stable_order_enabled:
+        existing_nodes = sorted(existing_nodes, key=lambda n: _stable_tiebreak_key(g, n))
+        ranked_existing = sorted(
+            existing_nodes,
+            key=lambda n: _stable_score_key(g, n, float(graph_score_index.get(n, semantic_score_index.get(n, 0.0))), stable_eps),
+        )
+    else:
+        ranked_existing = sorted(
+            existing_nodes,
+            key=lambda n: float(graph_score_index.get(n, semantic_score_index.get(n, 0.0))),
+            reverse=True,
+        )
     _score_trace(
         "bridge_score_prepare_start",
         extra={
@@ -534,7 +780,17 @@ def apply_candidate_recall_boost(
             combined_scores[node] = float(graph_score_index.get(node, semantic_score_index.get(node, 0.0)))
     _score_trace("normalization_prepare_done", extra={})
 
-    ranked_combined = sorted(combined_scores.items(), key=lambda x: x[1], reverse=True)
+    if stable_order_enabled:
+        ranked_combined = sorted(
+            combined_scores.items(),
+            key=lambda x: _stable_score_key(g, str(x[0]), float(x[1]), stable_eps),
+        )
+    else:
+        ranked_combined = sorted(
+            combined_scores.items(),
+            key=lambda x: (float(x[1]), str(x[0])),
+            reverse=True,
+        )
     _score_trace("redundancy_feature_prepare_start", extra={})
     selected_boost, skip_diag = _select_diverse(
         g,
@@ -559,6 +815,8 @@ def apply_candidate_recall_boost(
 
     updated_by_anchor: Dict[str, List[str]] = {}
     target_anchor_keys = anchors_in_graph if anchors_in_graph else [str(a) for a in proposal_by_anchor.keys()]
+    if stable_order_enabled:
+        target_anchor_keys = sorted(list(target_anchor_keys or []), key=lambda n: _stable_tiebreak_key(g, n))
     if not target_anchor_keys:
         target_anchor_keys = ["__global__"]
         proposal_by_anchor["__global__"] = []
@@ -596,7 +854,12 @@ def apply_candidate_recall_boost(
     _score_trace("candidate_graph_attach_start", extra={})
     for anchor in target_anchor_keys:
         ranking = ranking_by_anchor.get(str(anchor), [])
-        for node_id in selected_boost_set:
+        if stable_order_enabled:
+            boost_iter = sorted(list(selected_boost_set), key=lambda n: _stable_tiebreak_key(g, n))
+        else:
+            # Keep deterministic iteration order shared across baseline/optimized paths.
+            boost_iter = list(selected_boost)
+        for node_id in boost_iter:
             gval = graph_score_index.get(node_id, None)
             sval = semantic_score_index.get(node_id, None)
             num_graph_lookups += 1
@@ -627,7 +890,15 @@ def apply_candidate_recall_boost(
     updated_by_anchor = {}
     for anchor in target_anchor_keys:
         ranking = list(ranking_by_anchor.get(str(anchor), []))
-        ranking.sort(key=lambda x: (x[1], x[2]), reverse=True)
+        if stable_order_enabled:
+            ranking.sort(
+                key=lambda x: (
+                    _stable_score_key(g, str(x[0]), float(x[1]), stable_eps),
+                    -int(x[2]),
+                ),
+            )
+        else:
+            ranking.sort(key=lambda x: (float(x[1]), int(x[2]), str(x[0])), reverse=True)
         ordered_nodes = _ordered_unique([node for node, _, _ in ranking if node in g and _is_candidate_node(g, node)])
         if anchor in g and _is_candidate_node(g, anchor):
             merged = [str(anchor)] + [node for node in ordered_nodes if node != str(anchor)]
@@ -670,6 +941,9 @@ def apply_candidate_recall_boost(
         "enabled": True,
         "applied": bool(len(selected_boost_set) > 0),
         "flags": dict(flags),
+        "score_attachment_opt_enabled": bool(_score_attachment_opt_enabled()),
+        "score_attachment_stable_order_enabled": bool(stable_order_enabled),
+        "score_attachment_stable_eps": float(stable_eps),
         "max_expanded_candidates": int(max_expanded),
         "max_path_candidates": int(max_path),
         "max_bridge_candidates": int(max_bridge),
@@ -683,6 +957,15 @@ def apply_candidate_recall_boost(
         "diversity_skipped": int(skip_diag.get("diversity_skipped", 0)),
         "selected_boost_nodes": [str(x) for x in selected_boost[: min(len(selected_boost), 64)]],
     }
+    diag["candidate_score_table"] = _build_candidate_score_rows(
+        candidate_nodes=sorted(list(updated_nodes)),
+        proposal_map=updated_proposal_scores,
+        semantic_map=updated_semantic_scores,
+        bridge_map=bridge_score_index,
+        corridor_map=corridor_score_index,
+        selected_boost_nodes=selected_boost_set,
+        pre_score_nodes={str(x) for x in list(raw_candidate_nodes or []) if str(x)},
+    )
     _score_trace(
         "score_attachment_done",
         extra={

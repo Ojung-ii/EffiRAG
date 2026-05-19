@@ -1,0 +1,22 @@
+{
+  "hotpotqa": {
+    "profile": "unified_acr_rcedr_v12",
+    "n": 1000,
+    "EM": 0.3410,
+    "F1": 0.4245,
+    "avg_context_tokens": 537.512,
+    "supporting_fact_recall": 0.4820,
+    "supporting_fact_precision": 0.1375,
+    "retrieval_ms": 6203.44
+  },
+  "2wikimultihopqa": {
+    "profile": "unified_acr_rcedr_v12",
+    "n": 1000,
+    "EM": 0.2810,
+    "F1": 0.3206,
+    "avg_context_tokens": 521.320,
+    "supporting_fact_recall": 0.4027,
+    "supporting_fact_precision": 0.1230,
+    "retrieval_ms": 3582.88
+  }
+}
