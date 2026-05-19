@@ -37,6 +37,49 @@ class UnifiedEvidenceAtom:
     corridor_ids: Tuple[str, ...]
     bridge_gain: float
     atom_base_score: float
+    semantic_query_score: float = 0.0
+    semantic_fused_score: float = 0.0
+    semantic_answerability: float = 0.0
+    semantic_score_source: str = "none"
+
+
+def _atom_answerability_score(atom: UnifiedEvidenceAtom) -> float:
+    return float(
+        (2.0 * float(atom.query_overlap))
+        + (1.2 * float(atom.entity_overlap))
+        + (0.9 * float(atom.relation_overlap))
+        + (0.8 * float(atom.answer_type_compat))
+    )
+
+
+def _build_atom_diag_row(
+    atom: UnifiedEvidenceAtom,
+    *,
+    selected_rank: int | None = None,
+    abr_delta_score: float | None = None,
+) -> Dict[str, Any]:
+    corridor_ids = [str(x) for x in tuple(atom.corridor_ids or ()) if str(x)]
+    return {
+        "atom_id": str(f"atom::{atom.sentence_id}"),
+        "source_sentence_ids": [str(atom.sentence_id)],
+        "sentence_id": str(atom.sentence_id),
+        "source_id": str(atom.source_id),
+        "text": str(atom.text),
+        "origin_corridor_ids": list(corridor_ids),
+        "best_corridor_id": str(corridor_ids[0]) if corridor_ids else "",
+        "atom_token_count": int(atom.token_count),
+        "atom_score_before_abr": float(atom.atom_base_score),
+        "answerability_score": float(_atom_answerability_score(atom)),
+        "bridge_score": float(max(atom.bridge_gain, atom.structure_bridge, atom.bridge_overlap)),
+        "semantic_query_score": float(atom.semantic_query_score),
+        "semantic_fused_score": float(atom.semantic_fused_score),
+        "semantic_answerability": float(atom.semantic_answerability),
+        "semantic_score_source": str(atom.semantic_score_source or "none"),
+        # No explicit precomputed per-atom redundancy feature exists before selection.
+        "redundancy_features": None,
+        "selected_rank": (None if selected_rank is None else int(selected_rank)),
+        "abr_delta_score": (None if abr_delta_score is None else float(abr_delta_score)),
+    }
 
 
 def _safe_int(value: Any, default: int) -> int:
@@ -197,6 +240,7 @@ def _atomize_selected_evidence(
     bridge_tokens: set[str],
     expected_answer_type: str,
     sentence_feature_table: Mapping[str, Mapping[str, Any]] | None,
+    atomization_enabled: bool,
     max_span_sentences: int,
     length_penalty_weight: float,
     answerability_weight: float,
@@ -214,13 +258,17 @@ def _atomize_selected_evidence(
         if not sid_norm or not text_norm:
             continue
 
-        sentences = _split_sentences(text_norm)
-        span_candidates: List[str] = []
-        for start in range(len(sentences)):
-            for end in range(start, min(len(sentences), start + span_cap)):
-                span_text = _normalize_space(" ".join(sentences[start : end + 1]))
-                if span_text:
-                    span_candidates.append(span_text)
+        if bool(atomization_enabled):
+            sentences = _split_sentences(text_norm)
+            span_candidates: List[str] = []
+            for start in range(len(sentences)):
+                for end in range(start, min(len(sentences), start + span_cap)):
+                    span_text = _normalize_space(" ".join(sentences[start : end + 1]))
+                    if span_text:
+                        span_candidates.append(span_text)
+        else:
+            # No-atomization mode: keep the original candidate unit as one selection atom.
+            span_candidates = [text_norm]
         if not span_candidates:
             span_candidates = [text_norm]
 
@@ -232,6 +280,10 @@ def _atomize_selected_evidence(
         )
         locality = float(max(0.0, min(1.0, _safe_float(row.get("locality_score", 0.0), 0.0))))
         corridor_ids = tuple(_ordered_unique(list(row.get("corridor_ids", []) or [])))
+        semantic_query_score = float(_safe_float(row.get("semantic_query_score", 0.0), 0.0))
+        semantic_fused_score = float(_safe_float(row.get("semantic_fused_score", semantic_query_score), semantic_query_score))
+        semantic_source = str(row.get("semantic_score_source", "none") or "none")
+        semantic_answerability = float(max(semantic_query_score, semantic_fused_score))
 
         best_span = span_candidates[0]
         best_score = float("-inf")
@@ -296,6 +348,10 @@ def _atomize_selected_evidence(
                 corridor_ids=tuple(corridor_ids),
                 bridge_gain=float(row_bridge),
                 atom_base_score=float(best_score),
+                semantic_query_score=float(semantic_query_score),
+                semantic_fused_score=float(semantic_fused_score),
+                semantic_answerability=float(semantic_answerability),
+                semantic_score_source=str(semantic_source),
             )
         )
     return atoms
@@ -505,6 +561,9 @@ def _marginal_delta(
     role_redundancy_relax: float,
     role_redundancy_max_overlap: float,
     answerability_weight: float,
+    semantic_sufficiency_enabled: bool = False,
+    semantic_answerability_weight: float = 0.20,
+    semantic_use_as_prior_only: bool = True,
     timing_diag: Dict[str, float] | None = None,
 ) -> Tuple[float, Dict[str, Any]]:
     if use_answerability_gain:
@@ -660,10 +719,21 @@ def _marginal_delta(
         max_tokens=max_tokens,
     ) if use_cost_penalty else 0.0
 
+    semantic_answerability = float(max(0.0, atom.semantic_answerability))
+    semantic_prior = 0.0
+    semantic_prior_applied = 0
+    if semantic_sufficiency_enabled:
+        semantic_prior = float(max(0.0, semantic_answerability_weight) * semantic_answerability)
+        semantic_prior_applied = int(semantic_prior > 0.0)
+        # For now semantic sufficiency is a conservative prior; no additional pairwise term.
+        if not semantic_use_as_prior_only:
+            semantic_prior = float(semantic_prior)
+
     delta = float(
         (answerability_weight * a_gain)
         + (lambda_bridge * b_gain)
         + (chain_gain_weight * chain_gain)
+        + float(semantic_prior)
         + float(role_coverage_gain_weighted)
         - (mu_redundancy * redundancy_effective)
         - cost
@@ -684,6 +754,9 @@ def _marginal_delta(
         "role_balance_activated": int(role_balance_activated),
         "role_balance_rejected": int(1 if role_balanced_enabled and not role_balance_activated else 0),
         "role_balance_rejected_reason": str(role_balance_rejected_reason),
+        "semantic_answerability": float(semantic_answerability),
+        "semantic_prior": float(semantic_prior),
+        "semantic_prior_applied": int(semantic_prior_applied),
         "redundancy_before": float(redundancy_before),
         "redundancy": float(redundancy_effective),
         "redundancy_raw": float(redundancy_before),
@@ -740,6 +813,9 @@ def _select_greedy(
     role_redundancy_relax: float,
     role_redundancy_max_overlap: float,
     answerability_weight: float,
+    semantic_sufficiency_enabled: bool,
+    semantic_answerability_weight: float,
+    semantic_use_as_prior_only: bool,
 ) -> Tuple[List[int], Dict[str, Any]]:
     selected_indices: List[int] = []
     selected_tokens = 0
@@ -750,6 +826,8 @@ def _select_greedy(
     chain_gain_total = 0.0
     role_coverage_gain_total = 0.0
     role_coverage_gain_weighted_total = 0.0
+    semantic_prior_total = 0.0
+    semantic_prior_applied_count = 0
     redundancy_total = 0.0
     redundancy_raw_total = 0.0
     role_redundancy_relax_applied_total = 0.0
@@ -813,6 +891,9 @@ def _select_greedy(
                 role_redundancy_relax=role_redundancy_relax,
                 role_redundancy_max_overlap=role_redundancy_max_overlap,
                 answerability_weight=answerability_weight,
+                semantic_sufficiency_enabled=semantic_sufficiency_enabled,
+                semantic_answerability_weight=semantic_answerability_weight,
+                semantic_use_as_prior_only=semantic_use_as_prior_only,
                 timing_diag=timing_diag,
             )
             objective_eval_calls += 1
@@ -848,6 +929,8 @@ def _select_greedy(
         chain_gain_total += float(best_components.get("chain_gain", 0.0))
         role_coverage_gain_total += float(best_components.get("role_coverage_gain", 0.0))
         role_coverage_gain_weighted_total += float(best_components.get("role_coverage_gain_weighted", 0.0))
+        semantic_prior_total += float(best_components.get("semantic_prior", 0.0))
+        semantic_prior_applied_count += int(best_components.get("semantic_prior_applied", 0))
         redundancy_before_total += float(best_components.get("redundancy_before", best_components.get("redundancy_raw", 0.0)))
         redundancy_after_total += float(best_components.get("redundancy_after", best_components.get("redundancy", 0.0)))
         redundancy_total += float(best_components["redundancy"])
@@ -864,6 +947,9 @@ def _select_greedy(
                 "chain_gain": float(best_components.get("chain_gain", 0.0)),
                 "role_coverage_gain": float(best_components.get("role_coverage_gain", 0.0)),
                 "role_coverage_gain_weighted": float(best_components.get("role_coverage_gain_weighted", 0.0)),
+                "semantic_answerability": float(best_components.get("semantic_answerability", 0.0)),
+                "semantic_prior": float(best_components.get("semantic_prior", 0.0)),
+                "semantic_prior_applied": int(best_components.get("semantic_prior_applied", 0)),
                 "atom_role": str(best_components.get("atom_role", "generic")),
                 "redundancy": float(best_components["redundancy"]),
                 "redundancy_raw": float(best_components.get("redundancy_raw", best_components.get("redundancy", 0.0))),
@@ -914,6 +1000,9 @@ def _select_greedy(
                 role_redundancy_relax=role_redundancy_relax,
                 role_redundancy_max_overlap=role_redundancy_max_overlap,
                 answerability_weight=answerability_weight,
+                semantic_sufficiency_enabled=semantic_sufficiency_enabled,
+                semantic_answerability_weight=semantic_answerability_weight,
+                semantic_use_as_prior_only=semantic_use_as_prior_only,
                 timing_diag=timing_diag,
             )
             objective_eval_calls += 1
@@ -940,6 +1029,8 @@ def _select_greedy(
             chain_gain_total = float(best_components.get("chain_gain", 0.0))
             role_coverage_gain_total = float(best_components.get("role_coverage_gain", 0.0))
             role_coverage_gain_weighted_total = float(best_components.get("role_coverage_gain_weighted", 0.0))
+            semantic_prior_total = float(best_components.get("semantic_prior", 0.0))
+            semantic_prior_applied_count = int(best_components.get("semantic_prior_applied", 0))
             redundancy_before_total = float(
                 best_components.get("redundancy_before", best_components.get("redundancy_raw", 0.0))
             )
@@ -960,6 +1051,9 @@ def _select_greedy(
                     "chain_gain": float(best_components.get("chain_gain", 0.0)),
                     "role_coverage_gain": float(best_components.get("role_coverage_gain", 0.0)),
                     "role_coverage_gain_weighted": float(best_components.get("role_coverage_gain_weighted", 0.0)),
+                    "semantic_answerability": float(best_components.get("semantic_answerability", 0.0)),
+                    "semantic_prior": float(best_components.get("semantic_prior", 0.0)),
+                    "semantic_prior_applied": int(best_components.get("semantic_prior_applied", 0)),
                     "atom_role": str(best_components.get("atom_role", "generic")),
                     "redundancy": float(best_components["redundancy"]),
                     "redundancy_raw": float(best_components.get("redundancy_raw", best_components.get("redundancy", 0.0))),
@@ -986,6 +1080,8 @@ def _select_greedy(
         "chain_gain_total": float(chain_gain_total),
         "role_coverage_gain_total": float(role_coverage_gain_total),
         "role_coverage_gain_weighted_total": float(role_coverage_gain_weighted_total),
+        "semantic_prior_total": float(semantic_prior_total),
+        "semantic_prior_applied_count": int(semantic_prior_applied_count),
         "redundancy_total": float(redundancy_total),
         "redundancy_raw_total": float(redundancy_raw_total),
         "redundancy_before_total": float(redundancy_before_total),
@@ -1034,6 +1130,9 @@ def _select_beam(
     role_redundancy_relax: float,
     role_redundancy_max_overlap: float,
     answerability_weight: float,
+    semantic_sufficiency_enabled: bool,
+    semantic_answerability_weight: float,
+    semantic_use_as_prior_only: bool,
 ) -> Tuple[List[int], Dict[str, Any]]:
     beam_k = max(1, int(beam_size))
     objective_eval_calls = 0
@@ -1058,6 +1157,8 @@ def _select_beam(
             "chain_gain_total": 0.0,
             "role_coverage_gain_total": 0.0,
             "role_coverage_gain_weighted_total": 0.0,
+            "semantic_prior_total": 0.0,
+            "semantic_prior_applied_count": 0,
             "redundancy_total": 0.0,
             "redundancy_raw_total": 0.0,
             "redundancy_before_total": 0.0,
@@ -1117,6 +1218,9 @@ def _select_beam(
                     role_redundancy_relax=role_redundancy_relax,
                     role_redundancy_max_overlap=role_redundancy_max_overlap,
                     answerability_weight=answerability_weight,
+                    semantic_sufficiency_enabled=semantic_sufficiency_enabled,
+                    semantic_answerability_weight=semantic_answerability_weight,
+                    semantic_use_as_prior_only=semantic_use_as_prior_only,
                     timing_diag=timing_diag,
                 )
                 objective_eval_calls += 1
@@ -1149,6 +1253,10 @@ def _select_beam(
                     + float(components.get("role_coverage_gain", 0.0)),
                     "role_coverage_gain_weighted_total": float(state.get("role_coverage_gain_weighted_total", 0.0))
                     + float(components.get("role_coverage_gain_weighted", 0.0)),
+                    "semantic_prior_total": float(state.get("semantic_prior_total", 0.0))
+                    + float(components.get("semantic_prior", 0.0)),
+                    "semantic_prior_applied_count": int(state.get("semantic_prior_applied_count", 0))
+                    + int(components.get("semantic_prior_applied", 0)),
                     "redundancy_total": float(state["redundancy_total"]) + float(components["redundancy"]),
                     "redundancy_raw_total": float(state.get("redundancy_raw_total", 0.0))
                     + float(components.get("redundancy_raw", components.get("redundancy", 0.0))),
@@ -1171,6 +1279,9 @@ def _select_beam(
                             "chain_gain": float(components.get("chain_gain", 0.0)),
                             "role_coverage_gain": float(components.get("role_coverage_gain", 0.0)),
                             "role_coverage_gain_weighted": float(components.get("role_coverage_gain_weighted", 0.0)),
+                            "semantic_answerability": float(components.get("semantic_answerability", 0.0)),
+                            "semantic_prior": float(components.get("semantic_prior", 0.0)),
+                            "semantic_prior_applied": int(components.get("semantic_prior_applied", 0)),
                             "atom_role": str(components.get("atom_role", "generic")),
                             "redundancy": float(components["redundancy"]),
                             "redundancy_raw": float(components.get("redundancy_raw", components.get("redundancy", 0.0))),
@@ -1214,6 +1325,8 @@ def _select_beam(
             "chain_gain_total": float(best_state.get("chain_gain_total", 0.0)),
             "role_coverage_gain_total": float(best_state.get("role_coverage_gain_total", 0.0)),
             "role_coverage_gain_weighted_total": float(best_state.get("role_coverage_gain_weighted_total", 0.0)),
+            "semantic_prior_total": float(best_state.get("semantic_prior_total", 0.0)),
+            "semantic_prior_applied_count": int(best_state.get("semantic_prior_applied_count", 0)),
             "redundancy_total": float(best_state["redundancy_total"]),
             "redundancy_raw_total": float(best_state.get("redundancy_raw_total", 0.0)),
             "redundancy_before_total": float(best_state.get("redundancy_before_total", 0.0)),
@@ -1261,6 +1374,9 @@ def _select_beam(
         role_redundancy_relax=role_redundancy_relax,
         role_redundancy_max_overlap=role_redundancy_max_overlap,
         answerability_weight=answerability_weight,
+        semantic_sufficiency_enabled=semantic_sufficiency_enabled,
+        semantic_answerability_weight=semantic_answerability_weight,
+        semantic_use_as_prior_only=semantic_use_as_prior_only,
     )
     greedy_state["objective_eval_calls"] = int(
         _safe_int(greedy_state.get("objective_eval_calls", 0), 0) + objective_eval_calls
@@ -1289,9 +1405,17 @@ def apply_unified_acr_rcedr_selection(
     cfg: Any,
 ) -> Tuple[List[str], List[str], Dict[str, Any]]:
     enabled = bool(getattr(cfg, "unified_acr_rcedr_enabled", False))
+    atomization_enabled = _safe_bool(
+        getattr(cfg, "unified_acr_rcedr_atomization_enabled", True),
+        True,
+    )
+    max_span_sentences = max(1, _safe_int(getattr(cfg, "unified_acr_rcedr_atom_span_max_sentences", 2), 2))
     diag: Dict[str, Any] = {
         "enabled": bool(enabled),
         "applied": False,
+        "atomization_enabled": bool(atomization_enabled),
+        "atom_span_max_sentences": int(max_span_sentences),
+        "selection_unit": ("atom" if bool(atomization_enabled) else "sentence_or_chunk_candidate"),
     }
     base_ids = _ordered_unique(list(selected_sentence_ids or []))
     text_map = {str(sid): str(text or "") for sid, text in zip(selected_sentence_ids or [], selected_sentences or [])}
@@ -1310,7 +1434,6 @@ def apply_unified_acr_rcedr_selection(
         question_entities=question_entities,
     )
 
-    max_span_sentences = max(1, _safe_int(getattr(cfg, "unified_acr_rcedr_atom_span_max_sentences", 2), 2))
     length_penalty_weight = max(
         0.0,
         _safe_float(getattr(cfg, "unified_acr_rcedr_length_penalty_weight", 0.04), 0.04),
@@ -1337,6 +1460,14 @@ def apply_unified_acr_rcedr_selection(
         getattr(cfg, "unified_acr_rcedr_redundancy_recalibrated_enabled", False),
         False,
     )
+    semantic_sufficiency_enabled = _safe_bool(
+        getattr(cfg, "unified_acr_rcedr_semantic_sufficiency_enabled", False),
+        False,
+    )
+    semantic_use_as_prior_only = _safe_bool(
+        getattr(cfg, "unified_acr_rcedr_semantic_use_as_prior_only", True),
+        True,
+    )
     lambda_bridge = _safe_float(getattr(cfg, "unified_acr_rcedr_lambda_bridge", 0.28), 0.28)
     mu_redundancy = _safe_float(getattr(cfg, "unified_acr_rcedr_mu_redundancy", 0.22), 0.22)
     chain_gain_weight = _safe_float(getattr(cfg, "unified_acr_rcedr_chain_gain_weight", 0.15), 0.15)
@@ -1359,6 +1490,10 @@ def apply_unified_acr_rcedr_selection(
         0.45,
     )
     answerability_weight = _safe_float(getattr(cfg, "unified_acr_rcedr_answerability_weight", 1.0), 1.0)
+    semantic_answerability_weight = _safe_float(
+        getattr(cfg, "unified_acr_rcedr_semantic_answerability_weight", 0.20),
+        0.20,
+    )
 
     atoms = _atomize_selected_evidence(
         sentence_ids=base_ids,
@@ -1369,6 +1504,7 @@ def apply_unified_acr_rcedr_selection(
         bridge_tokens=bridge_tokens,
         expected_answer_type=expected_answer_type,
         sentence_feature_table=sentence_feature_table,
+        atomization_enabled=atomization_enabled,
         max_span_sentences=max_span_sentences,
         length_penalty_weight=length_penalty_weight,
         answerability_weight=answerability_weight,
@@ -1408,6 +1544,9 @@ def apply_unified_acr_rcedr_selection(
             role_redundancy_relax=role_redundancy_relax,
             role_redundancy_max_overlap=role_redundancy_max_overlap,
             answerability_weight=answerability_weight,
+            semantic_sufficiency_enabled=semantic_sufficiency_enabled,
+            semantic_answerability_weight=semantic_answerability_weight,
+            semantic_use_as_prior_only=semantic_use_as_prior_only,
         )
         selection_mode = "beam"
     else:
@@ -1437,6 +1576,9 @@ def apply_unified_acr_rcedr_selection(
             role_redundancy_relax=role_redundancy_relax,
             role_redundancy_max_overlap=role_redundancy_max_overlap,
             answerability_weight=answerability_weight,
+            semantic_sufficiency_enabled=semantic_sufficiency_enabled,
+            semantic_answerability_weight=semantic_answerability_weight,
+            semantic_use_as_prior_only=semantic_use_as_prior_only,
         )
         selection_mode = "greedy"
 
@@ -1450,20 +1592,86 @@ def apply_unified_acr_rcedr_selection(
     out_texts = [_normalize_space(atom.text) for atom in ordered_atoms]
     selected_tokens = int(sum(int(atom.token_count) for atom in ordered_atoms))
     selected_atom_count = max(1, int(len(ordered_atoms)))
+    selected_id_set = set(out_ids)
+    unselected_atoms = [atom for atom in atoms if atom.sentence_id not in selected_id_set]
+    avg_atom_sentences = _safe_float(
+        (
+            sum(len(_split_sentences(str(atom.text or ""))) for atom in atoms)
+            / float(max(1, len(atoms)))
+        ),
+        0.0,
+    )
+    avg_atom_tokens = _safe_float(
+        sum(float(atom.token_count) for atom in atoms) / float(max(1, len(atoms))),
+        0.0,
+    )
+    semantic_coverage_hits = sum(1 for atom in atoms if str(atom.semantic_score_source or "none") != "none")
+    semantic_coverage_rate = float(semantic_coverage_hits) / float(max(1, len(atoms)))
+    semantic_selected_score_avg = _safe_float(
+        sum(float(atom.semantic_answerability) for atom in ordered_atoms) / float(max(1, len(ordered_atoms))),
+        0.0,
+    )
+    semantic_unselected_score_avg = _safe_float(
+        (sum(float(atom.semantic_answerability) for atom in unselected_atoms) / float(max(1, len(unselected_atoms))))
+        if unselected_atoms
+        else 0.0,
+        0.0,
+    )
+    semantic_query_score_avg = _safe_float(
+        sum(float(atom.semantic_query_score) for atom in atoms) / float(max(1, len(atoms))),
+        0.0,
+    )
+    objective_str = "A_gain + lambda*B_gain - mu*Redundancy under hard token budget"
+    if semantic_sufficiency_enabled:
+        objective_str = "A_gain + lambda*B_gain + semantic_prior - mu*Redundancy under hard token budget"
+
+    score_trace = list(score_diag.get("score_trace", []) or [])
+    delta_by_sentence_id: Dict[str, float] = {}
+    for item in score_trace:
+        if not isinstance(item, Mapping):
+            continue
+        sid = str(item.get("sentence_id", "") or "").strip()
+        if not sid or sid in delta_by_sentence_id:
+            continue
+        try:
+            delta_by_sentence_id[sid] = float(item.get("delta", 0.0) or 0.0)
+        except Exception:
+            delta_by_sentence_id[sid] = 0.0
+    atom_table = [_build_atom_diag_row(atom) for atom in atoms]
+    selected_atom_table: List[Dict[str, Any]] = []
+    for idx, atom in enumerate(ordered_atoms, start=1):
+        selected_atom_table.append(
+            _build_atom_diag_row(
+                atom,
+                selected_rank=int(idx),
+                abr_delta_score=float(delta_by_sentence_id.get(str(atom.sentence_id), 0.0)),
+            )
+        )
 
     diag.update(
         {
             "applied": True,
             "mode": str(selection_mode),
+            "atomization_enabled": bool(atomization_enabled),
+            "atom_span_max_sentences": int(max_span_sentences),
+            "selection_unit": ("atom" if bool(atomization_enabled) else "sentence_or_chunk_candidate"),
             "num_input_candidates": int(len(base_ids)),
             "num_atoms": int(len(atoms)),
             "num_selected_atoms": int(len(ordered_atoms)),
+            "avg_atom_sentences": float(avg_atom_sentences),
+            "avg_atom_tokens": float(avg_atom_tokens),
             "selected_sentence_ids": list(out_ids),
             "selected_tokens": int(selected_tokens),
             "max_tokens": int(max_tokens),
-            "objective": "A_gain + lambda*B_gain - mu*Redundancy under hard token budget",
+            "objective": str(objective_str),
             "A_gain_total": float(score_diag.get("A_gain_total", 0.0)),
             "B_gain_total": float(score_diag.get("B_gain_total", 0.0)),
+            "semantic_prior_total": float(score_diag.get("semantic_prior_total", 0.0)),
+            "semantic_prior_applied_count": int(score_diag.get("semantic_prior_applied_count", 0)),
+            "semantic_score_coverage_rate": float(semantic_coverage_rate),
+            "semantic_query_score_avg": float(semantic_query_score_avg),
+            "semantic_selected_score_avg": float(semantic_selected_score_avg),
+            "semantic_unselected_score_avg": float(semantic_unselected_score_avg),
             "chain_gain_total_avg": float(score_diag.get("chain_gain_total", 0.0)),
             "role_coverage_gain_total_avg": float(score_diag.get("role_coverage_gain_total", 0.0)),
             "role_coverage_gain_weighted_total_avg": float(
@@ -1494,7 +1702,9 @@ def apply_unified_acr_rcedr_selection(
             "answerability_feature_ms": float(score_diag.get("answerability_feature_ms", 0.0)),
             "bridge_feature_ms": float(score_diag.get("bridge_feature_ms", 0.0)),
             "redundancy_scoring_ms": float(score_diag.get("redundancy_scoring_ms", 0.0)),
-            "score_trace": list(score_diag.get("score_trace", [])),
+            "score_trace": list(score_trace),
+            "phase6w_atom_table": list(atom_table),
+            "phase6w_selected_atom_table": list(selected_atom_table),
             "ordering_type": str(ordering_type),
             "use_answerability_gain": bool(use_answerability_gain),
             "use_bridge_gain": bool(use_bridge_gain),
@@ -1511,6 +1721,9 @@ def apply_unified_acr_rcedr_selection(
             "role_balance_missing_only": bool(role_balance_missing_only),
             "role_redundancy_relax": float(role_redundancy_relax),
             "role_redundancy_max_overlap": float(role_redundancy_max_overlap),
+            "semantic_sufficiency_enabled": bool(semantic_sufficiency_enabled),
+            "semantic_answerability_weight": float(semantic_answerability_weight),
+            "semantic_use_as_prior_only": bool(semantic_use_as_prior_only),
             "hard_token_budget_enabled": bool(hard_budget_enabled),
         }
     )

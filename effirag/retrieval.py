@@ -3540,7 +3540,21 @@ def _filter_corridor_payloads(corridors, selected_unit_ids):
     return filtered
 
 
-def _build_sentence_feature_table(sample, selected_sentence_ids, sentence_texts, sentence_score_map, corridors):
+def _build_sentence_feature_table(
+    sample,
+    selected_sentence_ids,
+    sentence_texts,
+    sentence_score_map,
+    corridors,
+    semantic_similarity_by_sentence_id=None,
+    semantic_fused_score_by_sentence_id=None,
+):
+    def _to_float(value, default=0.0):
+        try:
+            return float(value)
+        except Exception:
+            return float(default)
+
     question_tokens = set(content_tokens(sample.question))
     sentence_text_map = {sid: text for sid, text in zip(selected_sentence_ids, sentence_texts)}
 
@@ -3548,7 +3562,23 @@ def _build_sentence_feature_table(sample, selected_sentence_ids, sentence_texts,
     corridor_rank = {str(c.get("corridor_id", f"c{idx:02d}")): idx for idx, c in enumerate(ranked_corridors, start=1)}
 
     feature_table = {}
+    semantic_similarity_by_sentence_id = dict(semantic_similarity_by_sentence_id or {})
+    semantic_fused_score_by_sentence_id = dict(semantic_fused_score_by_sentence_id or {})
+
+    semantic_present = 0
     for global_idx, sid in enumerate(selected_sentence_ids):
+        semantic_query_score = _to_float(semantic_similarity_by_sentence_id.get(sid, 0.0), 0.0)
+        semantic_fused_score = _to_float(
+            semantic_fused_score_by_sentence_id.get(sid, semantic_query_score),
+            semantic_query_score,
+        )
+        semantic_source = "none"
+        if sid in semantic_fused_score_by_sentence_id:
+            semantic_source = "fused_score_by_sentence_id"
+        elif sid in semantic_similarity_by_sentence_id:
+            semantic_source = "similarity_by_sentence_id"
+        if semantic_source != "none":
+            semantic_present += 1
         feature_table[sid] = {
             "corridor_ids": [],
             "best_corridor_rank": None,
@@ -3559,6 +3589,10 @@ def _build_sentence_feature_table(sample, selected_sentence_ids, sentence_texts,
             "query_overlap_score": 0.0,
             "locality_score": 1.0 / float(global_idx + 1),
             "base_retrieval_score": float(sentence_score_map.get(sid, 0.0)),
+            "semantic_query_score": float(semantic_query_score),
+            "semantic_fused_score": float(semantic_fused_score),
+            "semantic_score_source": str(semantic_source),
+            "semantic_score_available": bool(semantic_source != "none"),
         }
 
     for idx, corridor in enumerate(ranked_corridors, start=1):
@@ -3620,6 +3654,11 @@ def _build_sentence_feature_table(sample, selected_sentence_ids, sentence_texts,
             item["best_corridor_rank"] = corridor_rank.get(item["corridor_ids"][0])
         if item["best_corridor_rank"] is None:
             item["best_corridor_rank"] = 10**9
+
+    if feature_table:
+        coverage = float(semantic_present) / float(max(1, len(feature_table)))
+        for item in feature_table.values():
+            item["semantic_score_coverage_rate"] = float(coverage)
 
     return feature_table
 
@@ -5890,6 +5929,114 @@ def _apply_lightweight_run_rerank(ranked_runs, cfg):
     return head + tail, diag
 
 
+def _set_jaccard_ratio(a_values, b_values):
+    a = {str(x) for x in list(a_values or []) if str(x)}
+    b = {str(x) for x in list(b_values or []) if str(x)}
+    if not a and not b:
+        return 1.0
+    if not a or not b:
+        return 0.0
+    inter = float(len(a.intersection(b)))
+    union = float(len(a.union(b)))
+    if union <= 0.0:
+        return 0.0
+    return float(inter / union)
+
+
+def _run_component_value(run_obj, key, fallback_key=None):
+    comp = dict((run_obj or {}).get("run_score_components", {}) or {})
+    if key in comp:
+        return float(comp.get(key, 0.0) or 0.0)
+    if fallback_key:
+        cheap = dict(comp.get("cheap_pre_components", {}) or {})
+        if fallback_key in cheap:
+            return float(cheap.get(fallback_key, 0.0) or 0.0)
+    return 0.0
+
+
+def _select_phase1_diversity_reserve(ranked_runs_all, shortlisted_runs, cfg):
+    enabled = bool(getattr(cfg, "phase1_diversity_reserve_enabled", False))
+    reserve_count = max(0, int(getattr(cfg, "phase1_diversity_reserve_count", 1)))
+    mode = str(getattr(cfg, "phase1_diversity_reserve_mode", "nonredundant_best") or "nonredundant_best").strip().lower()
+    allow_phase2 = bool(getattr(cfg, "phase1_reserve_allow_phase2_refinement", True))
+    diag = {
+        "enabled": bool(enabled),
+        "mode": str(mode or "nonredundant_best"),
+        "reserve_count": int(reserve_count),
+        "allow_phase2_refinement": bool(allow_phase2),
+        "added": False,
+        "added_run_id": -1,
+        "reason": "",
+        "score": 0.0,
+        "seed_jaccard_with_top": 1.0,
+    }
+    if (not enabled) or reserve_count <= 0:
+        return None, diag
+    if mode != "nonredundant_best":
+        return None, diag
+    if not ranked_runs_all:
+        return None, diag
+
+    dominant = (list(shortlisted_runs or []) or list(ranked_runs_all))[0]
+    dominant_id = int((dominant or {}).get("run_id", -1))
+    dominant_seeds = set((dominant or {}).get("seeds", set()) or set())
+
+    shortlisted_ids = {int((item or {}).get("run_id", -1)) for item in list(shortlisted_runs or [])}
+    reserve_pool = [r for r in list(ranked_runs_all or []) if int((r or {}).get("run_id", -1)) not in shortlisted_ids]
+    if not reserve_pool:
+        return None, diag
+
+    best = None
+    best_score = float("-inf")
+    best_reason = ""
+    best_jacc = 1.0
+    for run in reserve_pool:
+        run_id = int((run or {}).get("run_id", -1))
+        if run_id == dominant_id:
+            continue
+        run_seeds = set((run or {}).get("seeds", set()) or set())
+        seed_jacc = _set_jaccard_ratio(run_seeds, dominant_seeds)
+        if dominant_seeds and run_seeds and seed_jacc >= 0.80:
+            continue
+
+        nonredundancy = max(0.0, min(1.0, 1.0 - float(seed_jacc)))
+        hybrid = max(0.0, float((run or {}).get("hybrid_run_score", 0.0) or 0.0))
+        semantic = max(0.0, _run_component_value(run, "semantic_coverage", fallback_key="max_semantic_seed"))
+        graph_conn = max(0.0, _run_component_value(run, "structural_connectivity", fallback_key="graph_seed_mass"))
+        bridge = max(0.0, _run_component_value(run, "bridge_path_completeness", fallback_key="bridge_proxy"))
+        grounding = max(0.0, _run_component_value(run, "entity_chunk_grounding_score"))
+        reserve_score = (
+            0.30 * hybrid
+            + 0.20 * semantic
+            + 0.20 * graph_conn
+            + 0.15 * bridge
+            + 0.10 * nonredundancy
+            + 0.05 * grounding
+        )
+        if reserve_score > best_score:
+            best = run
+            best_score = float(reserve_score)
+            best_jacc = float(seed_jacc)
+            best_reason = (
+                f"nonredundant_best"
+                f";seed_jacc={seed_jacc:.3f}"
+                f";semantic={semantic:.3f}"
+                f";graph={graph_conn:.3f}"
+                f";bridge={bridge:.3f}"
+                f";hybrid={hybrid:.3f}"
+            )
+
+    if best is None:
+        return None, diag
+
+    diag["added"] = True
+    diag["added_run_id"] = int((best or {}).get("run_id", -1))
+    diag["reason"] = str(best_reason)
+    diag["score"] = float(best_score)
+    diag["seed_jaccard_with_top"] = float(best_jacc)
+    return best, diag
+
+
 def _apply_lightweight_corridor_top1_correction(reranked_corridors, cfg):
     enabled = bool(getattr(cfg, "top1_correction_enabled", False))
     topk = max(1, int(getattr(cfg, "top1_correction_topk", 3)))
@@ -7960,13 +8107,43 @@ def run_graphrag_core(
             )
         ),
     )
-    ranked_runs = sorted(run_results, key=lambda r: float(r.get("hybrid_run_score", 0.0)), reverse=True)
-    ranked_runs = ranked_runs[: min(len(ranked_runs), full_score_topk)]
+    ranked_runs_all = sorted(run_results, key=lambda r: float(r.get("hybrid_run_score", 0.0)), reverse=True)
+    ranked_runs = list(ranked_runs_all[: min(len(ranked_runs_all), full_score_topk)])
     ranked_runs, run_light_rerank_diag = _apply_lightweight_run_rerank(
         ranked_runs=ranked_runs,
         cfg=cfg,
     )
     shortlisted_runs = ranked_runs[:shortlist_k] if ranked_runs else [chosen]
+    shortlisted_runs_before_reserve = list(shortlisted_runs or [])
+    phase1_reserve_run = None
+    phase1_reserve_diag = {
+        "enabled": bool(getattr(cfg, "phase1_diversity_reserve_enabled", False)),
+        "mode": str(getattr(cfg, "phase1_diversity_reserve_mode", "nonredundant_best") or "nonredundant_best"),
+        "reserve_count": int(max(0, int(getattr(cfg, "phase1_diversity_reserve_count", 1)))),
+        "allow_phase2_refinement": bool(getattr(cfg, "phase1_reserve_allow_phase2_refinement", True)),
+        "added": False,
+        "added_run_id": -1,
+        "reason": "",
+        "score": 0.0,
+        "seed_jaccard_with_top": 1.0,
+    }
+    if bool(getattr(cfg, "phase1_diversity_reserve_enabled", False)) and bool(
+        getattr(cfg, "phase1_reserve_allow_phase2_refinement", True)
+    ):
+        reserve_run, reserve_diag = _select_phase1_diversity_reserve(
+            ranked_runs_all=ranked_runs_all,
+            shortlisted_runs=shortlisted_runs_before_reserve,
+            cfg=cfg,
+        )
+        phase1_reserve_diag = dict(reserve_diag or {})
+        if reserve_run is not None:
+            reserve_copy = dict(reserve_run or {})
+            reserve_copy["is_phase1_reserve"] = True
+            reserve_copy["phase1_reserve_reason"] = str(phase1_reserve_diag.get("reason", "") or "")
+            reserve_copy["phase1_reserve_score"] = float(phase1_reserve_diag.get("score", 0.0) or 0.0)
+            reserve_copy["phase1_reserve_mode"] = str(phase1_reserve_diag.get("mode", "nonredundant_best") or "nonredundant_best")
+            shortlisted_runs = list(shortlisted_runs_before_reserve) + [reserve_copy]
+            phase1_reserve_run = reserve_copy
     chosen = shortlisted_runs[0]
     stage_ms["phase1_run_scoring_ms"] = float((time.perf_counter() - run_score_start) * 1000.0)
     stage_ms["run_scoring_time_ms"] = float(stage_ms["phase1_run_scoring_ms"])
@@ -8176,6 +8353,8 @@ def run_graphrag_core(
     )
     stage_ms["sentence_rerank_ms"] = float(sentence_rerank_ms)
     stage_ms["embedding_rerank_ms"] = float(sentence_rerank_ms)
+    semantic_similarity_by_sentence_id = dict((embedding_diag or {}).get("similarity_by_sentence_id", {}) or {})
+    semantic_fused_score_by_sentence_id = dict((embedding_diag or {}).get("fused_score_by_sentence_id", {}) or {})
     sentence_candidates_after_text_rerank_ids = list(selected_sentence_ids or [])
     sentence_candidates_after_text_rerank_texts = list(selected_sentences or [])
     evidence_atoms_before_abr_ids = list(selected_sentence_ids or [])
@@ -8190,6 +8369,8 @@ def run_graphrag_core(
         sentence_texts=selected_sentences,
         sentence_score_map=selected_sentence_score_map,
         corridors=filtered_corridors,
+        semantic_similarity_by_sentence_id=semantic_similarity_by_sentence_id,
+        semantic_fused_score_by_sentence_id=semantic_fused_score_by_sentence_id,
     )
     _prop_trace(
         "final_packaging_done",
@@ -8222,6 +8403,8 @@ def run_graphrag_core(
                 sentence_texts=selected_sentences,
                 sentence_score_map=selected_sentence_score_map,
                 corridors=filtered_corridors,
+                semantic_similarity_by_sentence_id=semantic_similarity_by_sentence_id,
+                semantic_fused_score_by_sentence_id=semantic_fused_score_by_sentence_id,
             )
         gl_rcedr_diag = {
             "enabled": bool(getattr(cfg, "gl_rcedr_enabled", False)),
@@ -8259,6 +8442,8 @@ def run_graphrag_core(
                 sentence_texts=selected_sentences,
                 sentence_score_map=selected_sentence_score_map,
                 corridors=filtered_corridors,
+                semantic_similarity_by_sentence_id=semantic_similarity_by_sentence_id,
+                semantic_fused_score_by_sentence_id=semantic_fused_score_by_sentence_id,
             )
         selected_sentence_ids, selected_sentences, evidence_density_rerank_diag = rerank_evidence_density(
             question_text=sample.question,
@@ -8274,6 +8459,8 @@ def run_graphrag_core(
                 sentence_texts=selected_sentences,
                 sentence_score_map=selected_sentence_score_map,
                 corridors=filtered_corridors,
+                semantic_similarity_by_sentence_id=semantic_similarity_by_sentence_id,
+                semantic_fused_score_by_sentence_id=semantic_fused_score_by_sentence_id,
             )
         top1_sentence_start = time.perf_counter()
         selected_sentence_ids, selected_sentences, top1_sentence_diag = _apply_lightweight_sentence_top1_correction(
@@ -8290,6 +8477,8 @@ def run_graphrag_core(
                 sentence_texts=selected_sentences,
                 sentence_score_map=selected_sentence_score_map,
                 corridors=filtered_corridors,
+                semantic_similarity_by_sentence_id=semantic_similarity_by_sentence_id,
+                semantic_fused_score_by_sentence_id=semantic_fused_score_by_sentence_id,
             )
         selected_sentence_ids, selected_sentences, answerability_selection_diag = apply_answerability_constrained_selection(
             question_text=sample.question,
@@ -8305,6 +8494,8 @@ def run_graphrag_core(
                 sentence_texts=selected_sentences,
                 sentence_score_map=selected_sentence_score_map,
                 corridors=filtered_corridors,
+                semantic_similarity_by_sentence_id=semantic_similarity_by_sentence_id,
+                semantic_fused_score_by_sentence_id=semantic_fused_score_by_sentence_id,
             )
     selected_text_map = {
         sid: text for sid, text in zip(selected_sentence_ids, selected_sentences) if sid and text
@@ -8513,6 +8704,110 @@ def run_graphrag_core(
                         ids.append(sid_s)
         return _ordered_unique(ids)
 
+    def _phase6w_parse_unit_id(unit_id):
+        sid = str(unit_id or "").strip()
+        if not sid:
+            return "", None
+        parts = sid.split("::")
+        if len(parts) >= 3 and parts[0] in {"chunk", "sentence"}:
+            title = str(parts[1] or "").strip()
+            try:
+                sent_idx = int(parts[2])
+            except Exception:
+                sent_idx = None
+            return title, sent_idx
+        if len(parts) >= 2:
+            title = str(parts[0] or "").strip()
+            try:
+                sent_idx = int(parts[1])
+            except Exception:
+                sent_idx = None
+            return title, sent_idx
+        return sid, None
+
+    def _phase6w_sentence_candidate_rows(unit_ids, text_map, feature_table):
+        rows = []
+        for sid in list(unit_ids or []):
+            sid_s = str(sid or "").strip()
+            if not sid_s:
+                continue
+            feat = dict((feature_table or {}).get(sid_s, {}) or {})
+            title, sent_idx = _phase6w_parse_unit_id(sid_s)
+            corridor_ids = [str(x) for x in list(feat.get("corridor_ids", []) or []) if str(x)]
+            rows.append(
+                {
+                    "sentence_id": sid_s,
+                    "title_or_source": str(title or ""),
+                    "sentence_idx": sent_idx,
+                    "text": str((text_map or {}).get(sid_s, "") or ""),
+                    "origin_corridor_ids": list(corridor_ids),
+                    "best_corridor_id": str(corridor_ids[0]) if corridor_ids else "",
+                    "best_corridor_rank": int(feat.get("best_corridor_rank", 10**9) or 10**9),
+                    "best_corridor_score": float(feat.get("best_corridor_score", 0.0) or 0.0),
+                    "is_main_candidate": bool(feat.get("is_main_candidate", False)),
+                    "is_support_candidate": bool(feat.get("is_support_candidate", False)),
+                    "is_connector_adjacent": bool(feat.get("is_connector_adjacent", False)),
+                    "query_overlap_score": float(feat.get("query_overlap_score", 0.0) or 0.0),
+                    "semantic_query_score": float(feat.get("semantic_query_score", 0.0) or 0.0),
+                    "base_retrieval_score": float(feat.get("base_retrieval_score", 0.0) or 0.0),
+                }
+            )
+        return rows
+
+    def _phase6w_corridor_rows(corridors_before, corridors_after):
+        after_by_id = {}
+        for idx, c in enumerate(list(corridors_after or []), start=1):
+            if not isinstance(c, dict):
+                continue
+            cid = str(c.get("corridor_id", f"c{idx:02d}") or f"c{idx:02d}")
+            after_by_id[cid] = c
+
+        rows = []
+        for idx, c in enumerate(list(corridors_before or []), start=1):
+            if not isinstance(c, dict):
+                continue
+            cid = str(c.get("corridor_id", f"c{idx:02d}") or f"c{idx:02d}")
+            anchors_local = list(c.get("anchors", []) or [])
+            anchor_id = str(anchors_local[0]) if len(anchors_local) >= 1 else ""
+            seed_id = str(anchors_local[1]) if len(anchors_local) >= 2 else ""
+            main_ids_before = [str(x) for x in list(c.get("main_path_unit_ids", c.get("main_path_sentence_ids", [])) or []) if str(x)]
+            support_ids_before = [str(x) for x in list(c.get("support_unit_ids", c.get("support_sentence_ids", [])) or []) if str(x)]
+            conn_ids_before = [str(x) for x in list(c.get("connector_adjacent_unit_ids", c.get("connector_adjacent_sentence_ids", [])) or []) if str(x)]
+            before_sent_ids = _ordered_unique(main_ids_before + support_ids_before + conn_ids_before)
+            after_payload = dict(after_by_id.get(cid, {}) or {})
+            main_ids_after = [str(x) for x in list(after_payload.get("main_path_unit_ids", after_payload.get("main_path_sentence_ids", [])) or []) if str(x)]
+            support_ids_after = [str(x) for x in list(after_payload.get("support_unit_ids", after_payload.get("support_sentence_ids", [])) or []) if str(x)]
+            conn_ids_after = [str(x) for x in list(after_payload.get("connector_adjacent_unit_ids", after_payload.get("connector_adjacent_sentence_ids", [])) or []) if str(x)]
+            after_sent_ids = _ordered_unique(main_ids_after + support_ids_after + conn_ids_after)
+            path_node_ids = [str(x) for x in list(c.get("path_node_ids", []) or []) if str(x)]
+            corr_node_ids = _ordered_unique(path_node_ids + before_sent_ids)
+            corr_entity_node_ids = [n for n in corr_node_ids if str(n).startswith("e::")]
+            corr_chunk_node_ids = [n for n in corr_node_ids if str(n).startswith("chunk::")]
+            anchor_title, _ = _phase6w_parse_unit_id(anchor_id)
+            seed_title, _ = _phase6w_parse_unit_id(seed_id)
+            rows.append(
+                {
+                    "corridor_id": cid,
+                    "anchor_id": anchor_id,
+                    "seed_id": seed_id,
+                    "anchor_title_or_entity": str(anchor_title or anchor_id),
+                    "seed_title_or_entity": str(seed_title or seed_id),
+                    "corridor_node_ids": list(corr_node_ids),
+                    "corridor_entity_node_ids": list(corr_entity_node_ids),
+                    "corridor_chunk_node_ids": list(corr_chunk_node_ids),
+                    "corridor_sentence_ids": list(before_sent_ids),
+                    "main_path_unit_ids": list(main_ids_before),
+                    "support_unit_ids": list(support_ids_before),
+                    "connector_adjacent_unit_ids": list(conn_ids_before),
+                    "corridor_node_count_before_trim": int(len(before_sent_ids)),
+                    "corridor_node_count_after_trim": int(len(after_sent_ids)),
+                    "corridor_score": float(c.get("corridor_score", 0.0) or 0.0),
+                    "corridor_rank": int(idx),
+                    "corridor_source_stage": str(c.get("refine_mode", "phase2_local_refinement") or "phase2_local_refinement"),
+                }
+            )
+        return rows
+
     proposal_unit_ids_for_audit, proposal_text_map_for_audit = _candidate_text_unit_ids(g, proposal_nodes)
     proposal_unit_ids_for_audit = sorted({str(x) for x in list(proposal_unit_ids_for_audit or []) if str(x)})
     proposal_unit_texts_for_audit = [
@@ -8528,6 +8823,23 @@ def run_graphrag_core(
     phase1_unit_texts_for_audit = [
         str((phase1_text_map_for_audit or {}).get(sid, "") or "") for sid in phase1_unit_ids_for_audit
     ]
+
+    reserve_phase1_unit_ids_for_audit = []
+    reserve_phase1_unit_texts_for_audit = []
+    reserve_phase1_unit_id_set = set()
+    if phase1_reserve_run is not None:
+        reserve_nodes_for_audit = _phase1_candidate_nodes([phase1_reserve_run])
+        reserve_ids_for_audit, reserve_text_map_for_audit = _candidate_text_unit_ids(
+            reduced_graph if reduced_graph is not None else g,
+            reserve_nodes_for_audit,
+        )
+        reserve_phase1_unit_ids_for_audit = sorted(
+            {str(x) for x in list(reserve_ids_for_audit or []) if str(x)}
+        )
+        reserve_phase1_unit_texts_for_audit = [
+            str((reserve_text_map_for_audit or {}).get(sid, "") or "") for sid in reserve_phase1_unit_ids_for_audit
+        ]
+        reserve_phase1_unit_id_set = set(reserve_phase1_unit_ids_for_audit)
 
     pair_seed_unit_ids_for_audit = []
     pair_seed_unit_text_map = {}
@@ -8549,6 +8861,21 @@ def run_graphrag_core(
     corridor_after_unit_ids_for_audit = _phase6u_corridor_unit_ids(filtered_corridors)
     corridor_before_unit_texts_for_audit = [str((selected_text_map or {}).get(sid, "") or "") for sid in corridor_before_unit_ids_for_audit]
     corridor_after_unit_texts_for_audit = [str((selected_text_map or {}).get(sid, "") or "") for sid in corridor_after_unit_ids_for_audit]
+    phase6w_pamae_audit_enabled = _env_truthy("PHASE6W_PAMAE_AUDIT", False)
+    phase6w_corridor_rows_before = _phase6w_corridor_rows(corridor_payloads, filtered_corridors) if phase6w_pamae_audit_enabled else []
+    phase6w_corridor_rows_after = _phase6w_corridor_rows(filtered_corridors, filtered_corridors) if phase6w_pamae_audit_enabled else []
+    phase6w_sentence_feature_table = dict(sentence_feature_table or {}) if phase6w_pamae_audit_enabled else {}
+    phase6w_sentence_candidates = (
+        _phase6w_sentence_candidate_rows(
+            sentence_candidates_after_text_rerank_ids,
+            {sid: txt for sid, txt in zip(sentence_candidates_after_text_rerank_ids, sentence_candidates_after_text_rerank_texts)},
+            sentence_feature_table,
+        )
+        if phase6w_pamae_audit_enabled
+        else []
+    )
+    phase6w_atom_table = list((unified_acr_rcedr_diag or {}).get("phase6w_atom_table", []) or []) if phase6w_pamae_audit_enabled else []
+    phase6w_selected_atom_table = list((unified_acr_rcedr_diag or {}).get("phase6w_selected_atom_table", []) or []) if phase6w_pamae_audit_enabled else []
 
     _prop_trace(
         "proposal_end",
@@ -8557,6 +8884,20 @@ def run_graphrag_core(
             "render_candidate_count": int(len(selected_sentence_ids or [])),
         },
     )
+
+    reserve_sentence_candidate_hit = False
+    reserve_abr_selected_hit = False
+    reserve_rendered_hit = False
+    if reserve_phase1_unit_id_set:
+        reserve_sentence_candidate_hit = bool(
+            reserve_phase1_unit_id_set.intersection(set(str(x) for x in list(sentence_candidates_after_text_rerank_ids or [])))
+        )
+        abr_or_selected_ids = set(str(x) for x in list(abr_selected_evidence_ids or selected_sentence_ids or []))
+        reserve_abr_selected_hit = bool(reserve_phase1_unit_id_set.intersection(abr_or_selected_ids))
+        # Retrieval stage cannot observe final rendered context; keep this as retrieval-selected proxy.
+        reserve_rendered_hit = bool(
+            reserve_phase1_unit_id_set.intersection(set(str(x) for x in list(selected_sentence_ids or [])))
+        )
 
     if _env_truthy("PHASE6T_SCORE_ATTACHMENT_PARITY_DUMP", False):
         _append_phase6t_score_parity_rows(
@@ -8640,6 +8981,14 @@ def run_graphrag_core(
             "phase6u_evidence_atoms_before_abr_texts": list(evidence_atoms_before_abr_texts),
             "phase6u_abr_selected_evidence_ids": list(abr_selected_evidence_ids),
             "phase6u_abr_selected_evidence_texts": list(abr_selected_evidence_texts),
+            # PHASE6W-P PAMAE corridor consistency audit snapshots (read-only diagnostics).
+            "phase6w_pamae_audit_enabled": bool(phase6w_pamae_audit_enabled),
+            "phase6w_corridor_candidates_before_trim": list(phase6w_corridor_rows_before),
+            "phase6w_corridor_candidates_after_trim": list(phase6w_corridor_rows_after),
+            "phase6w_sentence_feature_table": dict(phase6w_sentence_feature_table),
+            "phase6w_sentence_candidates_before_abr": list(phase6w_sentence_candidates),
+            "phase6w_evidence_atoms_before_abr": list(phase6w_atom_table),
+            "phase6w_abr_selected_evidence": list(phase6w_selected_atom_table),
             "stagewise_loss_funnel": stagewise_loss_funnel,
             "anchor_hit_rate": float((stagewise_loss_funnel or {}).get("anchor_hit_rate", 0.0)),
             "proposal_hit_rate": float((stagewise_loss_funnel or {}).get("proposal_hit_rate", 0.0)),
@@ -8705,6 +9054,23 @@ def run_graphrag_core(
             "phase1_full_run_score_topk": int(full_score_topk),
             "phase1_full_eval_run_count": int(len(full_eval_runs)),
             "selected_run_count": int(len(shortlisted_runs)),
+            "phase1_diversity_reserve_enabled": bool(getattr(cfg, "phase1_diversity_reserve_enabled", False)),
+            "phase1_diversity_reserve_mode": str(getattr(cfg, "phase1_diversity_reserve_mode", "nonredundant_best") or "nonredundant_best"),
+            "phase1_diversity_reserve_count": int(max(0, int(getattr(cfg, "phase1_diversity_reserve_count", 1)))),
+            "phase1_reserve_allow_phase2_refinement": bool(getattr(cfg, "phase1_reserve_allow_phase2_refinement", True)),
+            "num_phase1_shortlist_before": int(len(shortlisted_runs_before_reserve or [])),
+            "num_phase1_shortlist_after": int(len(shortlisted_runs or [])),
+            "phase1_reserve_added": bool((phase1_reserve_diag or {}).get("added", False)),
+            "phase1_reserve_seed_or_run_id": int((phase1_reserve_diag or {}).get("added_run_id", -1)),
+            "phase1_reserve_reason": str((phase1_reserve_diag or {}).get("reason", "") or ""),
+            "phase1_reserve_score": float((phase1_reserve_diag or {}).get("score", 0.0) or 0.0),
+            "phase1_reserve_seed_jaccard_with_top": float((phase1_reserve_diag or {}).get("seed_jaccard_with_top", 1.0) or 1.0),
+            "phase1_reserve_reaches_phase2": bool((phase1_reserve_diag or {}).get("added", False)),
+            "phase1_reserve_has_sentence_candidates": bool(reserve_sentence_candidate_hit),
+            "phase1_reserve_selected_by_ABR": bool(reserve_abr_selected_hit),
+            "phase1_reserve_rendered": bool(reserve_rendered_hit),
+            "phase1_reserve_unit_ids": list(reserve_phase1_unit_ids_for_audit),
+            "phase1_reserve_unit_texts": list(reserve_phase1_unit_texts_for_audit),
             "phase2_refined_pair_count": int(len(retained_pairs)),
             "best_run_id": int(chosen.get("run_id", 0)),
             "best_run_score": float(chosen.get("hybrid_run_score", 0.0) or 0.0),
@@ -8808,10 +9174,14 @@ def run_graphrag_core(
                     "num_candidates": int(len(r.get("candidates", []) or [])),
                     "num_seeds": int(len(r.get("seeds", []) or [])),
                     "run_score_components": r.get("run_score_components", {}) or {},
+                    "is_phase1_reserve": bool(r.get("is_phase1_reserve", False)),
+                    "phase1_reserve_reason": str(r.get("phase1_reserve_reason", "") or ""),
+                    "phase1_reserve_score": float(r.get("phase1_reserve_score", 0.0) or 0.0),
                 }
                 for r in run_results
             ],
             "shortlisted_run_ids": [int(r.get("run_id", 0)) for r in shortlisted_runs],
+            "shortlisted_run_is_phase1_reserve": [bool(r.get("is_phase1_reserve", False)) for r in shortlisted_runs],
             "embedding_rerank": embedding_diag,
             **({"score_component_trace": score_component_trace} if score_component_trace is not None else {}),
             "stagewise_loss_funnel_enabled": bool(getattr(cfg, "stagewise_loss_funnel_enabled", True)),

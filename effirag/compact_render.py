@@ -45,6 +45,19 @@ def _unit_title(unit_id: str) -> str:
     return sid
 
 
+def _unit_sentence_index(unit_id: str) -> int | None:
+    sid = str(unit_id or "")
+    if sid.startswith("chunk::"):
+        return None
+    if "::" not in sid:
+        return None
+    tail = sid.rsplit("::", 1)[-1]
+    try:
+        return int(tail)
+    except Exception:
+        return None
+
+
 def _prompt_instruction_lines(prompt_variant: str | None) -> list[str]:
     variant = str(prompt_variant or "default").strip().lower()
     if variant in {"light_separator_copy_span_instruction", "copy_span_instruction"}:
@@ -268,6 +281,23 @@ def _needs_context_expansion(text: str, *, bridge_score: float, path_score: floa
     return bool(short_clause or pronoun_heavy or lacks_entity or bridge_like)
 
 
+def _weak_evidence_signal(feature: Mapping[str, Any], *, score: float) -> bool:
+    feat = dict(feature or {})
+    if bool(feat.get("is_support_candidate", False)) or bool(feat.get("is_connector_adjacent", False)):
+        return True
+    if float(feat.get("query_overlap_score", 0.0) or 0.0) > 0.0:
+        return True
+    if float(feat.get("semantic_query_score", 0.0) or 0.0) > 0.0:
+        return True
+    if float(feat.get("semantic_fused_score", 0.0) or 0.0) > 0.0:
+        return True
+    if float(feat.get("best_corridor_score", 0.0) or 0.0) >= 0.35:
+        return True
+    if float(score) > 0.0:
+        return True
+    return False
+
+
 def render_selected_centered_contextual_context(
     *,
     selected_ids: list[str],
@@ -294,6 +324,7 @@ def render_selected_centered_contextual_context(
     max_context_sentences_per_selected: int = 1,
     max_bridge_context_sentences: int = 2,
     max_path_context_sentences: int = 2,
+    max_total_extra_sentences: int | None = None,
 ) -> dict[str, Any]:
     """Render selected-core evidence plus minimal contextual expansions."""
 
@@ -338,21 +369,48 @@ def render_selected_centered_contextual_context(
         )
 
     contextual_entries = []
+    # Per-selected-item minimal package diagnostics.
+    context_eval_rows: list[dict[str, Any]] = []
+    context_eval_by_sid: dict[str, dict[str, Any]] = {}
+    context_skip_reason_counts: dict[str, int] = {}
+
+    def _bump_skip(reason: str) -> None:
+        key = str(reason or "unknown")
+        context_skip_reason_counts[key] = int(context_skip_reason_counts.get(key, 0) + 1)
     if bool(render_contextual_expansion_enabled):
         for core in core_entries:
             sid = str(core["sid"])
             text = str(core["text"])
+            core_title = _unit_title(sid)
+            sid_sent_idx = _unit_sentence_index(sid)
+            eval_row = {
+                "selected_sentence_id": sid,
+                "source_title": core_title,
+                "sentence_idx": sid_sent_idx,
+                "package_id": core_title,
+                "candidate_neighbor_ids": [],
+                "eligible_neighbor_ids": [],
+                "skip_reason": "",
+                "budget_before": int(selector_prompt),
+                "budget_after": int(selector_prompt),
+                "applied": False,
+            }
+            context_eval_rows.append(eval_row)
+            context_eval_by_sid[sid] = eval_row
             if not _needs_context_expansion(
                 text,
                 bridge_score=float(core.get("bridge_score", 0.0)),
                 path_score=float(core.get("path_score", 0.0)),
             ):
+                eval_row["skip_reason"] = "no_context_expansion_needed"
+                _bump_skip("no_context_expansion_needed")
                 continue
             if not bool(render_conditional_neighbor_sentences):
+                eval_row["skip_reason"] = "conditional_neighbor_disabled"
+                _bump_skip("conditional_neighbor_disabled")
                 continue
 
             same_title_pool = []
-            core_title = _unit_title(sid)
             sid_rank = int(rank_map.get(sid, 10**9))
             for cand in ordered_candidates:
                 if cand in core_set:
@@ -362,19 +420,46 @@ def render_selected_centered_contextual_context(
                 ctext = _normalize_text(str(candidate_text_map.get(cand, "") or ""))
                 if not ctext:
                     continue
+                eval_row["candidate_neighbor_ids"].append(str(cand))
+                cand_feat = dict(feature_map.get(cand, {}) or {})
+                cand_score = float(score_map.get(cand, 0.0) or 0.0)
+                cand_sent_idx = _unit_sentence_index(cand)
+                # Contract-safe local package check: require sentence adjacency when
+                # sentence indices are available; otherwise keep rank-neighbor only.
+                adjacent_ok = True
+                if sid_sent_idx is not None and cand_sent_idx is not None:
+                    adjacent_ok = abs(int(cand_sent_idx) - int(sid_sent_idx)) <= 1
+                if not adjacent_ok:
+                    continue
+                if not _weak_evidence_signal(cand_feat, score=cand_score):
+                    continue
                 same_title_pool.append(
                     (
                         abs(int(rank_map.get(cand, 10**9)) - sid_rank),
                         int(rank_map.get(cand, 10**9)),
                         cand,
                         ctext,
+                        "adjacent_same_source_with_signal",
                     )
                 )
+                eval_row["eligible_neighbor_ids"].append(str(cand))
             same_title_pool.sort(key=lambda x: (x[0], x[1]))
             max_ctx = max(0, int(max_context_sentences_per_selected))
             max_neighbor = max(0, int(max_neighbors_per_selected))
             cap = min(max_ctx, max_neighbor) if max_ctx > 0 else max_neighbor
-            for _, _, cand, ctext in same_title_pool[:cap]:
+            if cap <= 0:
+                eval_row["skip_reason"] = "extra_cap_disabled"
+                _bump_skip("extra_cap_disabled")
+                continue
+            if not eval_row["candidate_neighbor_ids"]:
+                eval_row["skip_reason"] = "no_same_source_neighbors"
+                _bump_skip("no_same_source_neighbors")
+                continue
+            if not eval_row["eligible_neighbor_ids"]:
+                eval_row["skip_reason"] = "no_eligible_neighbor_after_filters"
+                _bump_skip("no_eligible_neighbor_after_filters")
+                continue
+            for _, _, cand, ctext, reason in same_title_pool[:cap]:
                 contextual_entries.append(
                     {
                         "sid": cand,
@@ -384,8 +469,11 @@ def render_selected_centered_contextual_context(
                         "bridge_score": 0.0,
                         "path_score": 0.0,
                         "rank": int(rank_map.get(cand, 10**9)),
+                        "extra_reason": str(reason),
+                        "source_selected_sid": sid,
                     }
                 )
+                eval_row["applied"] = True
 
     bridge_entries = []
     if bool(render_bridge_context_enabled):
@@ -475,6 +563,13 @@ def render_selected_centered_contextual_context(
     dedup_removed = 0
     budget_pruned = 0
     early_stop_reason = ""
+    extra_cap = None if max_total_extra_sentences is None else max(0, int(max_total_extra_sentences))
+    extra_skip_reason_counts: dict[str, int] = {}
+    extra_applied_count_by_core: dict[str, int] = {}
+
+    def _bump_extra_skip(reason: str) -> None:
+        key = str(reason or "unknown")
+        extra_skip_reason_counts[key] = int(extra_skip_reason_counts.get(key, 0) + 1)
 
     def _title_label(sid: str) -> str:
         title = _unit_title(sid)
@@ -504,6 +599,11 @@ def render_selected_centered_contextual_context(
         if len(rendered_entries) >= max_n:
             early_stop_reason = early_stop_reason or "max_render_topn"
             break
+        if entry.get("tag") != "core" and extra_cap is not None:
+            current_extra = int(sum(1 for row in rendered_entries if row.get("tag") != "core"))
+            if current_extra >= extra_cap:
+                _bump_extra_skip("max_total_extra_cap")
+                continue
         sid = str(entry.get("sid", "") or "")
         text = _normalize_text(str(entry.get("text", "") or ""))
         if not sid or not text:
@@ -515,6 +615,8 @@ def render_selected_centered_contextual_context(
         dkey = _dedup_key(text)
         if should_dedup and dkey in seen_text:
             dedup_removed += 1
+            if entry.get("tag") != "core":
+                _bump_extra_skip("duplicate_text")
             continue
 
         tentative_entries = rendered_entries + [dict(entry, sid=sid, text=text)]
@@ -530,10 +632,15 @@ def render_selected_centered_contextual_context(
             if entry.get("tag") == "core":
                 # Core evidence is prioritized; keep it and prune later context.
                 break
+            _bump_extra_skip("prompt_budget_pruned")
             continue
 
         rendered_entries.append(dict(entry, sid=sid, text=text))
         seen_text.add(dkey)
+        if entry.get("tag") != "core":
+            src = str(entry.get("source_selected_sid", "") or "")
+            if src:
+                extra_applied_count_by_core[src] = int(extra_applied_count_by_core.get(src, 0) + 1)
 
     # If we exceeded max_n with mostly non-core entries, enforce core priority.
     rendered_entries.sort(
@@ -560,6 +667,30 @@ def render_selected_centered_contextual_context(
     contextual_count = int(sum(1 for row in rendered_entries if row.get("tag") == "ctx"))
     bridge_count = int(sum(1 for row in rendered_entries if row.get("tag") == "bridge"))
     path_count = int(sum(1 for row in rendered_entries if row.get("tag") == "path"))
+    extra_rows = [row for row in rendered_entries if row.get("tag") != "core"]
+    extra_sentence_ids = [str(row.get("sid", "") or "") for row in extra_rows]
+    extra_sentence_sources = [_unit_title(str(row.get("sid", "") or "")) for row in extra_rows]
+    extra_sentence_reason = [str(row.get("extra_reason", str(row.get("tag", "ctx")))) for row in extra_rows]
+    extra_sentence_token_count = int(
+        sum(len(content_tokens(str(row.get("text", "") or ""))) for row in extra_rows)
+    )
+    for sid, row in context_eval_by_sid.items():
+        applied_count = int(extra_applied_count_by_core.get(sid, 0))
+        if applied_count > 0:
+            row["applied"] = True
+            row["skip_reason"] = ""
+        elif not row.get("skip_reason"):
+            row["skip_reason"] = "not_selected_after_budget_or_dedup"
+            _bump_skip("not_selected_after_budget_or_dedup")
+        row["budget_after"] = int(actual_estimate)
+
+    dominant_skip_reason = ""
+    if context_skip_reason_counts:
+        dominant_skip_reason = max(
+            sorted(context_skip_reason_counts.items(), key=lambda kv: kv[0]),
+            key=lambda kv: kv[1],
+        )[0]
+
     diagnostics = {
         "selector_selected_ids": list(core_ids),
         "rendered_sentence_ids": list(rendered_ids),
@@ -599,6 +730,15 @@ def render_selected_centered_contextual_context(
         "max_prompt_tokens": int(max_prompt),
         "min_render_topn": int(min_n),
         "max_render_topn": int(max_n),
+        "max_total_extra_sentences": (None if extra_cap is None else int(extra_cap)),
+        "extra_sentence_ids": list(extra_sentence_ids),
+        "extra_sentence_sources": list(extra_sentence_sources),
+        "extra_sentence_reason": list(extra_sentence_reason),
+        "extra_sentence_token_count": int(extra_sentence_token_count),
+        "minimal_package_per_selected_trace": list(context_eval_rows),
+        "minimal_package_skip_reason_counts": dict(context_skip_reason_counts),
+        "minimal_package_extra_skip_reason_counts": dict(extra_skip_reason_counts),
+        "minimal_package_dominant_skip_reason": str(dominant_skip_reason),
     }
     return {
         "text": rendered_text,

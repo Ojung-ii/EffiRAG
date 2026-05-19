@@ -268,6 +268,10 @@ class RetrievalConfig:
     phase1_run_shortlist_topk: int = 2
     phase1_run_preshortlist_topm: int = 2
     phase1_full_run_score_topk: int = 2
+    phase1_diversity_reserve_enabled: bool = False
+    phase1_diversity_reserve_count: int = 1
+    phase1_diversity_reserve_mode: str = "nonredundant_best"
+    phase1_reserve_allow_phase2_refinement: bool = True
     run_score_sparse_topk: int = 64
     run_score_surrogate_topk: int = 128
     proposal_lazy_union_topk: int = 64
@@ -453,6 +457,15 @@ class RagConfig(RetrievalConfig):
     max_context_sentences_per_selected: int = 1
     max_bridge_context_sentences: int = 2
     max_path_context_sentences: int = 2
+    # PHASE6V unified, dataset-agnostic legacy-contract distillation (render-only).
+    # This does not alter retrieval candidate generation or selector objective.
+    legacy_contract_top_slice_reorder_enabled: bool = False
+    legacy_contract_top_slice_reorder_topk: int = 3
+    legacy_contract_minimal_package_enabled: bool = False
+    legacy_contract_max_extra_sentences_per_selected: int = 1
+    legacy_contract_max_total_extra_sentences: int = 2
+    legacy_contract_preserve_token_budget: bool = True
+    legacy_contract_log_diagnostics: bool = True
     # Sentence-level evidence contract (render-only; retrieval/selection invariance).
     sentence_contract_render_enabled: bool = False
     sentence_contract_max_item_tokens: int | None = None
@@ -524,6 +537,9 @@ class RagConfig(RetrievalConfig):
     unified_acr_rcedr_role_aware_redundancy_enabled: bool = False
     unified_acr_rcedr_role_balanced_enabled: bool = False
     unified_acr_rcedr_redundancy_recalibrated_enabled: bool = False
+    unified_acr_rcedr_semantic_sufficiency_enabled: bool = False
+    unified_acr_rcedr_semantic_use_as_prior_only: bool = True
+    unified_acr_rcedr_semantic_answerability_weight: float = 0.20
     unified_acr_rcedr_chain_gain_weight: float = 0.15
     unified_acr_rcedr_role_balance_weight: float = 0.08
     unified_acr_rcedr_role_balance_max_gain_per_step: float = 0.08
@@ -534,6 +550,7 @@ class RagConfig(RetrievalConfig):
     unified_acr_rcedr_chain_gain_require_missing_role: bool = False
     unified_acr_rcedr_chain_gain_require_signal: bool = False
     unified_acr_rcedr_chain_gain_max_per_step: float = 1.0
+    unified_acr_rcedr_atomization_enabled: bool = True
     unified_acr_rcedr_atom_span_max_sentences: int = 2
     unified_acr_rcedr_length_penalty_weight: float = 0.04
     unified_acr_rcedr_log_diagnostics: bool = True
@@ -654,6 +671,10 @@ def apply_cli_overrides(config_dict, args_namespace):
         "render_deduplicate_selected_text",
         "render_deduplicate_context_text",
         "render_enforce_actual_prompt_budget",
+        "legacy_contract_top_slice_reorder_enabled",
+        "legacy_contract_minimal_package_enabled",
+        "legacy_contract_preserve_token_budget",
+        "legacy_contract_log_diagnostics",
         "sentence_contract_render_enabled",
         "sentence_contract_metadata_pruning",
         "sentence_contract_chunk_expansion_allowed",
@@ -698,9 +719,12 @@ def apply_cli_overrides(config_dict, args_namespace):
         "unified_acr_rcedr_role_aware_redundancy_enabled",
         "unified_acr_rcedr_role_balanced_enabled",
         "unified_acr_rcedr_redundancy_recalibrated_enabled",
+        "unified_acr_rcedr_semantic_sufficiency_enabled",
+        "unified_acr_rcedr_semantic_use_as_prior_only",
         "unified_acr_rcedr_role_balance_missing_only",
         "unified_acr_rcedr_chain_gain_require_missing_role",
         "unified_acr_rcedr_chain_gain_require_signal",
+        "unified_acr_rcedr_atomization_enabled",
         "unified_acr_rcedr_log_diagnostics",
     ):
         if key in merged:

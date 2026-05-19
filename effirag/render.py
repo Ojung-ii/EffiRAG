@@ -524,6 +524,8 @@ def _apply_top_slice_reorder(selected_ids, features, score_at_pick, base_scores,
             -int(1 if _is_support_like(features.get(sid, {})) else 0),
             -int(1 if bool((features.get(sid, {}) or {}).get("is_main_candidate", False)) else 0),
             -float((features.get(sid, {}) or {}).get("query_overlap_score", 0.0)),
+            -float((features.get(sid, {}) or {}).get("semantic_fused_score", (features.get(sid, {}) or {}).get("semantic_query_score", 0.0))),
+            -float((features.get(sid, {}) or {}).get("best_corridor_score", 0.0)),
             -float(score_at_pick.get(sid, base_scores.get(sid, 0.0))),
             retrieval_rank.get(sid, 10**9),
             order_map.get(sid, 10**9),
@@ -2095,6 +2097,13 @@ def render_corridor_aware_flat_context(
     max_context_sentences_per_selected=1,
     max_bridge_context_sentences=2,
     max_path_context_sentences=2,
+    legacy_contract_top_slice_reorder_enabled=False,
+    legacy_contract_top_slice_reorder_topk=3,
+    legacy_contract_minimal_package_enabled=False,
+    legacy_contract_max_extra_sentences_per_selected=1,
+    legacy_contract_max_total_extra_sentences=2,
+    legacy_contract_preserve_token_budget=True,
+    legacy_contract_log_diagnostics=True,
 ):
     diagnostics = (getattr(retrieval_result, "diagnostics", {}) or {})
     objective_mode = str(diagnostics.get("retrieval_objective_mode", "") or "").strip().lower()
@@ -2318,6 +2327,19 @@ def render_corridor_aware_flat_context(
         order_strategy=order_strategy,
         retrieval_result=retrieval_result,
     )
+    # Unified legacy-contract distillation (dataset-agnostic, render-only):
+    # - top-slice reorder of already selected evidence
+    # - minimal package expansion with strict budget-preserving caps
+    contract_top_slice_enabled = bool(legacy_contract_top_slice_reorder_enabled)
+    contract_top_slice_topk = max(1, int(legacy_contract_top_slice_reorder_topk))
+    contract_minimal_package_enabled = bool(legacy_contract_minimal_package_enabled)
+    contract_max_extra_per_selected = max(0, int(legacy_contract_max_extra_sentences_per_selected))
+    contract_max_total_extra = max(0, int(legacy_contract_max_total_extra_sentences))
+    contract_preserve_budget = bool(legacy_contract_preserve_token_budget)
+
+    if contract_top_slice_enabled:
+        strategy_flags.add("top_slice_reorder")
+        top_slice_topk = max(1, int(contract_top_slice_topk))
     raw_focus_front_enabled = bool("raw_focus_front" in strategy_flags)
     raw_focus_dedup_enabled = bool("raw_focus_dedup" in strategy_flags)
     raw_focus_scaffold_ab1_enabled = bool("raw_focus_scaffold_ab1" in strategy_flags)
@@ -2528,7 +2550,29 @@ def render_corridor_aware_flat_context(
                 if any(sid in selected_set for sid in sids)
             ]
 
-    if bool(selector_aware_render_enabled) and bool(render_selected_centered) and (not bool(render_selected_only)):
+    effective_render_selected_centered = bool(render_selected_centered or contract_minimal_package_enabled)
+    effective_render_selected_only = bool(render_selected_only and not contract_minimal_package_enabled)
+    effective_render_contextual_expansion = bool(render_contextual_expansion_enabled or contract_minimal_package_enabled)
+    effective_render_conditional_neighbor = bool(render_conditional_neighbor_sentences or contract_minimal_package_enabled)
+    effective_render_bridge_context = bool(
+        False if contract_minimal_package_enabled else render_bridge_context_enabled
+    )
+    effective_render_path_context = bool(
+        False if contract_minimal_package_enabled else render_path_context_enabled
+    )
+    effective_render_enforce_budget = bool(
+        render_enforce_actual_prompt_budget if (not contract_minimal_package_enabled) else contract_preserve_budget
+    )
+    effective_max_context_per_selected = (
+        min(max(0, int(max_context_sentences_per_selected)), int(contract_max_extra_per_selected))
+        if contract_minimal_package_enabled
+        else max(0, int(max_context_sentences_per_selected))
+    )
+    effective_max_total_extra = (
+        max(0, int(contract_max_total_extra)) if contract_minimal_package_enabled else None
+    )
+
+    if bool(selector_aware_render_enabled) and bool(effective_render_selected_centered) and (not bool(effective_render_selected_only)):
         compact = render_selected_centered_contextual_context(
             selected_ids=list(selected_ids),
             candidate_ids=list(candidate_ids),
@@ -2545,15 +2589,16 @@ def render_corridor_aware_flat_context(
             render_include_metadata=str(render_include_metadata or "minimal"),
             render_deduplicate_selected_text=bool(render_deduplicate_selected_text),
             render_deduplicate_context_text=bool(render_deduplicate_context_text),
-            render_enforce_actual_prompt_budget=bool(render_enforce_actual_prompt_budget),
-            render_contextual_expansion_enabled=bool(render_contextual_expansion_enabled),
-            render_conditional_neighbor_sentences=bool(render_conditional_neighbor_sentences),
-            render_bridge_context_enabled=bool(render_bridge_context_enabled),
-            render_path_context_enabled=bool(render_path_context_enabled),
+            render_enforce_actual_prompt_budget=bool(effective_render_enforce_budget),
+            render_contextual_expansion_enabled=bool(effective_render_contextual_expansion),
+            render_conditional_neighbor_sentences=bool(effective_render_conditional_neighbor),
+            render_bridge_context_enabled=bool(effective_render_bridge_context),
+            render_path_context_enabled=bool(effective_render_path_context),
             max_neighbors_per_selected=max(0, int(max_neighbors_per_selected)),
-            max_context_sentences_per_selected=max(0, int(max_context_sentences_per_selected)),
+            max_context_sentences_per_selected=int(effective_max_context_per_selected),
             max_bridge_context_sentences=max(0, int(max_bridge_context_sentences)),
             max_path_context_sentences=max(0, int(max_path_context_sentences)),
+            max_total_extra_sentences=effective_max_total_extra,
         )
         compact_ids = list(compact.get("sentence_ids", []) or [])
         compact_sentences = list(compact.get("sentences", []) or [])
@@ -2582,25 +2627,56 @@ def render_corridor_aware_flat_context(
             "top_slice_reorder_applied": bool(top_slice_diag.get("applied", False)),
             "top_slice_reorder_head_size": int(top_slice_diag.get("head_size", 0)),
             "top_slice_reorder_reordered": int(top_slice_diag.get("reordered", 0)),
+            "top_slice_reorder_changed_order": bool(top_slice_diag.get("applied", False)),
             "answer_support_pinning_applied": bool(support_pin_diag.get("applied", False)),
             "answer_support_pinning_target": int(support_pin_diag.get("target", 0)),
             "answer_support_pinning_added": int(support_pin_diag.get("added", 0)),
             "oracle_support_injection_applied": bool(oracle_injection_diag.get("applied", False)),
             "oracle_support_injected": int(oracle_injection_diag.get("injected", 0)),
+            "legacy_contract_top_slice_reorder_enabled": bool(contract_top_slice_enabled),
+            "legacy_contract_top_slice_reorder_topk": int(contract_top_slice_topk),
+            "legacy_contract_minimal_package_enabled": bool(contract_minimal_package_enabled),
+            "legacy_contract_max_extra_sentences_per_selected": int(contract_max_extra_per_selected),
+            "legacy_contract_max_total_extra_sentences": (
+                None if effective_max_total_extra is None else int(effective_max_total_extra)
+            ),
+            "legacy_contract_preserve_token_budget": bool(contract_preserve_budget),
+            "legacy_contract_log_diagnostics": bool(legacy_contract_log_diagnostics),
+            "minimal_package_applied": False,
+            "num_extra_package_sentences": 0,
+            "extra_sentence_ids": [],
+            "extra_sentence_sources": [],
+            "extra_sentence_token_count": 0,
+            "extra_sentence_reason": [],
+            "dominant_skip_reason": "",
+            "minimal_package_skip_reason_counts": {},
+            "rendered_token_count_before_contract": 0,
+            "rendered_token_count_after_contract": 0,
+            "budget_exceeded": False,
+            "budget_skip_count": 0,
             "selector_aware_render_enabled": True,
             "render_selected_only": False,
             "render_selected_centered": True,
-            "render_contextual_expansion_enabled": bool(render_contextual_expansion_enabled),
-            "render_conditional_neighbor_sentences": bool(render_conditional_neighbor_sentences),
-            "render_bridge_context_enabled": bool(render_bridge_context_enabled),
-            "render_path_context_enabled": bool(render_path_context_enabled),
+            "render_contextual_expansion_enabled": bool(effective_render_contextual_expansion),
+            "render_conditional_neighbor_sentences": bool(effective_render_conditional_neighbor),
+            "render_bridge_context_enabled": bool(effective_render_bridge_context),
+            "render_path_context_enabled": bool(effective_render_path_context),
             "render_include_neighbor_sentences": bool(render_include_neighbor_sentences),
             "render_include_corridor_headers": bool(render_include_corridor_headers),
             "render_include_source_titles": str(render_include_source_titles or "minimal"),
             "render_include_metadata": str(render_include_metadata or "minimal"),
             "render_deduplicate_selected_text": bool(render_deduplicate_selected_text),
             "render_deduplicate_context_text": bool(render_deduplicate_context_text),
-            "render_enforce_actual_prompt_budget": bool(render_enforce_actual_prompt_budget),
+            "render_enforce_actual_prompt_budget": bool(effective_render_enforce_budget),
+            "legacy_contract_top_slice_reorder_enabled": bool(contract_top_slice_enabled),
+            "legacy_contract_top_slice_reorder_topk": int(contract_top_slice_topk),
+            "legacy_contract_minimal_package_enabled": bool(contract_minimal_package_enabled),
+            "legacy_contract_max_extra_sentences_per_selected": int(contract_max_extra_per_selected),
+            "legacy_contract_max_total_extra_sentences": (
+                None if effective_max_total_extra is None else int(effective_max_total_extra)
+            ),
+            "legacy_contract_preserve_token_budget": bool(contract_preserve_budget),
+            "legacy_contract_log_diagnostics": bool(legacy_contract_log_diagnostics),
             "render_diagnostics": dict(compact_diag),
             "compact_render": dict(compact_diag),
             "selected_to_rendered_jaccard": float(compact_diag.get("selected_to_rendered_jaccard", 0.0) or 0.0),
@@ -2609,6 +2685,19 @@ def render_corridor_aware_flat_context(
             "num_extra_sentences_after_selector": int(compact_diag.get("num_extra_sentences_after_selector", 0) or 0),
             "extra_prompt_tokens_after_selector": int(compact_diag.get("extra_prompt_tokens_after_selector", 0) or 0),
             "estimated_actual_prompt_tokens": int(compact_diag.get("estimated_actual_prompt_tokens", 0) or 0),
+            "top_slice_reorder_changed_order": bool(top_slice_diag.get("applied", False)),
+            "minimal_package_applied": bool(contract_minimal_package_enabled and int(compact_diag.get("num_context_sentences", 0) or 0) > 0),
+            "num_extra_package_sentences": int(compact_diag.get("num_context_sentences", 0) or 0),
+            "extra_sentence_ids": list(compact_diag.get("extra_sentence_ids", []) or []),
+            "extra_sentence_sources": list(compact_diag.get("extra_sentence_sources", []) or []),
+            "extra_sentence_token_count": int(compact_diag.get("extra_sentence_token_count", 0) or 0),
+            "extra_sentence_reason": list(compact_diag.get("extra_sentence_reason", []) or []),
+            "dominant_skip_reason": str(compact_diag.get("minimal_package_dominant_skip_reason", "") or ""),
+            "minimal_package_skip_reason_counts": dict(compact_diag.get("minimal_package_skip_reason_counts", {}) or {}),
+            "rendered_token_count_before_contract": int(compact_diag.get("selector_prompt_tokens", 0) or 0),
+            "rendered_token_count_after_contract": int(compact_diag.get("estimated_actual_prompt_tokens", 0) or 0),
+            "budget_exceeded": bool((compact_diag.get("early_stop_reason", "") or "") == "max_prompt_tokens"),
+            "budget_skip_count": int(compact_diag.get("budget_pruned_count", 0) or 0),
         }
         return RenderedContext(
             sample_id=sample.qid,
@@ -2625,7 +2714,7 @@ def render_corridor_aware_flat_context(
             metadata=metadata,
         )
 
-    if bool(selector_aware_render_enabled) and bool(render_selected_only):
+    if bool(selector_aware_render_enabled) and bool(effective_render_selected_only):
         compact = render_selected_only_context(
             selected_ids=list(selected_ids),
             candidate_text_map=candidate_text_map,
@@ -2686,6 +2775,15 @@ def render_corridor_aware_flat_context(
             "render_deduplicate_selected_text": bool(render_deduplicate_selected_text),
             "render_deduplicate_context_text": bool(render_deduplicate_context_text),
             "render_enforce_actual_prompt_budget": bool(render_enforce_actual_prompt_budget),
+            "legacy_contract_top_slice_reorder_enabled": bool(contract_top_slice_enabled),
+            "legacy_contract_top_slice_reorder_topk": int(contract_top_slice_topk),
+            "legacy_contract_minimal_package_enabled": bool(contract_minimal_package_enabled),
+            "legacy_contract_max_extra_sentences_per_selected": int(contract_max_extra_per_selected),
+            "legacy_contract_max_total_extra_sentences": (
+                None if effective_max_total_extra is None else int(effective_max_total_extra)
+            ),
+            "legacy_contract_preserve_token_budget": bool(contract_preserve_budget),
+            "legacy_contract_log_diagnostics": bool(legacy_contract_log_diagnostics),
             "render_diagnostics": dict(compact_diag),
             "compact_render": dict(compact_diag),
             "selected_to_rendered_jaccard": float(compact_diag.get("selected_to_rendered_jaccard", 0.0) or 0.0),
@@ -2694,6 +2792,19 @@ def render_corridor_aware_flat_context(
             "num_extra_sentences_after_selector": int(compact_diag.get("num_extra_sentences_after_selector", 0) or 0),
             "extra_prompt_tokens_after_selector": int(compact_diag.get("extra_prompt_tokens_after_selector", 0) or 0),
             "estimated_actual_prompt_tokens": int(compact_diag.get("estimated_actual_prompt_tokens", 0) or 0),
+            "top_slice_reorder_changed_order": bool(top_slice_diag.get("applied", False)),
+            "minimal_package_applied": False,
+            "num_extra_package_sentences": 0,
+            "extra_sentence_ids": [],
+            "extra_sentence_sources": [],
+            "extra_sentence_token_count": 0,
+            "extra_sentence_reason": [],
+            "dominant_skip_reason": "",
+            "minimal_package_skip_reason_counts": {},
+            "rendered_token_count_before_contract": int(compact_diag.get("selector_prompt_tokens", 0) or 0),
+            "rendered_token_count_after_contract": int(compact_diag.get("estimated_actual_prompt_tokens", 0) or 0),
+            "budget_exceeded": bool((compact_diag.get("early_stop_reason", "") or "") == "max_prompt_tokens"),
+            "budget_skip_count": int(compact_diag.get("budget_pruned_count", 0) or 0),
         }
         return RenderedContext(
             sample_id=sample.qid,
@@ -3134,6 +3245,13 @@ def render_context(
     max_context_sentences_per_selected=1,
     max_bridge_context_sentences=2,
     max_path_context_sentences=2,
+    legacy_contract_top_slice_reorder_enabled=False,
+    legacy_contract_top_slice_reorder_topk=3,
+    legacy_contract_minimal_package_enabled=False,
+    legacy_contract_max_extra_sentences_per_selected=1,
+    legacy_contract_max_total_extra_sentences=2,
+    legacy_contract_preserve_token_budget=True,
+    legacy_contract_log_diagnostics=True,
     sentence_contract_render_enabled=False,
     sentence_contract_max_item_tokens=None,
     sentence_contract_metadata_pruning=True,
@@ -3167,6 +3285,12 @@ def render_context(
     adaptive_support_span_log_diagnostics=True,
 ):
     mode = str(render_mode or "flat").strip().lower()
+    contract_minimal_package = bool(legacy_contract_minimal_package_enabled)
+    # Minimal package contract requires selector-aware compact rendering path,
+    # but it still keeps selected evidence as the scoring unit.
+    effective_selector_aware_render_enabled = bool(selector_aware_render_enabled or contract_minimal_package)
+    effective_render_selected_centered = bool(render_selected_centered or contract_minimal_package)
+    effective_render_selected_only = bool(render_selected_only and (not contract_minimal_package))
     rendered = None
     if mode == "corridor_aware_flat":
         rendered = render_corridor_aware_flat_context(
@@ -3200,9 +3324,9 @@ def render_context(
             redundancy_threshold=float(redundancy_threshold),
             marginal_gain_threshold=float(marginal_gain_threshold),
             prompt_variant=prompt_variant,
-            selector_aware_render_enabled=bool(selector_aware_render_enabled),
-            render_selected_only=bool(render_selected_only),
-            render_selected_centered=bool(render_selected_centered),
+            selector_aware_render_enabled=bool(effective_selector_aware_render_enabled),
+            render_selected_only=bool(effective_render_selected_only),
+            render_selected_centered=bool(effective_render_selected_centered),
             render_contextual_expansion_enabled=bool(render_contextual_expansion_enabled),
             render_conditional_neighbor_sentences=bool(render_conditional_neighbor_sentences),
             render_bridge_context_enabled=bool(render_bridge_context_enabled),
@@ -3218,6 +3342,13 @@ def render_context(
             max_context_sentences_per_selected=max(0, int(max_context_sentences_per_selected)),
             max_bridge_context_sentences=max(0, int(max_bridge_context_sentences)),
             max_path_context_sentences=max(0, int(max_path_context_sentences)),
+            legacy_contract_top_slice_reorder_enabled=bool(legacy_contract_top_slice_reorder_enabled),
+            legacy_contract_top_slice_reorder_topk=max(1, int(legacy_contract_top_slice_reorder_topk)),
+            legacy_contract_minimal_package_enabled=bool(legacy_contract_minimal_package_enabled),
+            legacy_contract_max_extra_sentences_per_selected=max(0, int(legacy_contract_max_extra_sentences_per_selected)),
+            legacy_contract_max_total_extra_sentences=max(0, int(legacy_contract_max_total_extra_sentences)),
+            legacy_contract_preserve_token_budget=bool(legacy_contract_preserve_token_budget),
+            legacy_contract_log_diagnostics=bool(legacy_contract_log_diagnostics),
         )
     elif mode == "path_bundle":
         max_corridors = max(1, int(max_corridors_in_context))
