@@ -522,8 +522,15 @@ class RagConfig(RetrievalConfig):
     unified_acr_rcedr_chain_aware_enabled: bool = False
     unified_acr_rcedr_chain_aware_mode: str = "legacy"  # legacy | conservative
     unified_acr_rcedr_role_aware_redundancy_enabled: bool = False
+    unified_acr_rcedr_role_balanced_enabled: bool = False
+    unified_acr_rcedr_redundancy_recalibrated_enabled: bool = False
     unified_acr_rcedr_chain_gain_weight: float = 0.15
+    unified_acr_rcedr_role_balance_weight: float = 0.08
+    unified_acr_rcedr_role_balance_max_gain_per_step: float = 0.08
+    unified_acr_rcedr_role_balance_max_token_jaccard: float = 0.45
+    unified_acr_rcedr_role_balance_missing_only: bool = True
     unified_acr_rcedr_role_redundancy_relax: float = 0.5
+    unified_acr_rcedr_role_redundancy_max_overlap: float = 0.45
     unified_acr_rcedr_chain_gain_require_missing_role: bool = False
     unified_acr_rcedr_chain_gain_require_signal: bool = False
     unified_acr_rcedr_chain_gain_max_per_step: float = 1.0
@@ -689,6 +696,9 @@ def apply_cli_overrides(config_dict, args_namespace):
         "unified_acr_rcedr_use_cost_penalty",
         "unified_acr_rcedr_chain_aware_enabled",
         "unified_acr_rcedr_role_aware_redundancy_enabled",
+        "unified_acr_rcedr_role_balanced_enabled",
+        "unified_acr_rcedr_redundancy_recalibrated_enabled",
+        "unified_acr_rcedr_role_balance_missing_only",
         "unified_acr_rcedr_chain_gain_require_missing_role",
         "unified_acr_rcedr_chain_gain_require_signal",
         "unified_acr_rcedr_log_diagnostics",

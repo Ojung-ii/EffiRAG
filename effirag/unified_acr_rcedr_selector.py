@@ -390,6 +390,37 @@ def _chain_complement_gain(
     return float(max(role_complement, corridor_complement, bridge_synergy * 0.5))
 
 
+def _infer_atom_role(atom: UnifiedEvidenceAtom) -> str:
+    anchor_score = float(atom.query_overlap + atom.entity_overlap + atom.structure_anchor)
+    bridge_score = float(atom.bridge_gain + atom.structure_bridge + atom.bridge_overlap)
+    answer_score = float(atom.answer_type_compat + atom.relation_overlap)
+    best = max(anchor_score, bridge_score, answer_score)
+    if best <= 0.0:
+        return "generic"
+    if anchor_score >= bridge_score and anchor_score >= answer_score:
+        return "anchor"
+    if bridge_score >= answer_score:
+        return "bridge"
+    return "answer"
+
+
+def _has_evidence_signal(atom: UnifiedEvidenceAtom, bridge_threshold: float = 0.35) -> bool:
+    if float(atom.answer_type_compat) > 0.0:
+        return True
+    if float(atom.relation_overlap) > 0.0:
+        return True
+    if float(atom.entity_overlap) > 0.0:
+        return True
+    bridge_like = max(float(atom.bridge_gain), float(atom.structure_bridge), float(atom.bridge_overlap))
+    return bridge_like >= float(max(0.0, bridge_threshold))
+
+
+def _has_shared_source_or_corridor(a: UnifiedEvidenceAtom, b: UnifiedEvidenceAtom) -> bool:
+    if str(a.source_id) and str(a.source_id) == str(b.source_id):
+        return True
+    return bool(set(a.corridor_ids).intersection(set(b.corridor_ids)))
+
+
 def _token_jaccard(a: set[str], b: set[str]) -> float:
     union = len(a.union(b))
     if union <= 0:
@@ -462,13 +493,20 @@ def _marginal_delta(
     use_cost_penalty: bool,
     chain_aware_enabled: bool,
     role_aware_redundancy_enabled: bool,
+    role_balanced_enabled: bool,
+    redundancy_recalibrated_enabled: bool,
     lambda_bridge: float,
     mu_redundancy: float,
     chain_gain_weight: float,
+    role_balance_weight: float,
+    role_balance_max_gain_per_step: float,
+    role_balance_max_token_jaccard: float,
+    role_balance_missing_only: bool,
     role_redundancy_relax: float,
+    role_redundancy_max_overlap: float,
     answerability_weight: float,
     timing_diag: Dict[str, float] | None = None,
-) -> Tuple[float, Dict[str, float]]:
+) -> Tuple[float, Dict[str, Any]]:
     if use_answerability_gain:
         t0 = time.perf_counter()
         current_a = _question_coverage_score(
@@ -510,6 +548,36 @@ def _marginal_delta(
     if chain_aware_enabled:
         chain_gain = _chain_complement_gain(atom, selected_atoms)
 
+    atom_role = _infer_atom_role(atom)
+    selected_role_counts = Counter(_infer_atom_role(item) for item in selected_atoms)
+    role_coverage_gain = 0.0
+    role_coverage_gain_weighted = 0.0
+    role_balance_activated = 0
+    role_balance_rejected_reason = "disabled"
+    if role_balanced_enabled:
+        max_overlap = 0.0
+        if selected_atoms:
+            max_overlap = max(_token_jaccard(atom.token_set, item.token_set) for item in selected_atoms)
+        missing_role = int(selected_role_counts.get(atom_role, 0)) <= 0
+        if atom_role == "generic":
+            role_balance_rejected_reason = "generic_role"
+        elif bool(role_balance_missing_only) and not missing_role:
+            role_balance_rejected_reason = "role_already_present"
+        elif not _has_evidence_signal(atom):
+            role_balance_rejected_reason = "weak_signal"
+        elif selected_atoms and float(max_overlap) >= float(max(0.0, role_balance_max_token_jaccard)):
+            role_balance_rejected_reason = "high_overlap"
+        else:
+            role_balance_activated = 1
+            role_balance_rejected_reason = ""
+            role_coverage_gain = 1.0
+            role_coverage_gain_weighted = float(
+                min(
+                    max(0.0, float(role_balance_max_gain_per_step)),
+                    max(0.0, float(role_balance_weight)) * float(role_coverage_gain),
+                )
+            )
+
     if use_redundancy_penalty:
         t0 = time.perf_counter()
         redundancy = _redundancy_penalty(atom, selected_atoms)
@@ -520,9 +588,60 @@ def _marginal_delta(
     else:
         redundancy = 0.0
 
-    redundancy_effective = float(redundancy)
+    redundancy_before = float(redundancy)
+    redundancy_effective = float(redundancy_before)
     redundancy_relax_applied = 0.0
-    if role_aware_redundancy_enabled and use_redundancy_penalty and selected_atoms:
+    redundancy_recalibrated = 0
+    redundancy_recalibration_reason = "disabled"
+    if redundancy_recalibrated_enabled and use_redundancy_penalty and selected_atoms:
+        relax_applied = False
+        atom_signal = _has_evidence_signal(atom)
+        if not atom_signal:
+            redundancy_recalibration_reason = "weak_signal"
+        else:
+            atom_role_local = atom_role
+            max_overlap = float(max(0.0, role_redundancy_max_overlap))
+            saw_generic_or_same = False
+            saw_overlap_block = False
+            saw_no_shared = False
+            for item in selected_atoms:
+                other_role = _infer_atom_role(item)
+                if atom_role_local == "generic" or other_role == "generic":
+                    saw_generic_or_same = True
+                    continue
+                if atom_role_local == other_role:
+                    saw_generic_or_same = True
+                    continue
+                if not _has_shared_source_or_corridor(atom, item):
+                    saw_no_shared = True
+                    continue
+                overlap = _token_jaccard(atom.token_set, item.token_set)
+                if overlap >= max_overlap:
+                    saw_overlap_block = True
+                    continue
+                relax = max(0.0, min(1.0, float(role_redundancy_relax)))
+                redundancy_relax_applied = float(relax)
+                redundancy_effective = float(redundancy_before * (1.0 - relax))
+                redundancy_recalibrated = 1
+                redundancy_recalibration_reason = "applied"
+                relax_applied = True
+                break
+            if not relax_applied:
+                if saw_overlap_block:
+                    redundancy_recalibration_reason = "high_overlap"
+                elif saw_no_shared:
+                    redundancy_recalibration_reason = "no_shared_source_or_corridor"
+                elif saw_generic_or_same:
+                    redundancy_recalibration_reason = "role_not_complementary"
+                else:
+                    redundancy_recalibration_reason = "conditions_not_met"
+
+    if (
+        (not redundancy_recalibrated)
+        and role_aware_redundancy_enabled
+        and use_redundancy_penalty
+        and selected_atoms
+    ):
         atom_is_anchor = atom.structure_anchor > 0.0
         atom_is_bridge = atom.structure_bridge > 0.0
         has_anchor = any(item.structure_anchor > 0.0 for item in selected_atoms)
@@ -531,7 +650,9 @@ def _marginal_delta(
         if complementary:
             relax = max(0.0, min(1.0, float(role_redundancy_relax)))
             redundancy_relax_applied = float(relax)
-            redundancy_effective = float(redundancy * (1.0 - relax))
+            redundancy_effective = float(redundancy_before * (1.0 - relax))
+            redundancy_recalibration_reason = "legacy_role_aware_relax"
+            redundancy_recalibrated = int(redundancy_recalibrated or 0)
 
     cost = _cost_penalty(
         selected_tokens=selected_tokens,
@@ -543,6 +664,7 @@ def _marginal_delta(
         (answerability_weight * a_gain)
         + (lambda_bridge * b_gain)
         + (chain_gain_weight * chain_gain)
+        + float(role_coverage_gain_weighted)
         - (mu_redundancy * redundancy_effective)
         - cost
     )
@@ -550,9 +672,25 @@ def _marginal_delta(
         "a_gain": float(a_gain),
         "b_gain": float(b_gain),
         "chain_gain": float(chain_gain),
+        "atom_role": str(atom_role),
+        "selected_role_counts": {
+            "anchor": int(selected_role_counts.get("anchor", 0)),
+            "bridge": int(selected_role_counts.get("bridge", 0)),
+            "answer": int(selected_role_counts.get("answer", 0)),
+            "generic": int(selected_role_counts.get("generic", 0)),
+        },
+        "role_coverage_gain": float(role_coverage_gain),
+        "role_coverage_gain_weighted": float(role_coverage_gain_weighted),
+        "role_balance_activated": int(role_balance_activated),
+        "role_balance_rejected": int(1 if role_balanced_enabled and not role_balance_activated else 0),
+        "role_balance_rejected_reason": str(role_balance_rejected_reason),
+        "redundancy_before": float(redundancy_before),
         "redundancy": float(redundancy_effective),
-        "redundancy_raw": float(redundancy),
+        "redundancy_raw": float(redundancy_before),
+        "redundancy_after": float(redundancy_effective),
         "redundancy_relax_applied": float(redundancy_relax_applied),
+        "redundancy_recalibrated": int(redundancy_recalibrated),
+        "redundancy_recalibration_reason": str(redundancy_recalibration_reason),
         "cost": float(cost),
     }
 
@@ -590,10 +728,17 @@ def _select_greedy(
     use_cost_penalty: bool,
     chain_aware_enabled: bool,
     role_aware_redundancy_enabled: bool,
+    role_balanced_enabled: bool,
+    redundancy_recalibrated_enabled: bool,
     lambda_bridge: float,
     mu_redundancy: float,
     chain_gain_weight: float,
+    role_balance_weight: float,
+    role_balance_max_gain_per_step: float,
+    role_balance_max_token_jaccard: float,
+    role_balance_missing_only: bool,
     role_redundancy_relax: float,
+    role_redundancy_max_overlap: float,
     answerability_weight: float,
 ) -> Tuple[List[int], Dict[str, Any]]:
     selected_indices: List[int] = []
@@ -603,11 +748,20 @@ def _select_greedy(
     a_gain_total = 0.0
     b_gain_total = 0.0
     chain_gain_total = 0.0
+    role_coverage_gain_total = 0.0
+    role_coverage_gain_weighted_total = 0.0
     redundancy_total = 0.0
     redundancy_raw_total = 0.0
     role_redundancy_relax_applied_total = 0.0
+    redundancy_before_total = 0.0
+    redundancy_after_total = 0.0
     score_total = 0.0
     objective_eval_calls = 0
+    role_balance_activated_count = 0
+    role_balance_rejected_count = 0
+    role_balance_rejected_reasons: Counter[str] = Counter()
+    redundancy_recalibrated_count = 0
+    redundancy_recalibration_reasons: Counter[str] = Counter()
     score_trace: List[Dict[str, Any]] = []
     timing_diag = {
         "answerability_feature_ms": 0.0,
@@ -618,7 +772,7 @@ def _select_greedy(
     while len(selected_indices) < max_atoms:
         best_idx = None
         best_delta = float("-inf")
-        best_components: Dict[str, float] | None = None
+        best_components: Dict[str, Any] | None = None
         selected_atoms = [atoms[i] for i in selected_indices]
         for idx, atom in enumerate(atoms):
             if idx in selected_indices:
@@ -647,14 +801,31 @@ def _select_greedy(
                 use_cost_penalty=use_cost_penalty,
                 chain_aware_enabled=chain_aware_enabled,
                 role_aware_redundancy_enabled=role_aware_redundancy_enabled,
+                role_balanced_enabled=role_balanced_enabled,
+                redundancy_recalibrated_enabled=redundancy_recalibrated_enabled,
                 lambda_bridge=lambda_bridge,
                 mu_redundancy=mu_redundancy,
                 chain_gain_weight=chain_gain_weight,
+                role_balance_weight=role_balance_weight,
+                role_balance_max_gain_per_step=role_balance_max_gain_per_step,
+                role_balance_max_token_jaccard=role_balance_max_token_jaccard,
+                role_balance_missing_only=role_balance_missing_only,
                 role_redundancy_relax=role_redundancy_relax,
+                role_redundancy_max_overlap=role_redundancy_max_overlap,
                 answerability_weight=answerability_weight,
                 timing_diag=timing_diag,
             )
             objective_eval_calls += 1
+            role_balance_activated_count += int(components.get("role_balance_activated", 0))
+            role_balance_rejected_count += int(components.get("role_balance_rejected", 0))
+            rejected_reason = str(components.get("role_balance_rejected_reason", "") or "")
+            if rejected_reason:
+                role_balance_rejected_reasons[rejected_reason] += 1
+            if int(components.get("redundancy_recalibrated", 0)) > 0:
+                redundancy_recalibrated_count += 1
+            recal_reason = str(components.get("redundancy_recalibration_reason", "") or "")
+            if recal_reason:
+                redundancy_recalibration_reasons[recal_reason] += 1
             if (delta > best_delta) or (
                 delta == best_delta and (best_idx is None or atoms[idx].atom_base_score > atoms[best_idx].atom_base_score)
             ):
@@ -675,6 +846,10 @@ def _select_greedy(
         a_gain_total += float(best_components["a_gain"])
         b_gain_total += float(best_components["b_gain"])
         chain_gain_total += float(best_components.get("chain_gain", 0.0))
+        role_coverage_gain_total += float(best_components.get("role_coverage_gain", 0.0))
+        role_coverage_gain_weighted_total += float(best_components.get("role_coverage_gain_weighted", 0.0))
+        redundancy_before_total += float(best_components.get("redundancy_before", best_components.get("redundancy_raw", 0.0)))
+        redundancy_after_total += float(best_components.get("redundancy_after", best_components.get("redundancy", 0.0)))
         redundancy_total += float(best_components["redundancy"])
         redundancy_raw_total += float(best_components.get("redundancy_raw", best_components.get("redundancy", 0.0)))
         role_redundancy_relax_applied_total += float(best_components.get("redundancy_relax_applied", 0.0))
@@ -687,9 +862,18 @@ def _select_greedy(
                 "a_gain": float(best_components["a_gain"]),
                 "b_gain": float(best_components["b_gain"]),
                 "chain_gain": float(best_components.get("chain_gain", 0.0)),
+                "role_coverage_gain": float(best_components.get("role_coverage_gain", 0.0)),
+                "role_coverage_gain_weighted": float(best_components.get("role_coverage_gain_weighted", 0.0)),
+                "atom_role": str(best_components.get("atom_role", "generic")),
                 "redundancy": float(best_components["redundancy"]),
                 "redundancy_raw": float(best_components.get("redundancy_raw", best_components.get("redundancy", 0.0))),
+                "redundancy_before": float(best_components.get("redundancy_before", best_components.get("redundancy_raw", 0.0))),
+                "redundancy_after": float(best_components.get("redundancy_after", best_components.get("redundancy", 0.0))),
                 "redundancy_relax_applied": float(best_components.get("redundancy_relax_applied", 0.0)),
+                "redundancy_recalibrated": int(best_components.get("redundancy_recalibrated", 0)),
+                "redundancy_recalibration_reason": str(
+                    best_components.get("redundancy_recalibration_reason", "")
+                ),
                 "cost": float(best_components["cost"]),
                 "selected_tokens": int(selected_tokens),
             }
@@ -718,14 +902,31 @@ def _select_greedy(
                 use_cost_penalty=use_cost_penalty,
                 chain_aware_enabled=chain_aware_enabled,
                 role_aware_redundancy_enabled=role_aware_redundancy_enabled,
+                role_balanced_enabled=role_balanced_enabled,
+                redundancy_recalibrated_enabled=redundancy_recalibrated_enabled,
                 lambda_bridge=lambda_bridge,
                 mu_redundancy=mu_redundancy,
                 chain_gain_weight=chain_gain_weight,
+                role_balance_weight=role_balance_weight,
+                role_balance_max_gain_per_step=role_balance_max_gain_per_step,
+                role_balance_max_token_jaccard=role_balance_max_token_jaccard,
+                role_balance_missing_only=role_balance_missing_only,
                 role_redundancy_relax=role_redundancy_relax,
+                role_redundancy_max_overlap=role_redundancy_max_overlap,
                 answerability_weight=answerability_weight,
                 timing_diag=timing_diag,
             )
             objective_eval_calls += 1
+            role_balance_activated_count += int(components.get("role_balance_activated", 0))
+            role_balance_rejected_count += int(components.get("role_balance_rejected", 0))
+            rejected_reason = str(components.get("role_balance_rejected_reason", "") or "")
+            if rejected_reason:
+                role_balance_rejected_reasons[rejected_reason] += 1
+            if int(components.get("redundancy_recalibrated", 0)) > 0:
+                redundancy_recalibrated_count += 1
+            recal_reason = str(components.get("redundancy_recalibration_reason", "") or "")
+            if recal_reason:
+                redundancy_recalibration_reasons[recal_reason] += 1
             if delta > best_delta:
                 best_delta = float(delta)
                 best_idx = int(idx)
@@ -737,6 +938,14 @@ def _select_greedy(
             a_gain_total = float(best_components["a_gain"])
             b_gain_total = float(best_components["b_gain"])
             chain_gain_total = float(best_components.get("chain_gain", 0.0))
+            role_coverage_gain_total = float(best_components.get("role_coverage_gain", 0.0))
+            role_coverage_gain_weighted_total = float(best_components.get("role_coverage_gain_weighted", 0.0))
+            redundancy_before_total = float(
+                best_components.get("redundancy_before", best_components.get("redundancy_raw", 0.0))
+            )
+            redundancy_after_total = float(
+                best_components.get("redundancy_after", best_components.get("redundancy", 0.0))
+            )
             redundancy_total = float(best_components["redundancy"])
             redundancy_raw_total = float(best_components.get("redundancy_raw", best_components.get("redundancy", 0.0)))
             role_redundancy_relax_applied_total = float(best_components.get("redundancy_relax_applied", 0.0))
@@ -749,9 +958,22 @@ def _select_greedy(
                     "a_gain": float(best_components["a_gain"]),
                     "b_gain": float(best_components["b_gain"]),
                     "chain_gain": float(best_components.get("chain_gain", 0.0)),
+                    "role_coverage_gain": float(best_components.get("role_coverage_gain", 0.0)),
+                    "role_coverage_gain_weighted": float(best_components.get("role_coverage_gain_weighted", 0.0)),
+                    "atom_role": str(best_components.get("atom_role", "generic")),
                     "redundancy": float(best_components["redundancy"]),
                     "redundancy_raw": float(best_components.get("redundancy_raw", best_components.get("redundancy", 0.0))),
+                    "redundancy_before": float(
+                        best_components.get("redundancy_before", best_components.get("redundancy_raw", 0.0))
+                    ),
+                    "redundancy_after": float(
+                        best_components.get("redundancy_after", best_components.get("redundancy", 0.0))
+                    ),
                     "redundancy_relax_applied": float(best_components.get("redundancy_relax_applied", 0.0)),
+                    "redundancy_recalibrated": int(best_components.get("redundancy_recalibrated", 0)),
+                    "redundancy_recalibration_reason": str(
+                        best_components.get("redundancy_recalibration_reason", "")
+                    ),
                     "cost": float(best_components["cost"]),
                     "selected_tokens": int(selected_tokens),
                 }
@@ -762,9 +984,19 @@ def _select_greedy(
         "A_gain_total": float(a_gain_total),
         "B_gain_total": float(b_gain_total),
         "chain_gain_total": float(chain_gain_total),
+        "role_coverage_gain_total": float(role_coverage_gain_total),
+        "role_coverage_gain_weighted_total": float(role_coverage_gain_weighted_total),
         "redundancy_total": float(redundancy_total),
         "redundancy_raw_total": float(redundancy_raw_total),
+        "redundancy_before_total": float(redundancy_before_total),
+        "redundancy_after_total": float(redundancy_after_total),
         "role_aware_redundancy_applied_total": float(role_redundancy_relax_applied_total),
+        "role_balance_activated_count": int(role_balance_activated_count),
+        "role_balance_rejected_count": int(role_balance_rejected_count),
+        "role_balance_rejected_reasons": dict(role_balance_rejected_reasons),
+        "redundancy_recalibrated_count": int(redundancy_recalibrated_count),
+        "redundancy_recalibration_reasons": dict(redundancy_recalibration_reasons),
+        "selected_role_counts": dict(Counter(_infer_atom_role(atoms[i]) for i in selected_indices)),
         "score_total": float(score_total),
         "objective_eval_calls": int(objective_eval_calls),
         "score_trace": list(score_trace),
@@ -790,14 +1022,26 @@ def _select_beam(
     use_cost_penalty: bool,
     chain_aware_enabled: bool,
     role_aware_redundancy_enabled: bool,
+    role_balanced_enabled: bool,
+    redundancy_recalibrated_enabled: bool,
     lambda_bridge: float,
     mu_redundancy: float,
     chain_gain_weight: float,
+    role_balance_weight: float,
+    role_balance_max_gain_per_step: float,
+    role_balance_max_token_jaccard: float,
+    role_balance_missing_only: bool,
     role_redundancy_relax: float,
+    role_redundancy_max_overlap: float,
     answerability_weight: float,
 ) -> Tuple[List[int], Dict[str, Any]]:
     beam_k = max(1, int(beam_size))
     objective_eval_calls = 0
+    role_balance_activated_count = 0
+    role_balance_rejected_count = 0
+    role_balance_rejected_reasons: Counter[str] = Counter()
+    redundancy_recalibrated_count = 0
+    redundancy_recalibration_reasons: Counter[str] = Counter()
     timing_diag = {
         "answerability_feature_ms": 0.0,
         "bridge_feature_ms": 0.0,
@@ -812,8 +1056,12 @@ def _select_beam(
             "A_gain_total": 0.0,
             "B_gain_total": 0.0,
             "chain_gain_total": 0.0,
+            "role_coverage_gain_total": 0.0,
+            "role_coverage_gain_weighted_total": 0.0,
             "redundancy_total": 0.0,
             "redundancy_raw_total": 0.0,
+            "redundancy_before_total": 0.0,
+            "redundancy_after_total": 0.0,
             "role_aware_redundancy_applied_total": 0.0,
             "score_trace": [],
         }
@@ -857,14 +1105,31 @@ def _select_beam(
                     use_cost_penalty=use_cost_penalty,
                     chain_aware_enabled=chain_aware_enabled,
                     role_aware_redundancy_enabled=role_aware_redundancy_enabled,
+                    role_balanced_enabled=role_balanced_enabled,
+                    redundancy_recalibrated_enabled=redundancy_recalibrated_enabled,
                     lambda_bridge=lambda_bridge,
                     mu_redundancy=mu_redundancy,
                     chain_gain_weight=chain_gain_weight,
+                    role_balance_weight=role_balance_weight,
+                    role_balance_max_gain_per_step=role_balance_max_gain_per_step,
+                    role_balance_max_token_jaccard=role_balance_max_token_jaccard,
+                    role_balance_missing_only=role_balance_missing_only,
                     role_redundancy_relax=role_redundancy_relax,
+                    role_redundancy_max_overlap=role_redundancy_max_overlap,
                     answerability_weight=answerability_weight,
                     timing_diag=timing_diag,
                 )
                 objective_eval_calls += 1
+                role_balance_activated_count += int(components.get("role_balance_activated", 0))
+                role_balance_rejected_count += int(components.get("role_balance_rejected", 0))
+                rejected_reason = str(components.get("role_balance_rejected_reason", "") or "")
+                if rejected_reason:
+                    role_balance_rejected_reasons[rejected_reason] += 1
+                if int(components.get("redundancy_recalibrated", 0)) > 0:
+                    redundancy_recalibrated_count += 1
+                recal_reason = str(components.get("redundancy_recalibration_reason", "") or "")
+                if recal_reason:
+                    redundancy_recalibration_reasons[recal_reason] += 1
                 if delta <= 0.0 and state_indices:
                     continue
                 new_indices = tuple(list(state_indices) + [idx])
@@ -880,9 +1145,17 @@ def _select_beam(
                     "B_gain_total": float(state["B_gain_total"]) + float(components["b_gain"]),
                     "chain_gain_total": float(state.get("chain_gain_total", 0.0))
                     + float(components.get("chain_gain", 0.0)),
+                    "role_coverage_gain_total": float(state.get("role_coverage_gain_total", 0.0))
+                    + float(components.get("role_coverage_gain", 0.0)),
+                    "role_coverage_gain_weighted_total": float(state.get("role_coverage_gain_weighted_total", 0.0))
+                    + float(components.get("role_coverage_gain_weighted", 0.0)),
                     "redundancy_total": float(state["redundancy_total"]) + float(components["redundancy"]),
                     "redundancy_raw_total": float(state.get("redundancy_raw_total", 0.0))
                     + float(components.get("redundancy_raw", components.get("redundancy", 0.0))),
+                    "redundancy_before_total": float(state.get("redundancy_before_total", 0.0))
+                    + float(components.get("redundancy_before", components.get("redundancy_raw", 0.0))),
+                    "redundancy_after_total": float(state.get("redundancy_after_total", 0.0))
+                    + float(components.get("redundancy_after", components.get("redundancy", 0.0))),
                     "role_aware_redundancy_applied_total": float(
                         state.get("role_aware_redundancy_applied_total", 0.0)
                     )
@@ -896,9 +1169,22 @@ def _select_beam(
                             "a_gain": float(components["a_gain"]),
                             "b_gain": float(components["b_gain"]),
                             "chain_gain": float(components.get("chain_gain", 0.0)),
+                            "role_coverage_gain": float(components.get("role_coverage_gain", 0.0)),
+                            "role_coverage_gain_weighted": float(components.get("role_coverage_gain_weighted", 0.0)),
+                            "atom_role": str(components.get("atom_role", "generic")),
                             "redundancy": float(components["redundancy"]),
                             "redundancy_raw": float(components.get("redundancy_raw", components.get("redundancy", 0.0))),
+                            "redundancy_before": float(
+                                components.get("redundancy_before", components.get("redundancy_raw", 0.0))
+                            ),
+                            "redundancy_after": float(
+                                components.get("redundancy_after", components.get("redundancy", 0.0))
+                            ),
                             "redundancy_relax_applied": float(components.get("redundancy_relax_applied", 0.0)),
+                            "redundancy_recalibrated": int(components.get("redundancy_recalibrated", 0)),
+                            "redundancy_recalibration_reason": str(
+                                components.get("redundancy_recalibration_reason", "")
+                            ),
                             "cost": float(components["cost"]),
                             "selected_tokens": int(state["selected_tokens"]) + int(atom.token_count),
                         }
@@ -926,11 +1212,21 @@ def _select_beam(
             "A_gain_total": float(best_state["A_gain_total"]),
             "B_gain_total": float(best_state["B_gain_total"]),
             "chain_gain_total": float(best_state.get("chain_gain_total", 0.0)),
+            "role_coverage_gain_total": float(best_state.get("role_coverage_gain_total", 0.0)),
+            "role_coverage_gain_weighted_total": float(best_state.get("role_coverage_gain_weighted_total", 0.0)),
             "redundancy_total": float(best_state["redundancy_total"]),
             "redundancy_raw_total": float(best_state.get("redundancy_raw_total", 0.0)),
+            "redundancy_before_total": float(best_state.get("redundancy_before_total", 0.0)),
+            "redundancy_after_total": float(best_state.get("redundancy_after_total", 0.0)),
             "role_aware_redundancy_applied_total": float(
                 best_state.get("role_aware_redundancy_applied_total", 0.0)
             ),
+            "role_balance_activated_count": int(role_balance_activated_count),
+            "role_balance_rejected_count": int(role_balance_rejected_count),
+            "role_balance_rejected_reasons": dict(role_balance_rejected_reasons),
+            "redundancy_recalibrated_count": int(redundancy_recalibrated_count),
+            "redundancy_recalibration_reasons": dict(redundancy_recalibration_reasons),
+            "selected_role_counts": dict(Counter(_infer_atom_role(atoms[i]) for i in best_indices)),
             "score_total": float(best_state["score_total"]),
             "objective_eval_calls": int(objective_eval_calls),
             "score_trace": list(best_state["score_trace"]),
@@ -953,10 +1249,17 @@ def _select_beam(
         use_cost_penalty=use_cost_penalty,
         chain_aware_enabled=chain_aware_enabled,
         role_aware_redundancy_enabled=role_aware_redundancy_enabled,
+        role_balanced_enabled=role_balanced_enabled,
+        redundancy_recalibrated_enabled=redundancy_recalibrated_enabled,
         lambda_bridge=lambda_bridge,
         mu_redundancy=mu_redundancy,
         chain_gain_weight=chain_gain_weight,
+        role_balance_weight=role_balance_weight,
+        role_balance_max_gain_per_step=role_balance_max_gain_per_step,
+        role_balance_max_token_jaccard=role_balance_max_token_jaccard,
+        role_balance_missing_only=role_balance_missing_only,
         role_redundancy_relax=role_redundancy_relax,
+        role_redundancy_max_overlap=role_redundancy_max_overlap,
         answerability_weight=answerability_weight,
     )
     greedy_state["objective_eval_calls"] = int(
@@ -1026,10 +1329,35 @@ def apply_unified_acr_rcedr_selection(
         getattr(cfg, "unified_acr_rcedr_role_aware_redundancy_enabled", False),
         False,
     )
+    role_balanced_enabled = _safe_bool(
+        getattr(cfg, "unified_acr_rcedr_role_balanced_enabled", False),
+        False,
+    )
+    redundancy_recalibrated_enabled = _safe_bool(
+        getattr(cfg, "unified_acr_rcedr_redundancy_recalibrated_enabled", False),
+        False,
+    )
     lambda_bridge = _safe_float(getattr(cfg, "unified_acr_rcedr_lambda_bridge", 0.28), 0.28)
     mu_redundancy = _safe_float(getattr(cfg, "unified_acr_rcedr_mu_redundancy", 0.22), 0.22)
     chain_gain_weight = _safe_float(getattr(cfg, "unified_acr_rcedr_chain_gain_weight", 0.15), 0.15)
+    role_balance_weight = _safe_float(getattr(cfg, "unified_acr_rcedr_role_balance_weight", 0.08), 0.08)
+    role_balance_max_gain_per_step = _safe_float(
+        getattr(cfg, "unified_acr_rcedr_role_balance_max_gain_per_step", 0.08),
+        0.08,
+    )
+    role_balance_max_token_jaccard = _safe_float(
+        getattr(cfg, "unified_acr_rcedr_role_balance_max_token_jaccard", 0.45),
+        0.45,
+    )
+    role_balance_missing_only = _safe_bool(
+        getattr(cfg, "unified_acr_rcedr_role_balance_missing_only", True),
+        True,
+    )
     role_redundancy_relax = _safe_float(getattr(cfg, "unified_acr_rcedr_role_redundancy_relax", 0.5), 0.5)
+    role_redundancy_max_overlap = _safe_float(
+        getattr(cfg, "unified_acr_rcedr_role_redundancy_max_overlap", 0.45),
+        0.45,
+    )
     answerability_weight = _safe_float(getattr(cfg, "unified_acr_rcedr_answerability_weight", 1.0), 1.0)
 
     atoms = _atomize_selected_evidence(
@@ -1068,10 +1396,17 @@ def apply_unified_acr_rcedr_selection(
             use_cost_penalty=use_cost_penalty,
             chain_aware_enabled=chain_aware_enabled,
             role_aware_redundancy_enabled=role_aware_redundancy_enabled,
+            role_balanced_enabled=role_balanced_enabled,
+            redundancy_recalibrated_enabled=redundancy_recalibrated_enabled,
             lambda_bridge=lambda_bridge,
             mu_redundancy=mu_redundancy,
             chain_gain_weight=chain_gain_weight,
+            role_balance_weight=role_balance_weight,
+            role_balance_max_gain_per_step=role_balance_max_gain_per_step,
+            role_balance_max_token_jaccard=role_balance_max_token_jaccard,
+            role_balance_missing_only=role_balance_missing_only,
             role_redundancy_relax=role_redundancy_relax,
+            role_redundancy_max_overlap=role_redundancy_max_overlap,
             answerability_weight=answerability_weight,
         )
         selection_mode = "beam"
@@ -1090,10 +1425,17 @@ def apply_unified_acr_rcedr_selection(
             use_cost_penalty=use_cost_penalty,
             chain_aware_enabled=chain_aware_enabled,
             role_aware_redundancy_enabled=role_aware_redundancy_enabled,
+            role_balanced_enabled=role_balanced_enabled,
+            redundancy_recalibrated_enabled=redundancy_recalibrated_enabled,
             lambda_bridge=lambda_bridge,
             mu_redundancy=mu_redundancy,
             chain_gain_weight=chain_gain_weight,
+            role_balance_weight=role_balance_weight,
+            role_balance_max_gain_per_step=role_balance_max_gain_per_step,
+            role_balance_max_token_jaccard=role_balance_max_token_jaccard,
+            role_balance_missing_only=role_balance_missing_only,
             role_redundancy_relax=role_redundancy_relax,
+            role_redundancy_max_overlap=role_redundancy_max_overlap,
             answerability_weight=answerability_weight,
         )
         selection_mode = "greedy"
@@ -1107,6 +1449,7 @@ def apply_unified_acr_rcedr_selection(
     out_ids = [atom.sentence_id for atom in ordered_atoms]
     out_texts = [_normalize_space(atom.text) for atom in ordered_atoms]
     selected_tokens = int(sum(int(atom.token_count) for atom in ordered_atoms))
+    selected_atom_count = max(1, int(len(ordered_atoms)))
 
     diag.update(
         {
@@ -1122,11 +1465,29 @@ def apply_unified_acr_rcedr_selection(
             "A_gain_total": float(score_diag.get("A_gain_total", 0.0)),
             "B_gain_total": float(score_diag.get("B_gain_total", 0.0)),
             "chain_gain_total_avg": float(score_diag.get("chain_gain_total", 0.0)),
+            "role_coverage_gain_total_avg": float(score_diag.get("role_coverage_gain_total", 0.0)),
+            "role_coverage_gain_weighted_total_avg": float(
+                score_diag.get("role_coverage_gain_weighted_total", 0.0)
+            ),
             "redundancy_total": float(score_diag.get("redundancy_total", 0.0)),
             "redundancy_raw_total": float(score_diag.get("redundancy_raw_total", 0.0)),
+            "redundancy_before_avg": float(score_diag.get("redundancy_before_total", 0.0)) / float(selected_atom_count),
+            "redundancy_after_avg": float(score_diag.get("redundancy_after_total", 0.0)) / float(selected_atom_count),
             "role_aware_redundancy_applied_avg": float(
                 score_diag.get("role_aware_redundancy_applied_total", 0.0)
             ),
+            "role_balance_activated_count": int(score_diag.get("role_balance_activated_count", 0)),
+            "role_balance_rejected_count": int(score_diag.get("role_balance_rejected_count", 0)),
+            "role_balance_rejected_reasons": dict(score_diag.get("role_balance_rejected_reasons", {}) or {}),
+            "selected_role_counts": dict(score_diag.get("selected_role_counts", {}) or {}),
+            "redundancy_relaxed_count": int(score_diag.get("redundancy_recalibrated_count", 0)),
+            "redundancy_recalibrated_count": int(score_diag.get("redundancy_recalibrated_count", 0)),
+            "redundancy_recalibration_reasons": dict(
+                score_diag.get("redundancy_recalibration_reasons", {}) or {}
+            ),
+            "redundancy_recalibration_applied_avg": float(
+                score_diag.get("redundancy_recalibrated_count", 0)
+            ) / float(selected_atom_count),
             "score_total": float(score_diag.get("score_total", 0.0)),
             "objective_eval_calls": int(score_diag.get("objective_eval_calls", 0)),
             "selection_ms": float((time.perf_counter() - started) * 1000.0),
@@ -1141,8 +1502,15 @@ def apply_unified_acr_rcedr_selection(
             "use_cost_penalty": bool(use_cost_penalty),
             "chain_aware_enabled": bool(chain_aware_enabled),
             "role_aware_redundancy_enabled": bool(role_aware_redundancy_enabled),
+            "role_balanced_enabled": bool(role_balanced_enabled),
+            "redundancy_recalibrated_enabled": bool(redundancy_recalibrated_enabled),
             "chain_gain_weight": float(chain_gain_weight),
+            "role_balance_weight": float(role_balance_weight),
+            "role_balance_max_gain_per_step": float(role_balance_max_gain_per_step),
+            "role_balance_max_token_jaccard": float(role_balance_max_token_jaccard),
+            "role_balance_missing_only": bool(role_balance_missing_only),
             "role_redundancy_relax": float(role_redundancy_relax),
+            "role_redundancy_max_overlap": float(role_redundancy_max_overlap),
             "hard_token_budget_enabled": bool(hard_budget_enabled),
         }
     )
