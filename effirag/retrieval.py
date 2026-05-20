@@ -5966,9 +5966,12 @@ def _select_phase1_diversity_reserve(ranked_runs_all, shortlisted_runs, cfg):
         "allow_phase2_refinement": bool(allow_phase2),
         "added": False,
         "added_run_id": -1,
+        "added_seed_id": "",
         "reason": "",
         "score": 0.0,
         "seed_jaccard_with_top": 1.0,
+        "rank_before_reserve": -1,
+        "rank_after_reserve": -1,
     }
     if (not enabled) or reserve_count <= 0:
         return None, diag
@@ -5990,7 +5993,9 @@ def _select_phase1_diversity_reserve(ranked_runs_all, shortlisted_runs, cfg):
     best_score = float("-inf")
     best_reason = ""
     best_jacc = 1.0
-    for run in reserve_pool:
+    best_seed_id = ""
+    best_rank_before = -1
+    for idx, run in enumerate(reserve_pool, start=1):
         run_id = int((run or {}).get("run_id", -1))
         if run_id == dominant_id:
             continue
@@ -6017,6 +6022,9 @@ def _select_phase1_diversity_reserve(ranked_runs_all, shortlisted_runs, cfg):
             best = run
             best_score = float(reserve_score)
             best_jacc = float(seed_jacc)
+            seed_values = sorted(str(s) for s in list(run_seeds or []) if str(s))
+            best_seed_id = str(seed_values[0]) if seed_values else ""
+            best_rank_before = int(idx)
             best_reason = (
                 f"nonredundant_best"
                 f";seed_jacc={seed_jacc:.3f}"
@@ -6031,9 +6039,12 @@ def _select_phase1_diversity_reserve(ranked_runs_all, shortlisted_runs, cfg):
 
     diag["added"] = True
     diag["added_run_id"] = int((best or {}).get("run_id", -1))
+    diag["added_seed_id"] = str(best_seed_id or "")
     diag["reason"] = str(best_reason)
     diag["score"] = float(best_score)
     diag["seed_jaccard_with_top"] = float(best_jacc)
+    diag["rank_before_reserve"] = int(best_rank_before)
+    diag["rank_after_reserve"] = int(len(list(shortlisted_runs or [])) + 1)
     return best, diag
 
 
@@ -8886,18 +8897,58 @@ def run_graphrag_core(
     )
 
     reserve_sentence_candidate_hit = False
+    reserve_abr_candidate_hit = False
     reserve_abr_selected_hit = False
     reserve_rendered_hit = False
+    reserve_abr_score = None
+    reserve_abr_rank = None
+    reserve_candidate_id = ""
+    reserve_candidate_type = "unknown"
+    if reserve_phase1_unit_ids_for_audit:
+        reserve_candidate_id = str(reserve_phase1_unit_ids_for_audit[0] or "")
+        reserve_candidate_type = str((reserve_candidate_id.split("::", 1)[0] or "unknown")).strip().lower()
     if reserve_phase1_unit_id_set:
         reserve_sentence_candidate_hit = bool(
             reserve_phase1_unit_id_set.intersection(set(str(x) for x in list(sentence_candidates_after_text_rerank_ids or [])))
         )
+        reserve_abr_candidate_hit = bool(reserve_sentence_candidate_hit)
         abr_or_selected_ids = set(str(x) for x in list(abr_selected_evidence_ids or selected_sentence_ids or []))
         reserve_abr_selected_hit = bool(reserve_phase1_unit_id_set.intersection(abr_or_selected_ids))
         # Retrieval stage cannot observe final rendered context; keep this as retrieval-selected proxy.
         reserve_rendered_hit = bool(
             reserve_phase1_unit_id_set.intersection(set(str(x) for x in list(selected_sentence_ids or [])))
         )
+        atom_table = list((unified_acr_rcedr_diag or {}).get("phase6w_atom_table", []) or [])
+        if atom_table:
+            best_atom_score = None
+            best_atom_rank = None
+            for atom in atom_table:
+                if not isinstance(atom, dict):
+                    continue
+                src_ids = set(str(x) for x in list(atom.get("source_sentence_ids", []) or []))
+                if not src_ids:
+                    sid = str(atom.get("sentence_id", "") or "")
+                    if sid:
+                        src_ids = {sid}
+                if not src_ids.intersection(reserve_phase1_unit_id_set):
+                    continue
+                score = atom.get("abr_delta_score", atom.get("atom_score_before_abr"))
+                try:
+                    score_v = float(score)
+                except Exception:
+                    score_v = None
+                rank_v = atom.get("selected_rank")
+                try:
+                    rank_v = int(rank_v) if rank_v is not None else None
+                except Exception:
+                    rank_v = None
+                if score_v is None:
+                    continue
+                if (best_atom_score is None) or (score_v > best_atom_score):
+                    best_atom_score = score_v
+                    best_atom_rank = rank_v
+            reserve_abr_score = best_atom_score
+            reserve_abr_rank = best_atom_rank
 
     if _env_truthy("PHASE6T_SCORE_ATTACHMENT_PARITY_DUMP", False):
         _append_phase6t_score_parity_rows(
@@ -9062,13 +9113,25 @@ def run_graphrag_core(
             "num_phase1_shortlist_after": int(len(shortlisted_runs or [])),
             "phase1_reserve_added": bool((phase1_reserve_diag or {}).get("added", False)),
             "phase1_reserve_seed_or_run_id": int((phase1_reserve_diag or {}).get("added_run_id", -1)),
+            "phase1_reserve_source_seed_id": str((phase1_reserve_diag or {}).get("added_seed_id", "") or ""),
+            "phase1_reserve_rank_before_reserve": int((phase1_reserve_diag or {}).get("rank_before_reserve", -1)),
+            "phase1_reserve_rank_after_reserve": int((phase1_reserve_diag or {}).get("rank_after_reserve", -1)),
             "phase1_reserve_reason": str((phase1_reserve_diag or {}).get("reason", "") or ""),
             "phase1_reserve_score": float((phase1_reserve_diag or {}).get("score", 0.0) or 0.0),
             "phase1_reserve_seed_jaccard_with_top": float((phase1_reserve_diag or {}).get("seed_jaccard_with_top", 1.0) or 1.0),
+            "phase1_reserve_candidate_id": str(reserve_candidate_id or ""),
+            "phase1_reserve_candidate_type": str(reserve_candidate_type or "unknown"),
+            "phase1_reserve_in_phase1_shortlist": bool((phase1_reserve_diag or {}).get("added", False)),
             "phase1_reserve_reaches_phase2": bool((phase1_reserve_diag or {}).get("added", False)),
             "phase1_reserve_has_sentence_candidates": bool(reserve_sentence_candidate_hit),
+            "phase1_reserve_enters_ABR_candidate_pool": bool(reserve_abr_candidate_hit),
+            "phase1_reserve_ABR_score": (float(reserve_abr_score) if reserve_abr_score is not None else None),
+            "phase1_reserve_ABR_rank": (int(reserve_abr_rank) if reserve_abr_rank is not None else None),
             "phase1_reserve_selected_by_ABR": bool(reserve_abr_selected_hit),
             "phase1_reserve_rendered": bool(reserve_rendered_hit),
+            "phase1_reserve_forced_selected": False,
+            "phase1_reserve_forced_rendered": False,
+            "phase1_reserve_selected_because_of_forced_pin": False,
             "phase1_reserve_unit_ids": list(reserve_phase1_unit_ids_for_audit),
             "phase1_reserve_unit_texts": list(reserve_phase1_unit_texts_for_audit),
             "phase2_refined_pair_count": int(len(retained_pairs)),
