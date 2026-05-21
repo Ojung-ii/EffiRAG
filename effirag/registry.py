@@ -47,9 +47,17 @@ def get_generator(name: str) -> Callable:
     return GENERATOR_REGISTRY[name]
 
 
-def register_defaults() -> None:
-    # Import side-effect registrations.
+def register_defaults(method_name: str | None = None) -> None:
+    mode = str(method_name or "").strip().lower()
+    if mode == "phase7_evidence_flow":
+        # Phase7 active path: avoid importing legacy/unified retrieval stacks.
+        from . import datasets as _datasets  # noqa: F401
+        from . import generator as _generator  # noqa: F401
+        from . import phase7_evidence_flow as _phase7_evidence_flow  # noqa: F401
+        return
+    # Default path imports all classic registrations.
     from . import baselines as _baselines  # noqa: F401
     from . import datasets as _datasets  # noqa: F401
     from . import generator as _generator  # noqa: F401
+    from . import phase7_evidence_flow as _phase7_evidence_flow  # noqa: F401
     from . import retrieval as _retrieval  # noqa: F401

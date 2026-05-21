@@ -13,6 +13,7 @@ class RetrievalConfig:
     split: str = "validation"
     limit: int = None
     method: str = "effirag"
+    retrieval_method: str = ""
     output_dir: str = "outputs/retrieval"
     timestamp_output: bool = True
     global_corpus_path: str = ""
@@ -328,6 +329,8 @@ class RagConfig(RetrievalConfig):
     llm_max_new_tokens: int = 64
     # default | evidence_first
     prompt_variant: str = "default"
+    # current_phase7 | lightrag_short | phase7_short
+    qa_prompt_mode: str = "current_phase7"
     precomputed_retrieval_path: str = ""
     precomputed_retrieval_strict: bool = False
     max_context_sentences: int = 14
@@ -554,6 +557,68 @@ class RagConfig(RetrievalConfig):
     unified_acr_rcedr_atom_span_max_sentences: int = 2
     unified_acr_rcedr_length_penalty_weight: float = 0.04
     unified_acr_rcedr_log_diagnostics: bool = True
+    # Phase7: query-conditioned evidence flow + single marginal selector.
+    phase7_atom_unit: str = "sentence"
+    phase7_carrier_chunk_size_sentences: int = 3
+    phase7_carrier_chunk_stride_sentences: int = 1
+    phase7_enabled: bool = True
+    phase7_require_sentence_layer: bool = True
+    phase7_build_sentence_layer: bool = True
+    phase7_build_carrier_layer: bool = True
+    phase7_link_sentence_to_carrier: bool = True
+    phase7_link_sentence_to_entities: bool = True
+    phase7_carrier_unit: str = "sentence_window"
+    phase7_allow_empty_candidates_for_debug: bool = False
+    phase7_semantic_anchor_top_t: int = 128
+    phase7_candidate_top_m: int = 96
+    phase7_flow_alpha: float = 0.15
+    phase7_max_flow_iterations: int = 30
+    phase7_flow_tolerance: float = 1.0e-6
+    phase7_max_selected_atoms: int = 8
+    phase7_max_context_tokens: int = 520
+    phase7_min_positive_gain: float = 0.0
+    phase7_bottleneck_total_retrieval_ms: float = 500.0
+    phase7_bottleneck_graph_flow_ms: float = 150.0
+    phase7_bottleneck_local_graph_build_ms: float = 150.0
+    phase7_bottleneck_feature_extraction_ms: float = 150.0
+    phase7_bottleneck_marginal_selection_ms: float = 100.0
+    phase7_bottleneck_local_graph_nodes: int = 3000
+    phase7_bottleneck_local_graph_edges: int = 20000
+    phase7_bottleneck_candidate_atoms: int = 256
+    # Phase7 mainline controls (anti-heuristic).
+    phase7_enable_phase2_refinement: bool = False
+    # normalized_equal_weight | a_only | a_plus_b | a_minus_r | a_plus_b_minus_r
+    # a_plus_decay_minus_r | a_plus_bq_minus_r | a_plus_bq_minus_rq
+    # aq_plus_bq_minus_r | aq_plus_bq_minus_rq
+    phase7_objective_mode: str = "normalized_equal_weight"
+    phase7_lambda_bridge: float = 1.0
+    phase7_lambda_decay: float = 1.0
+    phase7_lambda_bq: float = 1.0
+    phase7_mu_redundancy: float = 1.0
+    phase7_conditional_redundancy_enabled: bool = False
+    phase7_corridor_enabled: bool = False
+    phase7_corridor_max_anchors: int = 4
+    phase7_corridor_max_seeds: int = 16
+    phase7_corridor_max_hops: int = 3
+    phase7_corridor_max_paths_per_pair: int = 1
+    phase7_corridor_degree_cap: int = 100
+    phase7_corridor_max_pairs: int = 64
+    phase7_anchor_decay_enabled: bool = False
+    phase7_anchor_decay_gamma: float = 0.7
+    phase7_anchor_decay_max_hops: int = 4
+    phase7_query_intent_enabled: bool = False
+    phase7_intent_phase1_enabled: bool = False
+    phase7_intent_max_relation_candidates: int = 32
+    phase7_intent_max_answer_type_candidates: int = 32
+    phase7_intent_max_entity_candidates: int = 32
+    phase7_intent_candidate_top_m: int = 128
+    phase7_variant: str = "full"
+    phase7_diagnostics_enabled: bool = False
+    phase7_diagnostics_max_examples_to_dump: int = 100
+    phase7_diagnostics_dump_text: bool = True
+    phase7_diagnostics_dump_context: bool = True
+    phase7_diagnostics_dump_scores: bool = True
+    phase7_diagnostics_fail_on_unit_mismatch: bool = False
     # score | retrieval | corridor_rank | query_bridge_answer
     # corridor_aware_flat flags:
     # +raw_focus_front +raw_focus_dedup +raw_focus_scaffold_light +raw_focus_top1_bundle_only(+top2)
@@ -726,6 +791,24 @@ def apply_cli_overrides(config_dict, args_namespace):
         "unified_acr_rcedr_chain_gain_require_signal",
         "unified_acr_rcedr_atomization_enabled",
         "unified_acr_rcedr_log_diagnostics",
+        "phase7_enabled",
+        "phase7_require_sentence_layer",
+        "phase7_build_sentence_layer",
+        "phase7_build_carrier_layer",
+        "phase7_link_sentence_to_carrier",
+        "phase7_link_sentence_to_entities",
+        "phase7_allow_empty_candidates_for_debug",
+        "phase7_enable_phase2_refinement",
+        "phase7_conditional_redundancy_enabled",
+        "phase7_diagnostics_enabled",
+        "phase7_diagnostics_dump_text",
+        "phase7_diagnostics_dump_context",
+        "phase7_diagnostics_dump_scores",
+        "phase7_diagnostics_fail_on_unit_mismatch",
+        "phase7_corridor_enabled",
+        "phase7_anchor_decay_enabled",
+        "phase7_query_intent_enabled",
+        "phase7_intent_phase1_enabled",
     ):
         if key in merged:
             merged[key] = parse_bool(merged[key])
@@ -855,8 +938,14 @@ def apply_cli_overrides(config_dict, args_namespace):
         merged["shared_budget_profile"] = str(merged["shared_budget_profile"]).strip().lower()
     if "prompt_variant" in merged:
         merged["prompt_variant"] = str(merged["prompt_variant"]).strip().lower()
+    if "qa_prompt_mode" in merged:
+        merged["qa_prompt_mode"] = str(merged["qa_prompt_mode"]).strip().lower()
     if "index_chunk_unit" in merged:
         merged["index_chunk_unit"] = str(merged["index_chunk_unit"]).strip().lower()
+    if "phase7_variant" in merged:
+        merged["phase7_variant"] = str(merged["phase7_variant"]).strip().lower()
+    if "phase7_objective_mode" in merged:
+        merged["phase7_objective_mode"] = str(merged["phase7_objective_mode"]).strip().lower()
     if "phase1_parallel_ppr" in merged:
         merged["phase1_parallel_ppr"] = parse_bool(merged["phase1_parallel_ppr"])
     if "phase2_bidirectional_full_ppr" in merged:

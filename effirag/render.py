@@ -1979,6 +1979,40 @@ def render_flat_context(sample, retrieval_result, max_context_sentences):
     )
 
 
+def render_phase7_flat_context(sample, retrieval_result, max_context_sentences):
+    max_n = max(1, int(max_context_sentences))
+    lookup = _build_retrieval_text_lookup(sample, retrieval_result)
+    ids = list(retrieval_result.selected_sentence_ids or [])
+    texts = list(retrieval_result.selected_sentences or [])
+
+    if len(texts) != len(ids):
+        texts = [lookup.get(sid, "") for sid in ids]
+
+    pairs = [(str(sid), str(txt)) for sid, txt in zip(ids, texts) if str(sid) and str(txt).strip()]
+    truncated = len(pairs) > max_n
+    truncated_sentence_count = max(0, len(pairs) - max_n)
+    pairs = pairs[:max_n]
+
+    lines = []
+    for sid, sent in pairs:
+        title = _unit_title(sid)
+        lines.append(f"[{title}] {sent}")
+
+    return RenderedContext(
+        sample_id=sample.qid,
+        method=retrieval_result.method,
+        text="\n".join(lines),
+        sentences=[sent for _, sent in pairs],
+        sentence_ids=[sid for sid, _ in pairs],
+        truncated=truncated,
+        render_mode="phase7_flat",
+        rendered_corridor_ids=[],
+        truncated_corridor_count=0,
+        truncated_sentence_count=truncated_sentence_count,
+        retrieval_selected_sentence_ids=ids,
+    )
+
+
 def render_corridor_context(
     sample,
     retrieval_result,
@@ -3383,6 +3417,8 @@ def render_context(
             max_support_per_corridor=max_support,
             max_total_sentences=max_total,
         )
+    elif mode == "phase7_flat":
+        rendered = render_phase7_flat_context(sample, retrieval_result, max_context_sentences=max_context_sentences)
     else:
         rendered = render_flat_context(sample, retrieval_result, max_context_sentences=max_context_sentences)
 

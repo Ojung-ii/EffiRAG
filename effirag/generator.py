@@ -7,6 +7,11 @@ import time
 import urllib.error
 import urllib.request
 
+from .phase7_qa_prompts import (
+    build_lightrag_short_prompt,
+    build_phase7_short_prompt,
+    resolve_qa_prompt_mode,
+)
 from .postprocess import apply_answer_realization_variant
 from .registry import register_generator
 from .types import GenerationResult, RenderedContext, Sample
@@ -232,7 +237,7 @@ def _apply_qa_utilization_postprocess(sample: Sample, rendered: RenderedContext,
     return final, payload
 
 
-def _build_qa_prompt(sample: Sample, rendered: RenderedContext, cfg=None) -> str:
+def _build_current_phase7_prompt(sample: Sample, rendered: RenderedContext, cfg=None) -> str:
     prompt_variant = _resolve_prompt_variant(rendered=rendered, cfg=cfg)
     if prompt_variant == "evidence_first":
         parts = [
@@ -298,6 +303,23 @@ def _build_qa_prompt(sample: Sample, rendered: RenderedContext, cfg=None) -> str
     parts.append(f"Context:\n{rendered.text}")
     parts.append("Final answer:")
     return "\n".join(parts)
+
+
+def _build_qa_prompt(sample: Sample, rendered: RenderedContext, cfg=None) -> str:
+    mode = resolve_qa_prompt_mode(cfg=cfg)
+    if mode == "lightrag_short":
+        return build_lightrag_short_prompt(
+            question=str(sample.question or ""),
+            context=str(rendered.text or ""),
+            user_prompt=str(getattr(cfg, "user_prompt", "") or "") if cfg is not None else "",
+        )
+    if mode == "phase7_short":
+        return build_phase7_short_prompt(
+            question=str(sample.question or ""),
+            context=str(rendered.text or ""),
+            user_prompt=str(getattr(cfg, "user_prompt", "") or "") if cfg is not None else "",
+        )
+    return _build_current_phase7_prompt(sample=sample, rendered=rendered, cfg=cfg)
 
 
 def _get_hf_pipeline(task: str, model_name: str):
@@ -463,6 +485,7 @@ def generate_hf(sample: Sample, rendered: RenderedContext, model_name: str = "",
     try:
         resolved_model = model_name or "google/flan-t5-small"
         prompt_variant = _resolve_prompt_variant(rendered=rendered, cfg=cfg)
+        qa_prompt_mode = resolve_qa_prompt_mode(cfg=cfg)
         prompt = _build_qa_prompt(sample=sample, rendered=rendered, cfg=cfg)
         max_new_tokens = int(getattr(cfg, "llm_max_new_tokens", 64) if cfg is not None else 64)
         prefer_text_gen = _prefers_text_generation(resolved_model)
@@ -484,6 +507,7 @@ def generate_hf(sample: Sample, rendered: RenderedContext, model_name: str = "",
         prediction, post_meta = _apply_qa_utilization_postprocess(sample=sample, rendered=rendered, prediction=prediction)
         generation_meta.update(dict(post_meta or {}))
         generation_meta["prompt_variant"] = str(prompt_variant)
+        generation_meta["qa_prompt_mode"] = str(qa_prompt_mode)
         text = raw_text
     except Exception as exc:
         fallback = generate_heuristic(sample, rendered, model_name=model_name)
@@ -504,6 +528,7 @@ def generate_hf(sample: Sample, rendered: RenderedContext, model_name: str = "",
             "answer_type": "",
             "answer_type_match": False,
             "prompt_variant": str(_resolve_prompt_variant(rendered=rendered, cfg=cfg)),
+            "qa_prompt_mode": str(resolve_qa_prompt_mode(cfg=cfg)),
         }
 
     latency_ms = (time.perf_counter() - start) * 1000.0
@@ -530,6 +555,7 @@ def generate_openai_compat(sample: Sample, rendered: RenderedContext, model_name
         max_new_tokens = int(getattr(cfg, "llm_max_new_tokens", 64) if cfg is not None else 64)
 
         prompt_variant = _resolve_prompt_variant(rendered=rendered, cfg=cfg)
+        qa_prompt_mode = resolve_qa_prompt_mode(cfg=cfg)
         prompt = _build_qa_prompt(sample=sample, rendered=rendered, cfg=cfg)
         messages = [{"role": "user", "content": prompt}]
         generation_meta = {}
@@ -573,6 +599,7 @@ def generate_openai_compat(sample: Sample, rendered: RenderedContext, model_name
         prediction, post_meta = _apply_qa_utilization_postprocess(sample=sample, rendered=rendered, prediction=prediction)
         generation_meta.update(dict(post_meta or {}))
         generation_meta["prompt_variant"] = str(prompt_variant)
+        generation_meta["qa_prompt_mode"] = str(qa_prompt_mode)
         text = raw_text
     except Exception as exc:
         fallback = generate_heuristic(sample, rendered, model_name=model_name, cfg=cfg)
@@ -593,6 +620,7 @@ def generate_openai_compat(sample: Sample, rendered: RenderedContext, model_name
             "answer_type": "",
             "answer_type_match": False,
             "prompt_variant": str(_resolve_prompt_variant(rendered=rendered, cfg=cfg)),
+            "qa_prompt_mode": str(resolve_qa_prompt_mode(cfg=cfg)),
         }
 
     latency_ms = (time.perf_counter() - start) * 1000.0

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import math
 import time
 from collections import deque
@@ -15,7 +16,16 @@ from .embedding import encode_texts, topk_cosine_similarity
 from .global_index import load_or_build_global_index, load_semantic_index
 from .metrics import supporting_fact_match_details
 from .phase7_config import Phase7Config, phase7_config_from_cfg
+from .phase7_query_intent import (
+    QueryIntentGraph,
+    build_intent_slots_for_candidate,
+    extract_query_intent_graph,
+    sentence_answer_type_compatibility,
+    sentence_entity_coverage,
+    sentence_relation_cue_coverage,
+)
 from .phase7_logging import get_phase7_logger
+from .phase7_trace_utils import Phase7StageTracer
 from .registry import register_method
 from .types import RetrievalResult
 from .utils import content_tokens
@@ -58,6 +68,11 @@ class Phase7EvidenceAtom:
     connected_anchor_ids: Set[str] = field(default_factory=set)
     connected_seed_ids: Set[str] = field(default_factory=set)
     corridor_path_ids: Set[str] = field(default_factory=set)
+    source_tags: Set[str] = field(default_factory=set)
+    intent_entity_coverage: float = 0.0
+    intent_relation_cue_coverage: float = 0.0
+    intent_answer_type_compatibility: float = 0.0
+    intent_slot_tags: Set[str] = field(default_factory=set)
 
 
 _PHASE7_INDEX_CACHE: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
@@ -502,11 +517,26 @@ def _candidate_atoms_from_local_graph(
             )
         )
 
+    candidate_rows: List[Dict[str, Any]] = []
+    for node, blend, semantic_score, flow_score, carrier_id in scored_rows:
+        candidate_rows.append(
+            {
+                "node_id": str(node),
+                "blend": float(blend),
+                "semantic_score": float(semantic_score),
+                "flow_score": float(flow_score),
+                "carrier_id": str(carrier_id),
+                "title": str(_sentence_node_title(local_graph, node)),
+                "text": str(_sentence_node_text(local_graph, node)),
+                "source_id": str(_sentence_node_to_id(local_graph, node)),
+            }
+        )
     return atoms, {
         "query_tokens": query_tokens,
         "anchor_tokens": anchor_tokens,
         "relation_terms": relation_terms,
         "bridge_entities": bridge_entities,
+        "candidate_rows": candidate_rows,
     }
 
 
@@ -1000,11 +1030,21 @@ def _objective_delta(
     lambda_bq: float,
     mu_redundancy: float,
     conditional_redundancy_enabled: bool,
+    selected_intent_slots: Optional[Set[str]] = None,
 ) -> Dict[str, float]:
     cand_query_cov = set(cand.normalized_token_set)
     new_query = cand_query_cov.difference(selected_query_tokens)
     novelty = float(len(new_query) / float(max(1, len(cand_query_cov)))) if cand_query_cov else 0.0
     a_gain = _clip01(cand.answerability_base * (0.7 + 0.3 * novelty))
+    selected_slots = set(selected_intent_slots or set())
+    cand_slots = set(cand.intent_slot_tags or set())
+    slot_gain = 0.0
+    if cand_slots:
+        slot_gain = float(
+            len(cand_slots.difference(selected_slots))
+            / float(max(1, len(cand_slots)))
+        )
+    aq_gain = _clip01(_mean([a_gain, slot_gain]))
 
     new_bridge = cand.entity_set.difference(selected_bridge_entities)
     bridge_novelty = float(len(new_bridge) / float(max(1, len(cand.entity_set)))) if cand.entity_set else 0.0
@@ -1041,6 +1081,7 @@ def _objective_delta(
     d_gain = _clip01(cand.anchor_decay_score)
     bq_gain = _clip01(cand.corridor_score)
     mode = str(objective_mode or "normalized_equal_weight").strip().lower()
+    use_rq = bool(conditional_redundancy_enabled or mode in {"aq_plus_bq_minus_rq", "a_plus_bq_minus_rq"})
     if mode == "a_only":
         gain = float(a_gain)
     elif mode == "a_plus_b":
@@ -1053,17 +1094,23 @@ def _objective_delta(
         gain = float(a_gain + float(lambda_bq) * bq_gain - float(mu_redundancy) * r_pen)
     elif mode == "a_plus_bq_minus_rq":
         gain = float(a_gain + float(lambda_bq) * bq_gain - float(mu_redundancy) * rq_pen)
+    elif mode == "aq_plus_bq_minus_r":
+        gain = float(aq_gain + float(lambda_bq) * bq_gain - float(mu_redundancy) * r_pen)
+    elif mode == "aq_plus_bq_minus_rq":
+        gain = float(aq_gain + float(lambda_bq) * bq_gain - float(mu_redundancy) * rq_pen)
     else:
         # normalized_equal_weight and a_plus_b_minus_r both map to A + lambda*B - mu*R.
         gain = float(a_gain + float(lambda_bridge) * b_gain - float(mu_redundancy) * r_pen)
     return {
         "final_gain": float(gain),
         "A": float(a_gain),
+        "Aq": float(aq_gain),
+        "intent_slot_gain": float(slot_gain),
         "D": float(d_gain),
         "B": float(b_gain),
         "Bq": float(bq_gain),
         "R": float(r_pen),
-        "Rq": float(rq_pen),
+        "Rq": float(rq_pen if use_rq else r_pen),
         "novelty_q": float(novelty_q),
     }
 
@@ -1286,6 +1333,229 @@ def _phase1_seed_rows(
     return rows
 
 
+def _relation_match(text: str, cues: List[str]) -> float:
+    return float(sentence_relation_cue_coverage(text=text, relation_cues=list(cues or [])))
+
+
+def _intent_entity_match(title: str, text: str, entities: List[str]) -> float:
+    return float(
+        sentence_entity_coverage(
+            title=str(title or ""),
+            text=str(text or ""),
+            target_entities=list(entities or []),
+        )
+    )
+
+
+def _intent_answer_type_match(text: str, cues: List[str]) -> float:
+    return float(
+        sentence_answer_type_compatibility(
+            text=str(text or ""),
+            answer_type_cues=list(cues or []),
+        )
+    )
+
+
+def _anchor_neighbor_sentence_nodes(local_graph: nx.Graph, anchor_nodes: List[str]) -> Set[str]:
+    out: Set[str] = set()
+    for anchor in list(anchor_nodes or []):
+        if anchor not in local_graph:
+            continue
+        for nbr in sorted(str(n) for n in local_graph.neighbors(anchor)):
+            if _node_type(local_graph, nbr) == "sentence":
+                out.add(str(nbr))
+                continue
+            for nbr2 in sorted(str(n2) for n2 in local_graph.neighbors(nbr)):
+                if _node_type(local_graph, nbr2) == "sentence":
+                    out.add(str(nbr2))
+    return out
+
+
+def _rank_nodes_by_aux(
+    aux_rows: List[Dict[str, Any]],
+    *,
+    score_key: str,
+    cap: int,
+) -> List[str]:
+    k = max(1, int(cap))
+    ranked = sorted(
+        list(aux_rows or []),
+        key=lambda row: (
+            float(row.get(score_key, 0.0) or 0.0),
+            float(row.get("blend", 0.0) or 0.0),
+            str(row.get("node_id", "") or ""),
+        ),
+        reverse=True,
+    )
+    out: List[str] = []
+    for row in ranked:
+        node_id = str(row.get("node_id", "") or "")
+        if not node_id:
+            continue
+        out.append(node_id)
+        if len(out) >= k:
+            break
+    return out
+
+
+def _intent_candidate_union(
+    *,
+    atoms: List[Phase7EvidenceAtom],
+    aux_rows: List[Dict[str, Any]],
+    local_graph: nx.Graph,
+    sem_chunk_scores: Dict[str, float],
+    anchor_neighbor_nodes: Set[str],
+    intent_graph: QueryIntentGraph,
+    p7: Phase7Config,
+    candidate_top_m_default: int,
+) -> Tuple[List[Phase7EvidenceAtom], Dict[str, Any], Dict[str, Dict[str, int]]]:
+    atom_by_node: Dict[str, Phase7EvidenceAtom] = {str(a.atom_id): a for a in list(atoms or [])}
+    ordered_rows = sorted(
+        list(aux_rows or []),
+        key=lambda row: (
+            float(row.get("blend", 0.0) or 0.0),
+            float(row.get("flow_score", 0.0) or 0.0),
+            float(row.get("semantic_score", 0.0) or 0.0),
+            str(row.get("node_id", "") or ""),
+        ),
+        reverse=True,
+    )
+    # Build candidate source slices from globally defined signals.
+    semantic_nodes = [str(a.atom_id) for a in sorted(list(atoms or []), key=lambda a: (float(a.semantic_score), str(a.atom_id)), reverse=True)]
+    graph_flow_nodes = [str(a.atom_id) for a in sorted(list(atoms or []), key=lambda a: (float(a.flow_score), str(a.atom_id)), reverse=True)]
+
+    relation_rows: List[Dict[str, Any]] = []
+    answer_type_rows: List[Dict[str, Any]] = []
+    entity_rows: List[Dict[str, Any]] = []
+    for row in ordered_rows:
+        text = str(row.get("text", "") or "")
+        title = str(row.get("title", "") or "")
+        rel_cov = _relation_match(text, list(intent_graph.relation_cues))
+        ans_cov = _intent_answer_type_match(text, list(intent_graph.answer_type_cues))
+        ent_cov = _intent_entity_match(title, text, list(intent_graph.target_entities))
+        if rel_cov > 0.0:
+            rr = dict(row)
+            rr["intent_relation_score"] = float(rel_cov)
+            relation_rows.append(rr)
+        if ans_cov > 0.0:
+            ar = dict(row)
+            ar["intent_answer_type_score"] = float(ans_cov)
+            answer_type_rows.append(ar)
+        if ent_cov > 0.0:
+            er = dict(row)
+            er["intent_entity_score"] = float(ent_cov)
+            entity_rows.append(er)
+
+    relation_nodes = _rank_nodes_by_aux(
+        relation_rows,
+        score_key="intent_relation_score",
+        cap=int(p7.intent_max_relation_candidates),
+    )
+    answer_type_nodes = _rank_nodes_by_aux(
+        answer_type_rows,
+        score_key="intent_answer_type_score",
+        cap=int(p7.intent_max_answer_type_candidates),
+    )
+    entity_title_nodes = _rank_nodes_by_aux(
+        entity_rows,
+        score_key="intent_entity_score",
+        cap=int(p7.intent_max_entity_candidates),
+    )
+    anchor_neighborhood_nodes = sorted(list(anchor_neighbor_nodes))
+
+    # deterministic union
+    union_ids: List[str] = []
+    seen: Set[str] = set()
+    ordered_source_lists = [
+        list(semantic_nodes),
+        list(entity_title_nodes),
+        list(relation_nodes),
+        list(answer_type_nodes),
+        list(graph_flow_nodes),
+        list(anchor_neighborhood_nodes),
+    ]
+    for src in ordered_source_lists:
+        for sid in src:
+            nid = str(sid or "")
+            if (not nid) or (nid in seen):
+                continue
+            if nid not in atom_by_node:
+                continue
+            seen.add(nid)
+            union_ids.append(nid)
+
+    cap = int(candidate_top_m_default)
+    if bool(p7.query_intent_enabled) and bool(p7.intent_phase1_enabled):
+        cap = max(cap, int(p7.intent_candidate_top_m))
+    union_ids = union_ids[: max(1, int(cap))]
+    union_atoms: List[Phase7EvidenceAtom] = [atom_by_node[nid] for nid in union_ids if nid in atom_by_node]
+
+    source_counts_eval_only = {
+        "semantic": 0,
+        "entity_title": 0,
+        "relation_cue": 0,
+        "answer_type": 0,
+        "graph_flow": 0,
+        "anchor_neighborhood": 0,
+    }
+    source_counts = dict(source_counts_eval_only)
+    src_gold_eval_only = {
+        "gold_found_by_semantic": 0,
+        "gold_found_by_entity_title": 0,
+        "gold_found_by_relation_cue": 0,
+        "gold_found_by_answer_type": 0,
+        "gold_found_by_graph_flow": 0,
+        "gold_found_by_anchor_neighborhood": 0,
+    }
+    # annotate per-atom source tags + intent features.
+    entity_set = set(entity_title_nodes)
+    relation_set = set(relation_nodes)
+    answer_type_set = set(answer_type_nodes)
+    graph_flow_set = set(graph_flow_nodes)
+    semantic_set = set(semantic_nodes)
+    anchor_nei_set = set(anchor_neighborhood_nodes)
+    for atom in list(union_atoms or []):
+        tags: Set[str] = set()
+        if atom.atom_id in semantic_set:
+            tags.add("semantic")
+        if atom.atom_id in entity_set:
+            tags.add("entity_title")
+        if atom.atom_id in relation_set:
+            tags.add("relation_cue")
+        if atom.atom_id in answer_type_set:
+            tags.add("answer_type")
+        if atom.atom_id in graph_flow_set:
+            tags.add("graph_flow")
+        if atom.atom_id in anchor_nei_set:
+            tags.add("anchor_neighborhood")
+        atom.source_tags = set(tags)
+        atom.intent_entity_coverage = _intent_entity_match(atom.title, atom.text, list(intent_graph.target_entities))
+        atom.intent_relation_cue_coverage = _relation_match(atom.text, list(intent_graph.relation_cues))
+        atom.intent_answer_type_compatibility = _intent_answer_type_match(atom.text, list(intent_graph.answer_type_cues))
+        atom.intent_slot_tags = build_intent_slots_for_candidate(
+            entity_cov=float(atom.intent_entity_coverage),
+            relation_cov=float(atom.intent_relation_cue_coverage),
+            answer_type_compat=float(atom.intent_answer_type_compatibility),
+        )
+        for tag in list(tags):
+            source_counts[tag] = int(source_counts.get(tag, 0) + 1)
+
+    return (
+        union_atoms,
+        {
+            "num_semantic_candidates": int(len(semantic_nodes)),
+            "num_entity_title_candidates": int(len(entity_title_nodes)),
+            "num_relation_cue_candidates": int(len(relation_nodes)),
+            "num_answer_type_candidates": int(len(answer_type_nodes)),
+            "num_graph_flow_candidates": int(len(graph_flow_nodes)),
+            "num_union_candidates_before_truncation": int(len(seen)),
+            "num_union_candidates_after_truncation": int(len(union_atoms)),
+            "candidate_source_counts": source_counts,
+        },
+        src_gold_eval_only,
+    )
+
+
 def _select_from_rows_with_budget(
     rows: List[Dict[str, Any]],
     max_selected_atoms: int,
@@ -1311,6 +1581,8 @@ def _select_from_rows_with_budget(
 def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
     p7 = phase7_config_from_cfg(cfg)
     candidate_top_m_eff = max(1, int(p7.candidate_top_m))
+    if bool(p7.query_intent_enabled) and bool(p7.intent_phase1_enabled):
+        candidate_top_m_eff = max(candidate_top_m_eff, int(p7.intent_candidate_top_m))
     max_selected_atoms_eff = max(1, int(p7.max_selected_atoms))
     max_context_tokens_eff = max(32, int(p7.max_context_tokens))
     out_dir = _resolved_output_dir(cfg)
@@ -1322,29 +1594,69 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         cfg=p7,
     )
 
+    dataset_name = str(getattr(cfg, "dataset", "") or "")
+    query_id = str(getattr(sample, "qid", "") or "")
     stage_ms: Dict[str, float] = {}
     stage_rows: List[Dict[str, Any]] = []
+    tracer = Phase7StageTracer(
+        run_id=str(getattr(logger, "run_id", "")),
+        dataset=str(dataset_name),
+        query_id=str(query_id),
+    )
     t_total = time.perf_counter()
+    question_text = str(getattr(sample, "question", "") or "")
 
-    def _stage_begin() -> float:
+    query_tokens = set(content_tokens(question_text))
+    query_tokens_sorted = sorted(list(query_tokens))
+    intent_graph: QueryIntentGraph = extract_query_intent_graph(
+        question=str(question_text),
+        query_entities=[],
+        candidate_titles=[],
+    )
+
+    def _stage_begin(name: str, **kwargs) -> float:
+        tracer.start(name, metadata=dict(kwargs))
         return time.perf_counter()
 
     def _stage_end(name: str, t0: float, **kwargs) -> None:
-        elapsed = float((time.perf_counter() - t0) * 1000.0)
-        stage_ms[name] = elapsed
+        _elapsed = float((time.perf_counter() - t0) * 1000.0)
+        elapsed = float(tracer.end(name, metadata=dict(kwargs)))
+        if elapsed <= 0.0:
+            elapsed = _elapsed
+        stage_ms[name] = float(elapsed)
+        span = dict(tracer.stage_spans.get(str(name), {}) or {})
         row = {
-            "query_id": str(getattr(sample, "qid", "") or ""),
+            "run_id": str(getattr(logger, "run_id", "")),
+            "dataset": str(dataset_name),
+            "query_id": str(query_id),
             "stage": str(name),
-            "elapsed_ms": elapsed,
+            "elapsed_ms": float(elapsed),
             "num_nodes": int(kwargs.get("num_nodes", 0) or 0),
             "num_edges": int(kwargs.get("num_edges", 0) or 0),
             "num_candidates_in": int(kwargs.get("num_candidates_in", 0) or 0),
             "num_candidates_out": int(kwargs.get("num_candidates_out", 0) or 0),
+            "start_time_utc": span.get("start_time_utc", None),
+            "end_time_utc": span.get("end_time_utc", None),
+            "start_perf_counter_ns": span.get("start_perf_counter_ns", None),
+            "end_perf_counter_ns": span.get("end_perf_counter_ns", None),
+            "skipped": bool(span.get("skipped", False)),
+            "skip_reason": span.get("skip_reason", None),
         }
         stage_rows.append(row)
 
+    # query parse
+    t0 = _stage_begin("query_parse", token_count=len(query_tokens_sorted))
+    _stage_end(
+        "query_parse",
+        t0,
+        num_nodes=0,
+        num_edges=0,
+        num_candidates_in=0,
+        num_candidates_out=0,
+    )
+
     # query embedding
-    t0 = _stage_begin()
+    t0 = _stage_begin("query_embedding")
     qvec = _question_embedding(str(getattr(sample, "question", "") or ""), cfg)
     _stage_end("query_embedding", t0)
 
@@ -1354,7 +1666,7 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
     graph_mode = str((state.get("meta", {}) or {}).get("build_config", {}).get("graph_mode", "entity_chunk_graph"))
     unit_consistency = _unit_consistency_report(cfg=cfg, p7=p7, graph=graph)
 
-    t0 = _stage_begin()
+    t0 = _stage_begin("index_validation")
     index_summary = _phase7_index_summary(graph, p7)
     logger.log_index_summary(index_summary)
     compat_ok, compat_msg = validate_phase7_index_compatibility(graph, p7)
@@ -1374,13 +1686,51 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
             + "; ".join([str(x) for x in list(unit_consistency.get("warnings", []) or [])])
         )
 
-    t0 = _stage_begin()
+    t0 = _stage_begin("query_entity_extraction")
     anchors = select_lexical_anchors(sample, graph, max_anchors=max(1, int(getattr(cfg, "max_anchors", 5) or 5)), cfg=cfg)
+    _stage_end("query_entity_extraction", t0, num_nodes=len(list(anchors or [])), num_edges=0)
+
+    t0 = _stage_begin("entity_anchor_resolution")
     anchor_nodes = _normalize_anchor_nodes(anchors, graph)
-    _stage_end("anchor_extraction", t0, num_nodes=len(anchor_nodes), num_edges=0)
+    _stage_end("entity_anchor_resolution", t0, num_nodes=len(anchor_nodes), num_edges=0)
+
+    query_entities = sorted(
+        list(
+            {
+                _entity_token(a)
+                for a in list(anchor_nodes or [])
+                if _node_type(graph, a) == "entity" and _entity_token(a)
+            }
+        )
+    )
+    t0 = _stage_begin("query_intent_extraction")
+    intent_graph = extract_query_intent_graph(
+        question=str(question_text),
+        query_entities=list(query_entities),
+        candidate_titles=[],
+    )
+    _stage_end(
+        "query_intent_extraction",
+        t0,
+        num_nodes=int(len(intent_graph.constraint_slots)),
+        num_edges=0,
+        num_candidates_in=0,
+        num_candidates_out=int(len(intent_graph.constraint_slots)),
+    )
+    query_relation_cues = list(intent_graph.relation_cues)
+    query_answer_type_cues = list(intent_graph.answer_type_cues)
+    t0 = _stage_begin("query_constraint_extraction")
+    _stage_end(
+        "query_constraint_extraction",
+        t0,
+        num_nodes=int(len(query_entities)),
+        num_edges=0,
+        num_candidates_in=0,
+        num_candidates_out=0,
+    )
 
     # semantic anchor retrieval
-    t0 = _stage_begin()
+    t0 = _stage_begin("semantic_anchor_retrieval")
     sem_chunks, sem_chunk_scores = _semantic_top_chunks(qvec, state, top_t=int(p7.semantic_anchor_top_t))
     sem_entities, sem_entity_scores = _semantic_top_entities(qvec, state, topn=max(8, int(p7.semantic_anchor_top_t // 4)))
     sem_chunks = [node for node in sem_chunks if node in graph]
@@ -1396,7 +1746,7 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
     )
 
     # local proposal graph build
-    t0 = _stage_begin()
+    t0 = _stage_begin("local_graph_build")
     local_graph, local_diag = _build_local_graph(
         graph=graph,
         anchor_nodes=anchor_nodes,
@@ -1411,7 +1761,7 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
     )
 
     # graph flow
-    t0 = _stage_begin()
+    t0 = _stage_begin("graph_flow")
     flow = _flow_scores(local_graph, seed_nodes=(anchor_nodes + sem_chunks + sem_entities), p7=p7)
     _stage_end(
         "graph_flow",
@@ -1420,8 +1770,8 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         num_edges=int(local_graph.number_of_edges()),
     )
 
-    # candidate truncation (top-M atoms)
-    t0 = _stage_begin()
+    # phase1 candidate assembly (sentence atoms, top-M truncation)
+    t0 = _stage_begin("phase1_candidate_assembly")
     local_node_type_counts = _count_nodes_by_type(local_graph)
     candidate_source_breakdown = {
         "sentence": int(local_node_type_counts.get("sentence", 0)),
@@ -1439,8 +1789,53 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         anchor_nodes=anchor_nodes,
         candidate_top_m=int(candidate_top_m_eff),
     )
+    phase1_intent_diag: Dict[str, Any] = {
+        "num_semantic_candidates": int(len(atoms)),
+        "num_entity_title_candidates": 0,
+        "num_relation_cue_candidates": 0,
+        "num_answer_type_candidates": 0,
+        "num_graph_flow_candidates": int(len(atoms)),
+        "num_union_candidates_before_truncation": int(len(atoms)),
+        "num_union_candidates_after_truncation": int(len(atoms)),
+    }
+    candidate_source_contribution_eval_only: Dict[str, int] = {
+        "gold_found_by_semantic": 0,
+        "gold_found_by_entity_title": 0,
+        "gold_found_by_relation_cue": 0,
+        "gold_found_by_answer_type": 0,
+        "gold_found_by_graph_flow": 0,
+        "gold_found_by_anchor_neighborhood": 0,
+    }
+    t_union_stage = _stage_begin("intent_candidate_union")
+    intent_candidate_union_ms = 0.0
+    if bool(p7.query_intent_enabled) and bool(p7.intent_phase1_enabled):
+        t_union = time.perf_counter()
+        anchor_neighbor_nodes = _anchor_neighbor_sentence_nodes(
+            local_graph=local_graph,
+            anchor_nodes=anchor_nodes,
+        )
+        atoms, phase1_intent_diag, candidate_source_contribution_eval_only = _intent_candidate_union(
+            atoms=list(atoms),
+            aux_rows=list(aux.get("candidate_rows", []) or []),
+            local_graph=local_graph,
+            sem_chunk_scores=sem_chunk_scores,
+            anchor_neighbor_nodes=anchor_neighbor_nodes,
+            intent_graph=intent_graph,
+            p7=p7,
+            candidate_top_m_default=int(candidate_top_m_eff),
+        )
+        intent_candidate_union_ms = float((time.perf_counter() - t_union) * 1000.0)
     _stage_end(
-        "candidate_truncation",
+        "intent_candidate_union",
+        t_union_stage,
+        num_nodes=int(local_graph.number_of_nodes()),
+        num_edges=int(local_graph.number_of_edges()),
+        num_candidates_in=int(len(aux.get("candidate_rows", []) or [])),
+        num_candidates_out=int(len(atoms)),
+    )
+    stage_ms["intent_candidate_union"] = float(intent_candidate_union_ms if intent_candidate_union_ms > 0.0 else stage_ms.get("intent_candidate_union", 0.0))
+    _stage_end(
+        "phase1_candidate_assembly",
         t0,
         num_nodes=int(local_graph.number_of_nodes()),
         num_edges=int(local_graph.number_of_edges()),
@@ -1454,22 +1849,83 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
             "(FLOW_RETURNED_NO_SENTENCE_CANDIDATES). "
             "Run with phase7_allow_empty_candidates_for_debug=true only for diagnostics."
         )
+    if not (bool(p7.query_intent_enabled) and bool(p7.intent_phase1_enabled)):
+        for atom in atoms:
+            tags: Set[str] = set()
+            if float(atom.semantic_score) > 0.0:
+                tags.add("semantic")
+            if float(atom.flow_score) > 0.0:
+                tags.add("graph_flow")
+            atom.source_tags = set(tags)
+            atom.intent_entity_coverage = _intent_entity_match(atom.title, atom.text, list(intent_graph.target_entities))
+            atom.intent_relation_cue_coverage = _relation_match(atom.text, list(intent_graph.relation_cues))
+            atom.intent_answer_type_compatibility = _intent_answer_type_match(atom.text, list(intent_graph.answer_type_cues))
+            atom.intent_slot_tags = build_intent_slots_for_candidate(
+                entity_cov=float(atom.intent_entity_coverage),
+                relation_cov=float(atom.intent_relation_cue_coverage),
+                answer_type_compat=float(atom.intent_answer_type_compatibility),
+            )
 
-    # feature extraction (single-pass distances + normalized bases)
-    t0 = _stage_begin()
+    # safe pruning stages (diagnostic no-op in mainline).
+    pruned_invalid = list(atoms)
+    pruned_dedup = list(pruned_invalid)
+    pruned_dominance = list(pruned_dedup)
+    pruning_diagnostics_eval_only = {
+        "invalid_removed_count": 0,
+        "dedup_removed_count": 0,
+        "dominance_removed_count": 0,
+        "gold_removed_by_invalid_filter": 0,
+        "gold_removed_by_dedup": 0,
+        "gold_removed_by_dominance": 0,
+        "removed_gold_ids_eval_only": [],
+        "removed_gold_reasons_eval_only": [],
+    }
+
+    t0 = _stage_begin("safe_pruning_invalid")
+    _stage_end(
+        "safe_pruning_invalid",
+        t0,
+        num_nodes=int(local_graph.number_of_nodes()),
+        num_edges=int(local_graph.number_of_edges()),
+        num_candidates_in=int(len(atoms)),
+        num_candidates_out=int(len(pruned_invalid)),
+    )
+    t0 = _stage_begin("safe_pruning_dedup")
+    _stage_end(
+        "safe_pruning_dedup",
+        t0,
+        num_nodes=int(local_graph.number_of_nodes()),
+        num_edges=int(local_graph.number_of_edges()),
+        num_candidates_in=int(len(pruned_invalid)),
+        num_candidates_out=int(len(pruned_dedup)),
+    )
+    t0 = _stage_begin("safe_pruning_dominance")
+    _stage_end(
+        "safe_pruning_dominance",
+        t0,
+        num_nodes=int(local_graph.number_of_nodes()),
+        num_edges=int(local_graph.number_of_edges()),
+        num_candidates_in=int(len(pruned_dedup)),
+        num_candidates_out=int(len(pruned_dominance)),
+    )
+    atoms = list(pruned_dominance)
+
+    # feature A scoring.
+    t0 = _stage_begin("feature_A_scoring")
     _assign_anchor_distances(local_graph, atoms, anchor_nodes)
     _fill_normalized_bases(atoms)
     _stage_end(
-        "feature_extraction",
+        "feature_A_scoring",
         t0,
         num_nodes=int(local_graph.number_of_nodes()),
         num_edges=int(local_graph.number_of_edges()),
         num_candidates_in=int(len(atoms)),
         num_candidates_out=int(len(atoms)),
     )
+    stage_ms["feature_Aq_scoring"] = float(stage_ms.get("feature_A_scoring", 0.0))
 
     # anchor-distance decay feature (feature-only, no pruning)
-    t0 = _stage_begin()
+    t0 = _stage_begin("feature_anchor_distance")
     if bool(p7.anchor_decay_enabled):
         _assign_anchor_decay_scores(
             local_graph=local_graph,
@@ -1482,7 +1938,7 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         for atom in atoms:
             atom.anchor_decay_score = 0.0
     _stage_end(
-        "anchor_distance_bfs",
+        "feature_anchor_distance",
         t0,
         num_nodes=int(local_graph.number_of_nodes()),
         num_edges=int(local_graph.number_of_edges()),
@@ -1506,7 +1962,7 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
     corridor_seed_rows: List[Dict[str, Any]] = []
     corridor_info: Dict[str, Any] = {}
     t_corridor_start = time.perf_counter()
-    t0 = _stage_begin()
+    t0 = _stage_begin("corridor_anchor_selection")
     if bool(p7.corridor_enabled):
         corridor_anchor_rows = _corridor_anchor_rows(
             graph=local_graph,
@@ -1516,10 +1972,31 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
             atoms=atoms,
             max_anchors=int(p7.corridor_max_anchors),
         )
+    _stage_end(
+        "corridor_anchor_selection",
+        t0,
+        num_nodes=int(local_graph.number_of_nodes()),
+        num_edges=int(local_graph.number_of_edges()),
+        num_candidates_in=int(len(atoms)),
+        num_candidates_out=int(len(corridor_anchor_rows)),
+    )
+    t0 = _stage_begin("corridor_seed_selection")
+    if bool(p7.corridor_enabled):
         corridor_seed_rows = _corridor_seed_rows(
             atoms=atoms,
             max_seeds=int(p7.corridor_max_seeds),
         )
+    _stage_end(
+        "corridor_seed_selection",
+        t0,
+        num_nodes=int(local_graph.number_of_nodes()),
+        num_edges=int(local_graph.number_of_edges()),
+        num_candidates_in=int(len(atoms)),
+        num_candidates_out=int(len(corridor_seed_rows)),
+    )
+
+    t0 = _stage_begin("corridor_extraction")
+    if bool(p7.corridor_enabled):
         corridor_info = _extract_anchor_seed_corridors(
             local_graph=local_graph,
             anchor_rows=corridor_anchor_rows,
@@ -1538,7 +2015,7 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         num_candidates_out=int(len(corridor_info.get("corridor_sentence_nodes", []) or [])),
     )
 
-    t0 = _stage_begin()
+    t0 = _stage_begin("feature_Bq_scoring")
     if bool(p7.corridor_enabled):
         _score_corridor_features(
             local_graph=local_graph,
@@ -1560,7 +2037,7 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
             atom.connected_seed_ids = set()
             atom.corridor_path_ids = set()
     _stage_end(
-        "bq_feature_scoring",
+        "feature_Bq_scoring",
         t0,
         num_nodes=int(local_graph.number_of_nodes()),
         num_edges=int(local_graph.number_of_edges()),
@@ -1579,14 +2056,40 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "corridor_feature_ms": float((time.perf_counter() - t_corridor_start) * 1000.0),
     }
 
+    gold_unit_ids: Set[str] = set()
+    for title, sent_idx in list(getattr(sample, "supporting_facts", []) or []):
+        t = str(title or "").strip()
+        idx = _safe_int(sent_idx, 0)
+        if t:
+            gold_unit_ids.add(f"{t}::{idx}")
+    if atoms:
+        for atom in atoms:
+            if str(atom.source_id) not in gold_unit_ids:
+                continue
+            tags = set(atom.source_tags or set())
+            if "semantic" in tags:
+                candidate_source_contribution_eval_only["gold_found_by_semantic"] += 1
+            if "entity_title" in tags:
+                candidate_source_contribution_eval_only["gold_found_by_entity_title"] += 1
+            if "relation_cue" in tags:
+                candidate_source_contribution_eval_only["gold_found_by_relation_cue"] += 1
+            if "answer_type" in tags:
+                candidate_source_contribution_eval_only["gold_found_by_answer_type"] += 1
+            if "graph_flow" in tags:
+                candidate_source_contribution_eval_only["gold_found_by_graph_flow"] += 1
+            if "anchor_neighborhood" in tags:
+                candidate_source_contribution_eval_only["gold_found_by_anchor_neighborhood"] += 1
+
     # single budgeted marginal selection
-    t0 = _stage_begin()
+    t0 = _stage_begin("marginal_selection")
     selected: List[Phase7EvidenceAtom] = []
+    selected_atom_id_set: Set[str] = set()
     selected_query_tokens: Set[str] = set()
     selected_bridge_entities: Set[str] = set()
     selected_anchor_coverage: Set[str] = set()
     selected_corridor_paths: Set[str] = set()
     selected_sources: Set[str] = set()
+    selected_intent_slots: Set[str] = set()
     selected_token_count = 0
     answerability_gain_total = 0.0
     decay_gain_total = 0.0
@@ -1597,14 +2100,16 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
     objective_gain_total = 0.0
     budget_filtered_candidates = 0
     selected_feature_breakdown: List[Dict[str, Any]] = []
+    selection_trace_steps: List[Dict[str, Any]] = []
     conditional_redundancy_ms = 0.0
 
     while len(selected) < int(max_selected_atoms_eff):
         best_atom = None
         best_gain = float(p7.min_positive_gain)
         best_terms: Dict[str, float] = {}
+        candidate_term_rows: List[Dict[str, Any]] = []
         for atom in atoms:
-            if atom.atom_id in {s.atom_id for s in selected}:
+            if atom.atom_id in selected_atom_id_set:
                 continue
             if selected_token_count + int(atom.token_count) > int(max_context_tokens_eff):
                 budget_filtered_candidates += 1
@@ -1624,9 +2129,17 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
                 lambda_bq=float(p7.lambda_bq),
                 mu_redundancy=float(p7.mu_redundancy),
                 conditional_redundancy_enabled=bool(p7.conditional_redundancy_enabled),
+                selected_intent_slots=selected_intent_slots,
             )
             conditional_redundancy_ms += float((time.perf_counter() - t_cr) * 1000.0)
             gain = float(terms.get("final_gain", 0.0))
+            candidate_term_rows.append(
+                {
+                    "atom": atom,
+                    "terms": dict(terms),
+                    "gain": float(gain),
+                }
+            )
             if gain > best_gain:
                 best_gain = float(gain)
                 best_atom = atom
@@ -1634,11 +2147,13 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         if best_atom is None:
             break
         selected.append(best_atom)
+        selected_atom_id_set.add(str(best_atom.atom_id))
         selected_token_count += int(best_atom.token_count)
         selected_query_tokens.update(best_atom.normalized_token_set)
         selected_bridge_entities.update(best_atom.entity_set)
         selected_anchor_coverage.update(set(best_atom.connected_anchor_ids))
         selected_corridor_paths.update(set(best_atom.corridor_path_ids))
+        selected_intent_slots.update(set(best_atom.intent_slot_tags))
         if best_atom.source_key:
             selected_sources.add(str(best_atom.source_key))
         answerability_gain_total += float(best_terms.get("A", 0.0))
@@ -1653,12 +2168,65 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
                 "node_id": str(best_atom.source_id),
                 "atom_id": str(best_atom.atom_id),
                 "A": float(best_terms.get("A", 0.0)),
+                "Aq": float(best_terms.get("Aq", best_terms.get("A", 0.0))),
+                "intent_slot_gain": float(best_terms.get("intent_slot_gain", 0.0)),
                 "D": float(best_terms.get("D", 0.0)),
                 "Bq": float(best_terms.get("Bq", 0.0)),
                 "R": float(best_terms.get("R", 0.0)),
                 "Rq": float(best_terms.get("Rq", 0.0)),
                 "final_gain": float(best_terms.get("final_gain", best_gain)),
                 "is_corridor_node": bool(best_atom.is_corridor_node),
+                "source_tags": sorted(list(best_atom.source_tags or set())),
+                "intent_entity_coverage": float(best_atom.intent_entity_coverage),
+                "intent_relation_cue_coverage": float(best_atom.intent_relation_cue_coverage),
+                "intent_answer_type_compatibility": float(best_atom.intent_answer_type_compatibility),
+            }
+        )
+        top_rejected_gold_eval_only: List[Dict[str, Any]] = []
+        for row in sorted(
+            [
+                x
+                for x in list(candidate_term_rows or [])
+                if str(x["atom"].source_id) in gold_unit_ids and str(x["atom"].atom_id) != str(best_atom.atom_id)
+            ],
+            key=lambda x: (float(x.get("gain", 0.0)), str(x["atom"].source_id)),
+            reverse=True,
+        )[:3]:
+            a = row["atom"]
+            trow = dict(row.get("terms", {}) or {})
+            top_rejected_gold_eval_only.append(
+                {
+                    "node_id": str(a.source_id),
+                    "atom_id": str(a.atom_id),
+                    "A": float(trow.get("A", 0.0)),
+                    "D": float(trow.get("D", 0.0)),
+                    "Bq": float(trow.get("Bq", 0.0)),
+                    "R": float(trow.get("R", 0.0)),
+                    "Rq": float(trow.get("Rq", 0.0)),
+                    "final_gain": float(trow.get("final_gain", 0.0)),
+                }
+            )
+        selection_trace_steps.append(
+            {
+                "step": int(len(selected)),
+                "selected_node_id": str(best_atom.source_id),
+                "selected_atom_id": str(best_atom.atom_id),
+                "selected_title": str(best_atom.title),
+                "selected_text": str(best_atom.text),
+                "A": float(best_terms.get("A", 0.0)),
+                "Aq": float(best_terms.get("Aq", best_terms.get("A", 0.0))),
+                "intent_slot_gain": float(best_terms.get("intent_slot_gain", 0.0)),
+                "D": float(best_terms.get("D", 0.0)),
+                "Bq": float(best_terms.get("Bq", 0.0)),
+                "R": float(best_terms.get("R", 0.0)),
+                "Rq": float(best_terms.get("Rq", 0.0)),
+                "final_gain": float(best_terms.get("final_gain", best_gain)),
+                "token_count": int(best_atom.token_count),
+                "cumulative_tokens": int(selected_token_count),
+                "is_gold_eval_only": bool(str(best_atom.source_id) in gold_unit_ids),
+                "is_equivalent_eval_only": bool(str(best_atom.source_id) in gold_unit_ids),
+                "source_tags": sorted(list(best_atom.source_tags or set())),
+                "top_rejected_gold_eval_only": top_rejected_gold_eval_only,
             }
         )
 
@@ -1675,8 +2243,40 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         num_candidates_out=int(len(selected)),
     )
     stage_ms["conditional_redundancy"] = float(conditional_redundancy_ms)
+    stage_ms["feature_R_scoring"] = float(conditional_redundancy_ms)
+    stage_ms["feature_Rq_scoring"] = float(conditional_redundancy_ms)
+    tracer.skip(
+        "feature_R_scoring",
+        "inline_computation",
+        metadata={
+            "elapsed_ms_hint": float(conditional_redundancy_ms),
+            "num_candidates": int(len(atoms)),
+        },
+    )
+    r_span = dict(tracer.stage_spans.get("feature_R_scoring", {}) or {})
     stage_rows.append(
         {
+            "run_id": str(getattr(logger, "run_id", "")),
+            "dataset": str(dataset_name),
+            "query_id": str(getattr(sample, "qid", "") or ""),
+            "stage": "feature_R_scoring",
+            "elapsed_ms": float(conditional_redundancy_ms),
+            "num_nodes": int(local_graph.number_of_nodes()),
+            "num_edges": int(local_graph.number_of_edges()),
+            "num_candidates_in": int(len(atoms)),
+            "num_candidates_out": int(len(atoms)),
+            "start_time_utc": r_span.get("start_time_utc", None),
+            "end_time_utc": r_span.get("end_time_utc", None),
+            "start_perf_counter_ns": r_span.get("start_perf_counter_ns", None),
+            "end_perf_counter_ns": r_span.get("end_perf_counter_ns", None),
+            "skipped": True,
+            "skip_reason": "inline_computation",
+        }
+    )
+    stage_rows.append(
+        {
+            "run_id": str(getattr(logger, "run_id", "")),
+            "dataset": str(dataset_name),
             "query_id": str(getattr(sample, "qid", "") or ""),
             "stage": "conditional_redundancy",
             "elapsed_ms": float(conditional_redundancy_ms),
@@ -1684,11 +2284,17 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
             "num_edges": int(local_graph.number_of_edges()),
             "num_candidates_in": int(len(atoms)),
             "num_candidates_out": int(len(selected)),
+            "start_time_utc": None,
+            "end_time_utc": None,
+            "start_perf_counter_ns": None,
+            "end_perf_counter_ns": None,
+            "skipped": False,
+            "skip_reason": None,
         }
     )
 
     # deterministic rendering order (selection invariant)
-    t0 = _stage_begin()
+    t0 = _stage_begin("rendering")
     selected_ordered = _deterministic_render_order(selected)
     _stage_end(
         "rendering",
@@ -1702,6 +2308,8 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
     stage_ms["total_retrieval"] = float((time.perf_counter() - t_total) * 1000.0)
     stage_rows.append(
         {
+            "run_id": str(getattr(logger, "run_id", "")),
+            "dataset": str(dataset_name),
             "query_id": str(getattr(sample, "qid", "") or ""),
             "stage": "total_retrieval",
             "elapsed_ms": float(stage_ms["total_retrieval"]),
@@ -1709,8 +2317,43 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
             "num_edges": int(local_graph.number_of_edges()),
             "num_candidates_in": int(len(atoms)),
             "num_candidates_out": int(len(selected_ordered)),
+            "start_time_utc": None,
+            "end_time_utc": None,
+            "start_perf_counter_ns": None,
+            "end_perf_counter_ns": None,
+            "skipped": False,
+            "skip_reason": None,
         }
     )
+    for skip_stage, skip_reason in [
+        ("prompt_construction", "not_applicable"),
+        ("qa_generation", "not_applicable"),
+        ("evaluation", "not_applicable"),
+        ("oracle_context_construction", "not_applicable"),
+        ("oracle_qa_replay", "not_applicable"),
+    ]:
+        tracer.skip(skip_stage, skip_reason)
+        span = dict(tracer.stage_spans.get(skip_stage, {}) or {})
+        stage_ms[skip_stage] = 0.0
+        stage_rows.append(
+            {
+                "run_id": str(getattr(logger, "run_id", "")),
+                "dataset": str(dataset_name),
+                "query_id": str(getattr(sample, "qid", "") or ""),
+                "stage": str(skip_stage),
+                "elapsed_ms": 0.0,
+                "num_nodes": 0,
+                "num_edges": 0,
+                "num_candidates_in": 0,
+                "num_candidates_out": 0,
+                "start_time_utc": span.get("start_time_utc", None),
+                "end_time_utc": span.get("end_time_utc", None),
+                "start_perf_counter_ns": span.get("start_perf_counter_ns", None),
+                "end_perf_counter_ns": span.get("end_perf_counter_ns", None),
+                "skipped": True,
+                "skip_reason": str(skip_reason),
+            }
+        )
 
     candidate_ids = [a.source_id for a in atoms]
     candidate_texts = [a.text for a in atoms]
@@ -1725,12 +2368,6 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
     selected_node_types = [_node_type(local_graph, a.atom_id) for a in selected_ordered]
     selected_scores = [float(0.55 * a.answerability_base + 0.45 * a.bridge_base) for a in selected_ordered]
 
-    gold_unit_ids: Set[str] = set()
-    for title, sent_idx in list(getattr(sample, "supporting_facts", []) or []):
-        t = str(title or "").strip()
-        idx = _safe_int(sent_idx, 0)
-        if t:
-            gold_unit_ids.add(f"{t}::{idx}")
     phase1_gold_candidate_ids = [a.source_id for a in atoms if a.source_id in gold_unit_ids]
     corridor_gold_candidate_ids = [a.source_id for a in atoms if (a.source_id in gold_unit_ids and bool(a.is_corridor_node))]
     selected_gold_candidate_ids = [a.source_id for a in selected_ordered if a.source_id in gold_unit_ids]
@@ -1765,13 +2402,104 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         ranked_by_final.append((atom, float(terms.get("final_gain", 0.0))))
     ranked_by_final.sort(key=lambda x: (float(x[1]), float(x[0].corridor_score), str(x[0].source_id)), reverse=True)
 
-    gold_bq_scores = [float(a.corridor_score) for a in atoms if a.source_id in gold_unit_ids]
-    distractor_bq_scores = [float(a.corridor_score) for a in atoms if a.source_id not in gold_unit_ids]
+    gold_atoms = [a for a in atoms if a.source_id in gold_unit_ids]
+    distractor_atoms = [a for a in atoms if a.source_id not in gold_unit_ids]
+    gold_bq_scores = [float(a.corridor_score) for a in gold_atoms]
+    distractor_bq_scores = [float(a.corridor_score) for a in distractor_atoms]
+    selected_a_scores = [float(a.answerability_base) for a in selected_ordered]
+    selected_bq_scores = [float(a.corridor_score) for a in selected_ordered]
+    selected_r_scores = []
+    for atom in selected_ordered:
+        terms = _objective_delta(
+            cand=atom,
+            selected=[],
+            selected_query_tokens=set(),
+            selected_bridge_entities=set(),
+            selected_anchor_coverage=set(),
+            selected_corridor_paths=set(),
+            selected_sources=set(),
+            objective_mode=str(p7.objective_mode),
+            lambda_bridge=float(p7.lambda_bridge),
+            lambda_decay=float(p7.lambda_decay),
+            lambda_bq=float(p7.lambda_bq),
+            mu_redundancy=float(p7.mu_redundancy),
+            conditional_redundancy_enabled=bool(p7.conditional_redundancy_enabled),
+        )
+        selected_r_scores.append(float(terms.get("R", 0.0)))
+    distractor_a_scores = [float(a.answerability_base) for a in distractor_atoms]
+    distractor_r_scores = []
+    for atom in distractor_atoms:
+        terms = _objective_delta(
+            cand=atom,
+            selected=[],
+            selected_query_tokens=set(),
+            selected_bridge_entities=set(),
+            selected_anchor_coverage=set(),
+            selected_corridor_paths=set(),
+            selected_sources=set(),
+            objective_mode=str(p7.objective_mode),
+            lambda_bridge=float(p7.lambda_bridge),
+            lambda_decay=float(p7.lambda_decay),
+            lambda_bq=float(p7.lambda_bq),
+            mu_redundancy=float(p7.mu_redundancy),
+            conditional_redundancy_enabled=bool(p7.conditional_redundancy_enabled),
+        )
+        distractor_r_scores.append(float(terms.get("R", 0.0)))
+    gold_d_scores = [float(a.anchor_decay_score) for a in gold_atoms]
+    gold_r_scores = []
+    gold_final_scores = []
+    for atom in gold_atoms:
+        terms = _objective_delta(
+            cand=atom,
+            selected=[],
+            selected_query_tokens=set(),
+            selected_bridge_entities=set(),
+            selected_anchor_coverage=set(),
+            selected_corridor_paths=set(),
+            selected_sources=set(),
+            objective_mode=str(p7.objective_mode),
+            lambda_bridge=float(p7.lambda_bridge),
+            lambda_decay=float(p7.lambda_decay),
+            lambda_bq=float(p7.lambda_bq),
+            mu_redundancy=float(p7.mu_redundancy),
+            conditional_redundancy_enabled=bool(p7.conditional_redundancy_enabled),
+        )
+        gold_r_scores.append(float(terms.get("R", 0.0)))
+        gold_final_scores.append(float(terms.get("final_gain", 0.0)))
+
     gold_best_rank_by_bq = None
     for i, atom in enumerate(ranked_by_bq, start=1):
         if atom.source_id in gold_unit_ids:
             gold_best_rank_by_bq = int(i)
             break
+    ranked_by_d = sorted(
+        list(atoms or []),
+        key=lambda a: (float(a.anchor_decay_score), float(a.answerability_base), str(a.source_id)),
+        reverse=True,
+    )
+    ranked_by_r_pen = sorted(
+        list(atoms or []),
+        key=lambda a: (
+            float(
+                _objective_delta(
+                    cand=a,
+                    selected=[],
+                    selected_query_tokens=set(),
+                    selected_bridge_entities=set(),
+                    selected_anchor_coverage=set(),
+                    selected_corridor_paths=set(),
+                    selected_sources=set(),
+                    objective_mode=str(p7.objective_mode),
+                    lambda_bridge=float(p7.lambda_bridge),
+                    lambda_decay=float(p7.lambda_decay),
+                    lambda_bq=float(p7.lambda_bq),
+                    mu_redundancy=float(p7.mu_redundancy),
+                    conditional_redundancy_enabled=bool(p7.conditional_redundancy_enabled),
+                ).get("R", 0.0)
+            ),
+            str(a.source_id),
+        ),
+    )
     gold_best_rank_by_final = None
     for i, (atom, _score) in enumerate(ranked_by_final, start=1):
         if atom.source_id in gold_unit_ids:
@@ -1782,15 +2510,75 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "num_gold_candidates_on_corridor": int(len(corridor_gold_candidate_ids)),
         "num_gold_candidates_selected": int(len(selected_gold_candidate_ids)),
         "gold_best_rank_by_A": None,
+        "gold_best_rank_by_D": None,
         "gold_best_rank_by_Bq": int(gold_best_rank_by_bq) if gold_best_rank_by_bq is not None else None,
+        "gold_best_rank_by_R_penalty": None,
         "gold_best_rank_by_final_score": int(gold_best_rank_by_final) if gold_best_rank_by_final is not None else None,
         "distractor_avg_Bq": float(_mean(distractor_bq_scores)) if distractor_bq_scores else None,
         "gold_avg_Bq": float(_mean(gold_bq_scores)) if gold_bq_scores else None,
+        "gold_best_A": float(max([a.answerability_base for a in gold_atoms], default=0.0)) if gold_atoms else None,
+        "gold_best_D": float(max(gold_d_scores)) if gold_d_scores else None,
+        "gold_best_Bq": float(max(gold_bq_scores)) if gold_bq_scores else None,
+        "gold_best_R": float(min(gold_r_scores)) if gold_r_scores else None,
+        "gold_best_final_gain": float(max(gold_final_scores)) if gold_final_scores else None,
+        "selected_avg_A": float(_mean(selected_a_scores)) if selected_a_scores else None,
+        "selected_avg_Bq": float(_mean(selected_bq_scores)) if selected_bq_scores else None,
+        "selected_avg_R": float(_mean(selected_r_scores)) if selected_r_scores else None,
+        "distractor_avg_A": float(_mean(distractor_a_scores)) if distractor_a_scores else None,
+        "distractor_avg_R": float(_mean(distractor_r_scores)) if distractor_r_scores else None,
     }
     for i, atom in enumerate(ranked_by_a, start=1):
         if atom.source_id in gold_unit_ids:
             corridor_gold_diag_eval_only["gold_best_rank_by_A"] = int(i)
             break
+    for i, atom in enumerate(ranked_by_d, start=1):
+        if atom.source_id in gold_unit_ids:
+            corridor_gold_diag_eval_only["gold_best_rank_by_D"] = int(i)
+            break
+    for i, atom in enumerate(ranked_by_r_pen, start=1):
+        if atom.source_id in gold_unit_ids:
+            corridor_gold_diag_eval_only["gold_best_rank_by_R_penalty"] = int(i)
+            break
+
+    rejected_gold_eval_only: List[Dict[str, Any]] = []
+    selected_source_id_set = set(selected_ids)
+    for rank_idx, (atom, score) in enumerate(ranked_by_final, start=1):
+        if atom.source_id not in gold_unit_ids or atom.source_id in selected_source_id_set:
+            continue
+        rejection_reason = "UNKNOWN"
+        if atom.token_count + sum(a.token_count for a in selected_ordered) > int(max_context_tokens_eff):
+            rejection_reason = "BUDGET_EXCEEDED"
+        elif rank_idx > int(max_selected_atoms_eff):
+            rejection_reason = "NOT_TOP_K"
+        elif score < float(p7.min_positive_gain):
+            rejection_reason = "LOW_GAIN"
+        terms = _objective_delta(
+            cand=atom,
+            selected=[],
+            selected_query_tokens=set(),
+            selected_bridge_entities=set(),
+            selected_anchor_coverage=set(),
+            selected_corridor_paths=set(),
+            selected_sources=set(),
+            objective_mode=str(p7.objective_mode),
+            lambda_bridge=float(p7.lambda_bridge),
+            lambda_decay=float(p7.lambda_decay),
+            lambda_bq=float(p7.lambda_bq),
+            mu_redundancy=float(p7.mu_redundancy),
+            conditional_redundancy_enabled=bool(p7.conditional_redundancy_enabled),
+        )
+        rejected_gold_eval_only.append(
+            {
+                "node_id": str(atom.source_id),
+                "atom_id": str(atom.atom_id),
+                "rank_by_gain": int(rank_idx),
+                "A": float(terms.get("A", 0.0)),
+                "Bq": float(terms.get("Bq", 0.0)),
+                "R": float(terms.get("R", 0.0)),
+                "final_gain": float(terms.get("final_gain", 0.0)),
+                "rejection_reason_eval_only": str(rejection_reason),
+            }
+        )
 
     candidate_sf = _support_metrics_eval_only(sample, candidate_ids, candidate_texts, graph_mode=graph_mode)
     selected_sf = _support_metrics_eval_only(sample, selected_ids, selected_texts, graph_mode=graph_mode)
@@ -1803,13 +2591,13 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         bottleneck_flags.append("slow_graph_flow")
     if stage_ms.get("local_graph_build", 0.0) > float(p7.bottleneck_local_graph_build_ms):
         bottleneck_flags.append("slow_local_graph_build")
-    if stage_ms.get("feature_extraction", 0.0) > float(p7.bottleneck_feature_extraction_ms):
+    if stage_ms.get("feature_A_scoring", 0.0) > float(p7.bottleneck_feature_extraction_ms):
         bottleneck_flags.append("slow_feature_extraction")
     if stage_ms.get("marginal_selection", 0.0) > float(p7.bottleneck_marginal_selection_ms):
         bottleneck_flags.append("slow_marginal_selection")
     if stage_ms.get("corridor_extraction", 0.0) > 1000.0:
         bottleneck_flags.append("slow_corridor_extraction")
-    if stage_ms.get("anchor_distance_bfs", 0.0) > 500.0:
+    if stage_ms.get("feature_anchor_distance", 0.0) > 500.0:
         bottleneck_flags.append("slow_anchor_distance_bfs")
     if int(local_graph.number_of_nodes()) > int(p7.bottleneck_local_graph_nodes):
         bottleneck_flags.append("large_local_graph_nodes")
@@ -1840,8 +2628,11 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
             bottleneck_flags.append("candidate_to_selected_sf_collapse_eval_only")
 
     trace = {
+        "run_id": str(getattr(logger, "run_id", "")),
+        "dataset": str(dataset_name),
         "query_id": str(getattr(sample, "qid", "") or ""),
         "question": str(getattr(sample, "question", "") or ""),
+        "gold_answer": str(getattr(sample, "answer", "") or ""),
         "phase7_variant": str(p7.variant),
         "phase7_enable_phase2_refinement": bool(p7.enable_phase2_refinement),
         "phase7_objective_mode": str(p7.objective_mode),
@@ -1852,7 +2643,24 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "phase7_conditional_redundancy_enabled": bool(p7.conditional_redundancy_enabled),
         "phase7_corridor_enabled": bool(p7.corridor_enabled),
         "phase7_anchor_decay_enabled": bool(p7.anchor_decay_enabled),
+        "phase7_query_intent_enabled": bool(p7.query_intent_enabled),
+        "phase7_intent_phase1_enabled": bool(p7.intent_phase1_enabled),
         "num_query_anchors": int(len(anchor_nodes)),
+        "query_intent": {
+            "target_entities": list(intent_graph.target_entities),
+            "relation_cues": list(intent_graph.relation_cues),
+            "answer_type_cues": list(intent_graph.answer_type_cues),
+            "comparison_markers": list(intent_graph.comparison_markers),
+            "constraint_slots": list(intent_graph.constraint_slots),
+            "intent_scores": dict(intent_graph.intent_scores),
+        },
+        "phase1_intent_diagnostics": dict(phase1_intent_diag),
+        "candidate_source_contribution_eval_only": dict(candidate_source_contribution_eval_only),
+        "query_constraints": {
+            "query_entities": list(query_entities),
+            "query_relation_cues": list(query_relation_cues),
+            "query_answer_type_cues": list(query_answer_type_cues),
+        },
         "num_semantic_anchor_atoms": int(len(sem_chunks)),
         "num_phase1_seeds": int(len(phase1_seed_ids)),
         "num_phase1_candidates": int(len(atoms)),
@@ -1869,6 +2677,13 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "num_selected_atoms": int(len(selected_ordered)),
         "selected_token_count": int(sum(a.token_count for a in selected_ordered)),
         "rendered_context_tokens": int(sum(a.token_count for a in selected_ordered)),
+        "atom_cap_exhausted_eval_only": bool(int(len(selected_ordered)) >= int(max_selected_atoms_eff)),
+        "token_cap_exhausted_eval_only": bool(int(budget_filtered_candidates) > 0),
+        "avg_remaining_atom_budget_eval_only": float(max(0, int(max_selected_atoms_eff) - int(len(selected_ordered)))),
+        "avg_remaining_token_budget_eval_only": float(max(0, int(max_context_tokens_eff) - int(sum(a.token_count for a in selected_ordered)))),
+        "avg_selected_atoms_eval_only": float(len(selected_ordered)),
+        "avg_selected_tokens_eval_only": float(sum(a.token_count for a in selected_ordered)),
+        "budget_filtered_candidates_eval_only": int(budget_filtered_candidates),
         "empty_candidate_reason": empty_candidate_reason,
         "unit_consistency": dict(unit_consistency),
         "candidate_sf_recall_eval_only": candidate_sf.get("recall"),
@@ -1881,7 +2696,7 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "candidate_sf_precision_eval_only": candidate_sf.get("precision"),
         "selected_sf_precision_eval_only": selected_sf.get("precision"),
         "rendered_sf_precision_eval_only": rendered_sf.get("precision"),
-        "selected_to_rendered_match": None,
+        "selected_to_rendered_match": True,
         "answerability_gain_total": float(answerability_gain_total),
         "decay_gain_total": float(decay_gain_total),
         "corridor_gain_total": float(corridor_gain_total),
@@ -1897,26 +2712,146 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "selected_evidence_feature_breakdown": list(selected_feature_breakdown),
         "corridor_gold_diagnostics_eval_only": dict(corridor_gold_diag_eval_only),
         "corridor_gold_hit_eval_only": bool(int(corridor_gold_diag_eval_only.get("num_gold_candidates_on_corridor", 0) or 0) > 0),
+        "query_constraints": {
+            "query_entities": list(query_entities),
+            "query_relation_cues": list(query_relation_cues),
+            "query_answer_type_cues": list(query_answer_type_cues),
+        },
+        "selection_trace": list(selection_trace_steps),
+        "rejected_gold_eval_only": list(rejected_gold_eval_only),
+        "pruning_diagnostics_eval_only": dict(pruning_diagnostics_eval_only),
+        "feature_rank_diagnostics_eval_only": dict(corridor_gold_diag_eval_only),
+        "rendering_diagnostics": {
+            "selected_ids": list(selected_ids),
+            "rendered_ids": list(selected_ids),
+            "selected_to_rendered_match": True,
+            "missing_selected_in_rendered": [],
+            "rendered_context_tokens": int(sum(a.token_count for a in selected_ordered)),
+            "rendered_context_hash": hashlib.sha256(
+                "\n".join([f"[{a.title}] {a.text}" for a in selected_ordered]).encode("utf-8")
+            ).hexdigest(),
+            "render_order_policy": "deterministic",
+        },
+        "stage_spans": dict(tracer.stage_spans),
         "stage_ms": {
+            "query_parse": float(stage_ms.get("query_parse", 0.0)),
             "query_embedding": float(stage_ms.get("query_embedding", 0.0)),
+            "query_entity_extraction": float(stage_ms.get("query_entity_extraction", 0.0)),
+            "query_intent_extraction": float(stage_ms.get("query_intent_extraction", 0.0)),
+            "query_constraint_extraction": float(stage_ms.get("query_constraint_extraction", 0.0)),
+            "entity_anchor_resolution": float(stage_ms.get("entity_anchor_resolution", 0.0)),
             "index_validation": float(stage_ms.get("index_validation", 0.0)),
-            "anchor_extraction": float(stage_ms.get("anchor_extraction", 0.0)),
             "semantic_anchor_retrieval": float(stage_ms.get("semantic_anchor_retrieval", 0.0)),
             "local_graph_build": float(stage_ms.get("local_graph_build", 0.0)),
             "graph_flow": float(stage_ms.get("graph_flow", 0.0)),
-            "candidate_truncation": float(stage_ms.get("candidate_truncation", 0.0)),
-            "feature_extraction": float(stage_ms.get("feature_extraction", 0.0)),
+            "intent_candidate_union": float(stage_ms.get("intent_candidate_union", 0.0)),
+            "phase1_candidate_assembly": float(stage_ms.get("phase1_candidate_assembly", 0.0)),
+            "safe_pruning_invalid": float(stage_ms.get("safe_pruning_invalid", 0.0)),
+            "safe_pruning_dedup": float(stage_ms.get("safe_pruning_dedup", 0.0)),
+            "safe_pruning_dominance": float(stage_ms.get("safe_pruning_dominance", 0.0)),
+            "feature_A_scoring": float(stage_ms.get("feature_A_scoring", 0.0)),
+            "feature_Aq_scoring": float(stage_ms.get("feature_Aq_scoring", 0.0)),
+            "feature_anchor_distance": float(stage_ms.get("feature_anchor_distance", 0.0)),
+            "corridor_anchor_selection": float(stage_ms.get("corridor_anchor_selection", 0.0)),
+            "corridor_seed_selection": float(stage_ms.get("corridor_seed_selection", 0.0)),
             "corridor_extraction": float(stage_ms.get("corridor_extraction", 0.0)),
-            "anchor_distance_bfs": float(stage_ms.get("anchor_distance_bfs", 0.0)),
-            "bq_feature_scoring": float(stage_ms.get("bq_feature_scoring", 0.0)),
+            "feature_Bq_scoring": float(stage_ms.get("feature_Bq_scoring", 0.0)),
+            "feature_R_scoring": float(stage_ms.get("feature_R_scoring", 0.0)),
+            "feature_Rq_scoring": float(stage_ms.get("feature_Rq_scoring", 0.0)),
             "conditional_redundancy": float(stage_ms.get("conditional_redundancy", 0.0)),
             "marginal_selection": float(stage_ms.get("marginal_selection", 0.0)),
             "rendering": float(stage_ms.get("rendering", 0.0)),
+            "prompt_construction": float(stage_ms.get("prompt_construction", 0.0)),
+            "qa_generation": float(stage_ms.get("qa_generation", 0.0)),
+            "evaluation": float(stage_ms.get("evaluation", 0.0)),
+            "oracle_context_construction": float(stage_ms.get("oracle_context_construction", 0.0)),
+            "oracle_qa_replay": float(stage_ms.get("oracle_qa_replay", 0.0)),
             "total_retrieval": float(stage_ms.get("total_retrieval", 0.0)),
         },
         "bottleneck_flags": list(bottleneck_flags),
     }
-    logger.log_query(query_trace=trace, stage_rows=stage_rows)
+
+    pruned_invalid_ids = [str(a.source_id) for a in pruned_invalid]
+    pruned_dedup_ids = [str(a.source_id) for a in pruned_dedup]
+    pruned_dominance_ids = [str(a.source_id) for a in pruned_dominance]
+    selected_ids_set = set(selected_ids)
+    rendered_ids = list(selected_ids)
+    rendered_ids_set = set(rendered_ids)
+    gold_ids_set = set(gold_unit_ids)
+    gold_titles = set([gid.split("::", 1)[0] for gid in gold_ids_set if "::" in gid])
+
+    def _equiv_count(ids: List[str]) -> int:
+        count = 0
+        for sid in list(ids or []):
+            title = sid.split("::", 1)[0] if "::" in sid else sid
+            if title in gold_titles:
+                count += 1
+        return int(count)
+
+    oracle_gap_trace = {
+        "run_id": str(getattr(logger, "run_id", "")),
+        "dataset": str(dataset_name),
+        "query_id": str(query_id),
+        "question": str(question_text),
+        "gold_answer": str(getattr(sample, "answer", "") or ""),
+        "stage_counts": {
+            "phase1_candidates": int(len(candidate_ids)),
+            "after_invalid_filter": int(len(pruned_invalid_ids)),
+            "after_dedup": int(len(pruned_dedup_ids)),
+            "after_dominance": int(len(pruned_dominance_ids)),
+            "feature_ready_candidates": int(len(candidate_ids)),
+            "selected_atoms": int(len(selected_ids)),
+            "rendered_atoms": int(len(rendered_ids)),
+        },
+        "gold_survival_eval_only": {
+            "gold_support_count": int(len(gold_ids_set)),
+            "gold_in_phase1": int(len(gold_ids_set.intersection(set(candidate_ids)))),
+            "gold_after_invalid_filter": int(len(gold_ids_set.intersection(set(pruned_invalid_ids)))),
+            "gold_after_dedup": int(len(gold_ids_set.intersection(set(pruned_dedup_ids)))),
+            "gold_after_dominance": int(len(gold_ids_set.intersection(set(pruned_dominance_ids)))),
+            "gold_feature_ready": int(len(gold_ids_set.intersection(set(candidate_ids)))),
+            "gold_selected": int(len(gold_ids_set.intersection(selected_ids_set))),
+            "gold_rendered": int(len(gold_ids_set.intersection(rendered_ids_set))),
+        },
+        "equivalent_survival_eval_only": {
+            "equiv_in_phase1": int(_equiv_count(candidate_ids)),
+            "equiv_feature_ready": int(_equiv_count(candidate_ids)),
+            "equiv_selected": int(_equiv_count(selected_ids)),
+            "equiv_rendered": int(_equiv_count(rendered_ids)),
+        },
+        "query_constraints": {
+            "query_entities": list(query_entities),
+            "query_relation_cues": list(query_relation_cues),
+            "query_answer_type_cues": list(query_answer_type_cues),
+        },
+        "pruning_diagnostics_eval_only": dict(pruning_diagnostics_eval_only),
+        "feature_rank_diagnostics_eval_only": dict(corridor_gold_diag_eval_only),
+        "selection_trace": list(selection_trace_steps),
+        "rejected_gold_eval_only": list(rejected_gold_eval_only),
+        "rendering_diagnostics": dict(trace.get("rendering_diagnostics", {})),
+        "timing_ms": {
+            "query_intent_extraction": float(stage_ms.get("query_intent_extraction", 0.0)),
+            "intent_candidate_union": float(stage_ms.get("intent_candidate_union", 0.0)),
+            "query_embedding": float(stage_ms.get("query_embedding", 0.0)),
+            "semantic_anchor_retrieval": float(stage_ms.get("semantic_anchor_retrieval", 0.0)),
+            "graph_flow": float(stage_ms.get("graph_flow", 0.0)),
+            "corridor_extraction": float(stage_ms.get("corridor_extraction", 0.0)),
+            "feature_Aq_scoring": float(stage_ms.get("feature_Aq_scoring", 0.0)),
+            "feature_Rq_scoring": float(stage_ms.get("feature_Rq_scoring", 0.0)),
+            "marginal_selection": float(stage_ms.get("marginal_selection", 0.0)),
+            "rendering": float(stage_ms.get("rendering", 0.0)),
+            "qa_generation": float(stage_ms.get("qa_generation", 0.0)),
+            "total_retrieval": float(stage_ms.get("total_retrieval", 0.0)),
+            "total_end_to_end": float(stage_ms.get("total_retrieval", 0.0)),
+        },
+    }
+
+    logger.log_query(
+        query_trace=trace,
+        stage_rows=stage_rows,
+        stage_events=tracer.stage_events,
+        oracle_gap_trace=oracle_gap_trace,
+    )
 
     diagnostics = {
         "graph_mode": str(graph_mode),
@@ -1937,6 +2872,8 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "phase7_max_context_tokens": int(p7.max_context_tokens),
         "phase7_query_trace_path": str(Path(out_dir) / "phase7_query_trace.jsonl"),
         "phase7_stage_timing_path": str(Path(out_dir) / "phase7_stage_timing.jsonl"),
+        "phase7_stage_events_path": str(Path(out_dir) / "phase7_stage_events.jsonl"),
+        "phase7_oracle_gap_trace_path": str(Path(out_dir) / "phase7_oracle_gap_trace.jsonl"),
         "phase7_variant": str(p7.variant),
         "phase7_enable_phase2_refinement": bool(p7.enable_phase2_refinement),
         "phase7_objective_mode": str(p7.objective_mode),
@@ -1947,6 +2884,12 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "phase7_conditional_redundancy_enabled": bool(p7.conditional_redundancy_enabled),
         "phase7_corridor_enabled": bool(p7.corridor_enabled),
         "phase7_anchor_decay_enabled": bool(p7.anchor_decay_enabled),
+        "phase7_query_intent_enabled": bool(p7.query_intent_enabled),
+        "phase7_intent_phase1_enabled": bool(p7.intent_phase1_enabled),
+        "phase7_intent_max_relation_candidates": int(p7.intent_max_relation_candidates),
+        "phase7_intent_max_answer_type_candidates": int(p7.intent_max_answer_type_candidates),
+        "phase7_intent_max_entity_candidates": int(p7.intent_max_entity_candidates),
+        "phase7_intent_candidate_top_m": int(p7.intent_candidate_top_m),
         "phase7_candidate_top_m_effective": int(candidate_top_m_eff),
         "phase7_max_selected_atoms_effective": int(max_selected_atoms_eff),
         "phase7_max_context_tokens_effective": int(max_context_tokens_eff),
@@ -1956,15 +2899,19 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "phase7_diagnostics_dump_scores": bool(p7.diagnostics_dump_scores),
         "phase7_diagnostics_fail_on_unit_mismatch": bool(p7.diagnostics_fail_on_unit_mismatch),
         "latency_breakdown_ms": {
+            "query_intent_extraction_ms": float(stage_ms.get("query_intent_extraction", 0.0)),
+            "intent_candidate_union_ms": float(stage_ms.get("intent_candidate_union", 0.0)),
             "query_embed_ms": float(stage_ms.get("query_embedding", 0.0)),
             "semantic_lookup_chunk_ms": float(stage_ms.get("semantic_anchor_retrieval", 0.0)),
             "proposal_subgraph_build_ms": float(stage_ms.get("local_graph_build", 0.0)),
             "phase1_ppr_ms": float(stage_ms.get("graph_flow", 0.0)),
-            "feature_extraction_ms": float(stage_ms.get("feature_extraction", 0.0)),
+            "feature_extraction_ms": float(stage_ms.get("feature_A_scoring", 0.0)),
+            "feature_aq_scoring_ms": float(stage_ms.get("feature_Aq_scoring", 0.0)),
             "corridor_extraction_ms": float(stage_ms.get("corridor_extraction", 0.0)),
-            "anchor_distance_bfs_ms": float(stage_ms.get("anchor_distance_bfs", 0.0)),
-            "bq_feature_scoring_ms": float(stage_ms.get("bq_feature_scoring", 0.0)),
+            "anchor_distance_bfs_ms": float(stage_ms.get("feature_anchor_distance", 0.0)),
+            "bq_feature_scoring_ms": float(stage_ms.get("feature_Bq_scoring", 0.0)),
             "conditional_redundancy_ms": float(stage_ms.get("conditional_redundancy", 0.0)),
+            "feature_rq_scoring_ms": float(stage_ms.get("feature_Rq_scoring", 0.0)),
             "marginal_selection_ms": float(stage_ms.get("marginal_selection", 0.0)),
             "render_ms": float(stage_ms.get("rendering", 0.0)),
             "retrieval_total_ms": float(stage_ms.get("total_retrieval", 0.0)),
@@ -1988,8 +2935,22 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "selected_evidence_feature_breakdown": list(selected_feature_breakdown),
         "corridor_gold_diagnostics_eval_only": dict(corridor_gold_diag_eval_only),
         "corridor_gold_hit_eval_only": bool(int(corridor_gold_diag_eval_only.get("num_gold_candidates_on_corridor", 0) or 0) > 0),
+        "selection_trace": list(selection_trace_steps),
+        "rejected_gold_eval_only": list(rejected_gold_eval_only),
+        "pruning_diagnostics_eval_only": dict(pruning_diagnostics_eval_only),
+        "feature_rank_diagnostics_eval_only": dict(corridor_gold_diag_eval_only),
         "corridor_anchor_nodes": list(corridor_anchor_rows),
         "corridor_seed_nodes": list(corridor_seed_rows),
+        "query_intent": {
+            "target_entities": list(intent_graph.target_entities),
+            "relation_cues": list(intent_graph.relation_cues),
+            "answer_type_cues": list(intent_graph.answer_type_cues),
+            "comparison_markers": list(intent_graph.comparison_markers),
+            "constraint_slots": list(intent_graph.constraint_slots),
+            "intent_scores": dict(intent_graph.intent_scores),
+        },
+        "phase1_intent_diagnostics": dict(phase1_intent_diag),
+        "candidate_source_contribution_eval_only": dict(candidate_source_contribution_eval_only),
         "num_query_anchors": int(len(anchor_nodes)),
         "num_semantic_anchor_atoms": int(len(sem_chunks)),
         "num_local_graph_nodes": int(local_graph.number_of_nodes()),
