@@ -826,3 +826,288 @@ def select_best_seed_set(seed_sets, U_q, query_embedding, config) -> list[Medoid
         "seed_selection_ms": float((time.perf_counter() - t0) * 1000.0),
     }
     return best_out
+
+
+def _graph_and_semantic(G_q: Any) -> Tuple[nx.Graph, Dict[str, Any]]:
+    graph = _as_graph(G_q)
+    semantic = _semantic_state(G_q, G_q if isinstance(G_q, dict) else {})
+    return graph, semantic
+
+
+def _candidate_for_entity(
+    entity_id: str,
+    universe_by_id: Dict[str, EntityCandidate],
+    graph: nx.Graph,
+    semantic: Dict[str, Any],
+    config: Any,
+    query_embedding: Any,
+    source: str,
+) -> Optional[EntityCandidate]:
+    eid = str(entity_id or "")
+    if eid in universe_by_id:
+        return universe_by_id[eid]
+    if not eid or eid not in graph or _node_type(graph, eid) != "entity":
+        return None
+    degree = int(graph.degree(eid)) if eid in graph else 0
+    embedding_id, vec = _best_entity_embedding(eid, graph, semantic, config)
+    qrel = 0.0
+    qvec = _normalize_vector(query_embedding)
+    if qvec is not None and vec is not None:
+        qrel = _clip01((_cosine(qvec, vec) + 1.0) / 2.0)
+    return EntityCandidate(
+        entity_id=str(eid),
+        name=_entity_name(eid, graph),
+        title=_entity_title(eid, graph),
+        embedding_id=embedding_id,
+        query_relevance=float(qrel),
+        graph_score=0.0,
+        degree=int(degree),
+        source_tags={str(source)},
+        embedding=vec,
+    )
+
+
+def _assigned_entities_by_seed(
+    seeds: Sequence[MedoidSeed],
+    universe: Sequence[EntityCandidate],
+) -> Dict[str, Set[str]]:
+    by_id = _candidate_by_id(universe)
+    seed_cands = [by_id[str(seed.entity_id)] for seed in list(seeds or []) if str(seed.entity_id) in by_id]
+    out: Dict[str, Set[str]] = {str(seed.entity_id): set() for seed in list(seeds or [])}
+    if not seed_cands:
+        return out
+    for cand in list(universe or []):
+        best_seed = min(seed_cands, key=lambda seed: (_candidate_distance(cand, seed), str(seed.entity_id)))
+        out.setdefault(str(best_seed.entity_id), set()).add(str(cand.entity_id))
+    return out
+
+
+def _entity_neighborhood(
+    graph: nx.Graph,
+    start: str,
+    hops: int,
+    degree_cap: int,
+    limit: int,
+) -> Set[str]:
+    src = str(start or "")
+    if not src or src not in graph:
+        return set()
+    max_hops = max(0, int(hops))
+    cap = max(1, int(degree_cap))
+    frontier = [(src, 0)]
+    seen = {src}
+    out: Set[str] = set()
+    while frontier and len(out) < max(1, int(limit)):
+        node, depth = frontier.pop(0)
+        if depth >= max_hops:
+            continue
+        for nbr in sorted(str(n) for n in graph.neighbors(node)):
+            if nbr in seen:
+                continue
+            seen.add(nbr)
+            ntype = _node_type(graph, nbr)
+            if ntype == "entity":
+                if int(graph.degree(nbr)) <= cap:
+                    out.add(nbr)
+                if len(out) >= max(1, int(limit)):
+                    break
+            if int(graph.degree(nbr)) <= cap or ntype in {"sentence", "chunk", "passage", "document"}:
+                frontier.append((nbr, depth + 1))
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
+def _connectivity_to_anchors_and_seeds(
+    graph: nx.Graph,
+    entity_id: str,
+    anchors: Sequence[str],
+    seed_ids: Sequence[str],
+    max_hops: int,
+) -> float:
+    targets = [str(x) for x in list(anchors or []) + list(seed_ids or []) if str(x) and str(x) in graph and str(x) != str(entity_id)]
+    if not targets or str(entity_id) not in graph:
+        return 0.0
+    vals = []
+    cutoff = max(1, int(max_hops))
+    for target in targets[:32]:
+        try:
+            d = nx.shortest_path_length(graph, str(entity_id), str(target))
+        except Exception:
+            continue
+        if int(d) <= cutoff:
+            vals.append(1.0 / (1.0 + float(d)))
+    return _clip01(max(vals) if vals else 0.0)
+
+
+def _local_evidence_support(graph: nx.Graph, entity_id: str) -> float:
+    if str(entity_id) not in graph:
+        return 0.0
+    sent = 0
+    carrier = 0
+    for nbr in graph.neighbors(str(entity_id)):
+        ntype = _node_type(graph, str(nbr))
+        if ntype == "sentence":
+            sent += 1
+        elif ntype in {"chunk", "passage", "document"}:
+            carrier += 1
+    return _clip01((float(sent) + 0.5 * float(carrier)) / 8.0)
+
+
+def _redundancy_to_other_seeds(
+    candidate: EntityCandidate,
+    other_seed_ids: Sequence[str],
+    candidates_by_id: Dict[str, EntityCandidate],
+) -> float:
+    vals = []
+    for sid in list(other_seed_ids or []):
+        other = candidates_by_id.get(str(sid))
+        if other is None:
+            continue
+        dist = _candidate_distance(candidate, other)
+        vals.append(_clip01(1.0 - min(1.0, dist / 2.0)))
+    return float(max(vals) if vals else 0.0)
+
+
+def refine_medoid_seeds(best_seed_set, U_q, G_q, query_embedding, anchors, config) -> list[MedoidSeed]:
+    t0 = time.perf_counter()
+    enabled = _cfg_bool(config, "phase8_refine_enabled", True)
+    before = list(best_seed_set or [])
+    if not before:
+        _LAST_DIAGNOSTICS["refinement"] = {
+            "stage": "refinement",
+            "enabled": bool(enabled),
+            "num_refined_seeds": 0,
+            "num_changed_seeds": 0,
+            "avg_refine_candidate_count": 0.0,
+            "before_seed_score": 0.0,
+            "after_seed_score": 0.0,
+            "before_seed_gold_hit_eval_only": False,
+            "after_seed_gold_hit_eval_only": False,
+            "before_seed_evidence_gold_hit_eval_only": False,
+            "after_seed_evidence_gold_hit_eval_only": False,
+            "refinement_ms": float((time.perf_counter() - t0) * 1000.0),
+        }
+        return []
+    if not enabled:
+        _LAST_DIAGNOSTICS["refinement"] = {
+            "stage": "refinement",
+            "enabled": False,
+            "num_refined_seeds": int(len(before)),
+            "num_changed_seeds": 0,
+            "avg_refine_candidate_count": 0.0,
+            "before_seed_score": float(_seed_set_components(before, list(U_q or []), config).get("score", 0.0)),
+            "after_seed_score": float(_seed_set_components(before, list(U_q or []), config).get("score", 0.0)),
+            "before_seed_gold_hit_eval_only": False,
+            "after_seed_gold_hit_eval_only": False,
+            "before_seed_evidence_gold_hit_eval_only": False,
+            "after_seed_evidence_gold_hit_eval_only": False,
+            "refinement_ms": float((time.perf_counter() - t0) * 1000.0),
+        }
+        return before
+
+    graph, semantic = _graph_and_semantic(G_q)
+    universe = list(U_q or [])
+    universe_by_id = _candidate_by_id(universe)
+    assigned = _assigned_entities_by_seed(before, universe)
+    hops = max(0, _safe_int(_cfg(config, "phase8_refine_hops", 2), 2))
+    max_candidates = max(1, _safe_int(_cfg(config, "phase8_refine_max_candidates_per_seed", 128), 128))
+    degree_cap = max(1, _safe_int(_cfg(config, "phase8_refine_degree_cap", 100), 100))
+    candidates_seen: Dict[str, EntityCandidate] = dict(universe_by_id)
+    refined: List[MedoidSeed] = []
+    candidate_counts: List[int] = []
+    changed = 0
+
+    for seed in before:
+        seed_id = str(seed.entity_id)
+        raw_candidate_ids = set(assigned.get(seed_id, set()))
+        raw_candidate_ids.add(seed_id)
+        raw_candidate_ids.update(_entity_neighborhood(graph, seed_id, hops=hops, degree_cap=degree_cap, limit=max_candidates))
+        candidate_rows: List[EntityCandidate] = []
+        for eid in sorted(raw_candidate_ids):
+            cand = _candidate_for_entity(
+                eid,
+                universe_by_id=universe_by_id,
+                graph=graph,
+                semantic=semantic,
+                config=config,
+                query_embedding=query_embedding,
+                source="refine_neighborhood",
+            )
+            if cand is None or int(cand.degree) > degree_cap:
+                continue
+            candidates_seen[str(cand.entity_id)] = cand
+            candidate_rows.append(cand)
+        candidate_rows.sort(
+            key=lambda c: (
+                float(c.query_relevance),
+                float(c.graph_score),
+                -float(c.degree),
+                str(c.entity_id),
+            ),
+            reverse=True,
+        )
+        candidate_rows = candidate_rows[:max_candidates]
+        candidate_counts.append(int(len(candidate_rows)))
+        other_seed_ids = [str(s.entity_id) for s in before if str(s.entity_id) != seed_id]
+        best_cand = candidates_seen.get(seed_id)
+        best_score = -1.0e9
+        for cand in candidate_rows:
+            connectivity = _connectivity_to_anchors_and_seeds(
+                graph=graph,
+                entity_id=str(cand.entity_id),
+                anchors=list(anchors or []),
+                seed_ids=other_seed_ids,
+                max_hops=max(1, hops),
+            )
+            support = _local_evidence_support(graph, str(cand.entity_id))
+            hub = min(1.0, float(cand.degree) / float(max(1, degree_cap)))
+            redundancy = _redundancy_to_other_seeds(cand, other_seed_ids, candidates_seen)
+            score = float(cand.query_relevance + connectivity + support - hub - redundancy)
+            if score > best_score or (abs(score - best_score) <= 1.0e-12 and str(cand.entity_id) < str(best_cand.entity_id if best_cand else "")):
+                best_score = score
+                best_cand = cand
+        if best_cand is None:
+            refined.append(seed)
+            continue
+        if str(best_cand.entity_id) != seed_id:
+            changed += 1
+        diag = dict(seed.diagnostics or {})
+        diag.update(
+            {
+                "refined": True,
+                "refined_from": str(seed_id),
+                "refine_candidate_count": int(len(candidate_rows)),
+                "refine_score": float(best_score),
+                "query_relevance": float(best_cand.query_relevance),
+                "degree": int(best_cand.degree),
+            }
+        )
+        refined.append(
+            MedoidSeed(
+                entity_id=str(best_cand.entity_id),
+                score=float(best_score),
+                source_sample_id=int(seed.source_sample_id),
+                refined_from=(str(seed_id) if str(best_cand.entity_id) != seed_id else None),
+                diagnostics=diag,
+            )
+        )
+
+    before_comp = _seed_set_components(before, universe=universe, config=config)
+    after_universe = list(candidates_seen.values())
+    after_comp = _seed_set_components(refined, universe=after_universe, config=config)
+    _LAST_DIAGNOSTICS["refinement"] = {
+        "stage": "refinement",
+        "enabled": True,
+        "num_refined_seeds": int(len(refined)),
+        "num_changed_seeds": int(changed),
+        "avg_refine_candidate_count": float(_mean(candidate_counts)),
+        "before_seed_score": float(before_comp.get("score", 0.0)),
+        "after_seed_score": float(after_comp.get("score", 0.0)),
+        "before_seed_gold_hit_eval_only": False,
+        "after_seed_gold_hit_eval_only": False,
+        "before_seed_evidence_gold_hit_eval_only": False,
+        "after_seed_evidence_gold_hit_eval_only": False,
+        "refinement_ms": float((time.perf_counter() - t0) * 1000.0),
+    }
+    return refined
