@@ -1111,3 +1111,273 @@ def refine_medoid_seeds(best_seed_set, U_q, G_q, query_embedding, anchors, confi
         "refinement_ms": float((time.perf_counter() - t0) * 1000.0),
     }
     return refined
+
+
+def _sentence_sort_key(graph: nx.Graph, node: str) -> Tuple[str, int, str]:
+    data = graph.nodes[node] if node in graph else {}
+    return (
+        str(data.get("title", "") or ""),
+        _safe_int(data.get("sent_idx", 0), 0),
+        str(node),
+    )
+
+
+def _sentence_node_to_source_id(graph: nx.Graph, node: str) -> str:
+    if str(node) not in graph:
+        return str(node)
+    data = graph.nodes[str(node)]
+    sid = str(data.get("sentence_id", "") or "").strip()
+    if sid:
+        return sid
+    title = str(data.get("title", "") or "").strip()
+    idx = _safe_int(data.get("sent_idx", 0), 0)
+    return f"{title}::{idx}" if title else str(node)
+
+
+def _sentence_neighbors(graph: nx.Graph, node: str) -> List[str]:
+    if str(node) not in graph:
+        return []
+    out = [str(n) for n in graph.neighbors(str(node)) if _node_type(graph, str(n)) == "sentence"]
+    out.sort(key=lambda n: _sentence_sort_key(graph, n))
+    return out
+
+
+def _carrier_neighbors(graph: nx.Graph, node: str) -> List[str]:
+    if str(node) not in graph:
+        return []
+    out = [
+        str(n)
+        for n in graph.neighbors(str(node))
+        if _node_type(graph, str(n)) in {"chunk", "passage", "document"}
+    ]
+    out.sort(key=lambda n: (_safe_int(graph.nodes[n].get("chunk_idx", 0), 0), str(n)))
+    return out
+
+
+def _sentences_for_title(graph: nx.Graph, title: str, limit: int) -> List[str]:
+    key = str(title or "").strip().lower()
+    if not key:
+        return []
+    rows = [
+        str(n)
+        for n in graph.nodes
+        if _node_type(graph, str(n)) == "sentence"
+        and str(graph.nodes[n].get("title", "") or "").strip().lower() == key
+    ]
+    rows.sort(key=lambda n: _sentence_sort_key(graph, n))
+    return rows[: max(1, int(limit))]
+
+
+def _title_leading_sentences_for_entity(graph: nx.Graph, entity_id: str, limit: int) -> List[str]:
+    titles = []
+    title = _entity_title(entity_id, graph)
+    name = _entity_name(entity_id, graph)
+    for value in (title, name):
+        text = str(value or "").strip()
+        if text and text.lower() not in {t.lower() for t in titles}:
+            titles.append(text)
+    out: List[str] = []
+    seen = set()
+    for title_text in titles:
+        for node in _sentences_for_title(graph, title_text, limit=limit):
+            if node not in seen:
+                seen.add(node)
+                out.append(node)
+            if len(out) >= max(1, int(limit)):
+                return out
+    return out
+
+
+def _path_sentence_evidence(graph: nx.Graph, path: Sequence[str]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for node in list(path or []):
+        sid = str(node)
+        if sid not in graph:
+            continue
+        if _node_type(graph, sid) == "sentence":
+            if sid not in seen:
+                seen.add(sid)
+                out.append(sid)
+            continue
+        for sent in _sentence_neighbors(graph, sid)[:2]:
+            if sent not in seen:
+                seen.add(sent)
+                out.append(sent)
+    out.sort(key=lambda n: _sentence_sort_key(graph, n))
+    return out
+
+
+def _shortest_path_sentences(
+    graph: nx.Graph,
+    pairs: Sequence[Tuple[str, str]],
+    max_hops: int,
+    max_pairs: int,
+) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    count = 0
+    for src, dst in list(pairs or []):
+        if count >= max(0, int(max_pairs)):
+            break
+        if str(src) not in graph or str(dst) not in graph or str(src) == str(dst):
+            continue
+        try:
+            path = nx.shortest_path(graph, str(src), str(dst))
+        except Exception:
+            continue
+        hops = max(0, len(path) - 1)
+        if hops > max(1, int(max_hops)):
+            continue
+        count += 1
+        for sent in _path_sentence_evidence(graph, path):
+            if sent not in seen:
+                seen.add(sent)
+                out.append(sent)
+    return out
+
+
+def _add_evidence_candidate(
+    graph: nx.Graph,
+    out: List[str],
+    tags: Dict[str, Set[str]],
+    node: str,
+    tag: str,
+    cap: int,
+) -> bool:
+    sid = str(node or "")
+    if not sid or sid not in graph or _node_type(graph, sid) != "sentence":
+        return False
+    tags.setdefault(sid, set()).add(str(tag))
+    if sid not in out and len(out) < max(1, int(cap)):
+        out.append(sid)
+        return True
+    return False
+
+
+def build_medoid_evidence_candidates(refined_seeds, anchors, graph_index, config) -> list[str]:
+    t0 = time.perf_counter()
+    graph, _semantic = _graph_and_semantic(graph_index)
+    seeds = [str(s.entity_id) for s in list(refined_seeds or []) if str(s.entity_id) in graph]
+    cap = max(1, _safe_int(_cfg(config, "phase8_seed_total_candidate_cap", 160), 160))
+    top_atoms = max(1, _safe_int(_cfg(config, "phase8_seed_top_atoms_per_entity", 4), 4))
+    top_carriers = max(0, _safe_int(_cfg(config, "phase8_seed_top_carriers_per_entity", 2), 2))
+    path_hops = max(1, _safe_int(_cfg(config, "phase8_seed_path_max_hops", 3), 3))
+    path_pairs = max(0, _safe_int(_cfg(config, "phase8_seed_path_max_pairs", 10), 10))
+    out: List[str] = []
+    source_tags: Dict[str, Set[str]] = {}
+    counts = {
+        "num_seed_atoms": 0,
+        "num_seed_carriers": 0,
+        "num_anchor_seed_path_atoms": 0,
+        "num_seed_seed_path_atoms": 0,
+        "num_same_title_support_atoms": 0,
+        "num_same_carrier_support_atoms": 0,
+    }
+
+    for seed in seeds:
+        for sent in _title_leading_sentences_for_entity(graph, seed, limit=1):
+            if _add_evidence_candidate(graph, out, source_tags, sent, "phase8_seed_title_leading", cap):
+                counts["num_seed_atoms"] += 1
+        for sent in _sentence_neighbors(graph, seed)[:top_atoms]:
+            if _add_evidence_candidate(graph, out, source_tags, sent, "phase8_seed_linked_atom", cap):
+                counts["num_seed_atoms"] += 1
+        carriers = _carrier_neighbors(graph, seed)[:top_carriers]
+        for carrier in carriers:
+            carrier_sentences = _sentence_neighbors(graph, carrier)
+            for sent in carrier_sentences[:top_atoms]:
+                if _add_evidence_candidate(graph, out, source_tags, sent, "phase8_seed_linked_carrier", cap):
+                    counts["num_seed_carriers"] += 1
+
+    anchor_seed_pairs = []
+    for anchor in list(anchors or []):
+        for seed in seeds:
+            anchor_seed_pairs.append((str(anchor), str(seed)))
+    for sent in _shortest_path_sentences(graph, anchor_seed_pairs, max_hops=path_hops, max_pairs=path_pairs):
+        if _add_evidence_candidate(graph, out, source_tags, sent, "phase8_anchor_seed_path", cap):
+            counts["num_anchor_seed_path_atoms"] += 1
+
+    seed_seed_pairs = []
+    for i, src in enumerate(seeds):
+        for dst in seeds[i + 1 :]:
+            seed_seed_pairs.append((src, dst))
+    for sent in _shortest_path_sentences(graph, seed_seed_pairs, max_hops=path_hops, max_pairs=path_pairs):
+        if _add_evidence_candidate(graph, out, source_tags, sent, "phase8_seed_seed_path", cap):
+            counts["num_seed_seed_path_atoms"] += 1
+
+    seed_linked_sentences: List[str] = []
+    for seed in seeds:
+        seed_linked_sentences.extend(_sentence_neighbors(graph, seed)[:top_atoms])
+        seed_linked_sentences.extend(_title_leading_sentences_for_entity(graph, seed, limit=1))
+    seed_linked_sentences = sorted(set(seed_linked_sentences), key=lambda n: _sentence_sort_key(graph, n))
+    for sent in seed_linked_sentences:
+        title = str(graph.nodes[sent].get("title", "") or "")
+        for same_title in _sentences_for_title(graph, title, limit=top_atoms):
+            if _add_evidence_candidate(graph, out, source_tags, same_title, "phase8_same_title_support", cap):
+                counts["num_same_title_support_atoms"] += 1
+        for carrier in _carrier_neighbors(graph, sent)[:top_carriers]:
+            for same_carrier in _sentence_neighbors(graph, carrier)[:top_atoms]:
+                if _add_evidence_candidate(graph, out, source_tags, same_carrier, "phase8_same_carrier_support", cap):
+                    counts["num_same_carrier_support_atoms"] += 1
+        if len(out) >= cap:
+            break
+
+    diag = {
+        "stage": "evidence_proposal",
+        **counts,
+        "num_final_evidence_candidates": int(len(out)),
+        "candidate_gold_partial_eval_only": False,
+        "candidate_gold_full_eval_only": False,
+        "candidate_gold_recall_eval_only": 0.0,
+        "candidate_oracle_F1_eval_only": 0.0,
+        "chain_unit_oracle_feasible_eval_only": 0.0,
+        "evidence_proposal_ms": float((time.perf_counter() - t0) * 1000.0),
+    }
+    _LAST_DIAGNOSTICS["evidence_proposal"] = diag
+    _LAST_DIAGNOSTICS["evidence_source_tags"] = {
+        str(cid): sorted(str(t) for t in set(source_tags.get(str(cid), set()) or set()))
+        for cid in out
+    }
+    return out
+
+
+def run_phase8_pamae_proposal(
+    query: str,
+    graph_index: Any,
+    embeddings: Any,
+    config: Any,
+    query_embedding: Any = None,
+    anchors: Optional[Sequence[str]] = None,
+) -> PamaeProposalResult:
+    payload = dict(embeddings or {}) if isinstance(embeddings, dict) else {}
+    if query_embedding is not None and "query_embedding" not in payload:
+        payload["query_embedding"] = query_embedding
+    if anchors is not None and "anchor_nodes" not in payload:
+        payload["anchor_nodes"] = list(anchors)
+    _LAST_DIAGNOSTICS.clear()
+    universe = build_query_entity_universe(query, graph_index=graph_index, embeddings=payload, config=config)
+    initial = sample_medoid_seed_sets(universe, query_embedding=payload.get("query_embedding"), config=config)
+    best = select_best_seed_set(initial, U_q=universe, query_embedding=payload.get("query_embedding"), config=config)
+    refined = refine_medoid_seeds(
+        best,
+        U_q=universe,
+        G_q=graph_index,
+        query_embedding=payload.get("query_embedding"),
+        anchors=list(anchors or []),
+        config=config,
+    )
+    evidence = build_medoid_evidence_candidates(
+        refined_seeds=refined,
+        anchors=list(anchors or []),
+        graph_index=graph_index,
+        config=config,
+    )
+    diagnostics = get_last_phase8_diagnostics()
+    return PamaeProposalResult(
+        entity_universe=list(universe),
+        initial_medoid_sets=list(initial),
+        best_medoid_set=list(best),
+        refined_medoid_set=list(refined),
+        evidence_candidate_ids=list(evidence),
+        diagnostics=dict(diagnostics),
+    )

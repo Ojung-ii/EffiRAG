@@ -17,6 +17,7 @@ from .metrics import supporting_fact_match_details
 from .phase7_config import Phase7Config, phase7_config_from_cfg
 from .phase7_logging import get_phase7_logger
 from .phase7_source_balanced import SOURCE_ORDER, disabled_source_balance_diagnostics, source_balanced_union
+from .phase8_pamae_entity_seeding import PamaeProposalResult, run_phase8_pamae_proposal
 from .registry import register_method
 from .types import RetrievalResult
 from .utils import content_tokens
@@ -666,6 +667,110 @@ def _candidate_atoms_from_local_graph(
         "relation_terms": relation_terms,
         "bridge_entities": bridge_entities,
         "source_balance": dict(source_balance_diag),
+    }
+
+
+def _candidate_atoms_from_phase8_evidence(
+    question: str,
+    local_graph: nx.Graph,
+    evidence_candidate_ids: List[str],
+    evidence_source_tags: Dict[str, List[str]],
+    flow_scores: Dict[str, float],
+    anchor_nodes: List[str],
+    candidate_top_m: int,
+) -> Tuple[List[Phase7EvidenceAtom], Dict[str, Any]]:
+    query_tokens = set(content_tokens(question))
+    anchor_tokens = set(_entity_token(a) for a in anchor_nodes)
+    relation_terms = set(t for t in query_tokens if t not in anchor_tokens)
+
+    bridge_entities = set()
+    for node in local_graph.nodes:
+        if str(local_graph.nodes[node].get("node_type", "") or "").strip().lower() != "entity":
+            continue
+        sent_neighbors = 0
+        for nbr in local_graph.neighbors(node):
+            if str(local_graph.nodes[nbr].get("node_type", "") or "").strip().lower() == "sentence":
+                sent_neighbors += 1
+                if sent_neighbors >= 2:
+                    break
+        if sent_neighbors >= 2:
+            bridge_entities.add(_entity_token(str(node)))
+
+    seen = set()
+    ordered_nodes: List[str] = []
+    for node in list(evidence_candidate_ids or []):
+        sid = str(node)
+        if sid in seen or sid not in local_graph:
+            continue
+        if str(local_graph.nodes[sid].get("node_type", "") or "").strip().lower() != "sentence":
+            continue
+        seen.add(sid)
+        ordered_nodes.append(sid)
+        if len(ordered_nodes) >= max(1, int(candidate_top_m)):
+            break
+
+    atoms: List[Phase7EvidenceAtom] = []
+    total = max(1, len(ordered_nodes))
+    flow_rank = {str(node): int(rank + 1) for rank, node in enumerate(ordered_nodes)}
+    for rank, node in enumerate(ordered_nodes):
+        text = _sentence_node_text(local_graph, node)
+        title = _sentence_node_title(local_graph, node)
+        sid = _sentence_node_to_id(local_graph, node)
+        token_set = set(content_tokens(text))
+        entity_set = _entity_neighbors(local_graph, node)
+        carrier_nodes = _candidate_chunk_neighbors(local_graph, node)
+        carrier_id = str(carrier_nodes[0]) if carrier_nodes else ""
+        rank_score = float(1.0 - (float(rank) / float(total)))
+        flow_score = float(flow_scores.get(node, 0.0) or 0.0)
+
+        if anchor_tokens:
+            query_entity_coverage = float(len(entity_set.intersection(anchor_tokens)) / float(len(anchor_tokens)))
+        else:
+            query_entity_coverage = float(len(token_set.intersection(query_tokens)) / float(max(1, len(query_tokens))))
+        if bridge_entities:
+            bridge_entity_coverage = float(len(entity_set.intersection(bridge_entities)) / float(len(bridge_entities)))
+        else:
+            bridge_entity_coverage = 0.0
+        if relation_terms:
+            relation_term_coverage = float(len(token_set.intersection(relation_terms)) / float(len(relation_terms)))
+        else:
+            relation_term_coverage = 0.0
+
+        tags = set(str(x) for x in list(evidence_source_tags.get(str(node), []) or []) if str(x))
+        tags.add("phase8_pamae_seed")
+        atoms.append(
+            Phase7EvidenceAtom(
+                atom_id=str(node),
+                source_id=str(sid),
+                title=str(title),
+                text=str(text),
+                token_count=_token_count(text),
+                semantic_score=float(max(rank_score, flow_score)),
+                flow_score=float(flow_score),
+                anchor_distance=1.0e9,
+                anchor_reachability=0.0,
+                bridge_entity_coverage=float(bridge_entity_coverage),
+                relation_term_coverage=float(relation_term_coverage),
+                source_key=str(title),
+                normalized_token_set=token_set,
+                entity_set=entity_set,
+                source_order=_sentence_node_order(local_graph, node),
+                query_entity_coverage=float(query_entity_coverage),
+                answerability_base=0.0,
+                bridge_base=0.0,
+                carrier_id=str(carrier_id),
+                flow_rank=int(flow_rank.get(node, 0)),
+                source_tags=tags,
+                proposal_source="phase8_pamae_seed",
+            )
+        )
+
+    return atoms, {
+        "query_tokens": query_tokens,
+        "anchor_tokens": anchor_tokens,
+        "relation_terms": relation_terms,
+        "bridge_entities": bridge_entities,
+        "source_balance": disabled_source_balance_diagnostics(top_m=max(1, int(candidate_top_m))),
     }
 
 
@@ -1793,9 +1898,14 @@ def _select_from_rows_with_budget(
 @register_method("phase7_evidence_flow")
 def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
     p7 = phase7_config_from_cfg(cfg)
+    phase8_enabled = bool(getattr(cfg, "phase8_pamae_enabled", False))
     candidate_top_m_eff = max(
         1,
-        int(p7.source_balanced_candidate_top_m if bool(p7.source_balanced_proposal_enabled) else p7.candidate_top_m),
+        int(
+            getattr(cfg, "phase8_seed_total_candidate_cap", 160)
+            if phase8_enabled
+            else (p7.source_balanced_candidate_top_m if bool(p7.source_balanced_proposal_enabled) else p7.candidate_top_m)
+        ),
     )
     max_selected_atoms_eff = max(1, int(p7.max_selected_atoms))
     max_context_tokens_eff = max(32, int(p7.max_context_tokens))
@@ -1810,6 +1920,7 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
 
     stage_ms: Dict[str, float] = {}
     stage_rows: List[Dict[str, Any]] = []
+    phase8_result: Optional[PamaeProposalResult] = None
     t_total = time.perf_counter()
 
     def _stage_begin() -> float:
@@ -1906,6 +2017,74 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         num_edges=int(local_graph.number_of_edges()),
     )
 
+    if phase8_enabled:
+        t0 = _stage_begin()
+        phase8_result = run_phase8_pamae_proposal(
+            query=str(getattr(sample, "question", "") or ""),
+            graph_index=state,
+            embeddings={
+                "query_embedding": qvec,
+                "semantic_chunks": list(sem_chunks),
+                "semantic_entities": list(sem_entities),
+                "anchor_nodes": list(anchor_nodes),
+                "flow_scores": dict(flow),
+            },
+            config=cfg,
+            query_embedding=qvec,
+            anchors=anchor_nodes,
+        )
+        refined_seed_ids = [str(seed.entity_id) for seed in list(phase8_result.refined_medoid_set or [])]
+        phase8_candidate_ids = [str(cid) for cid in list(phase8_result.evidence_candidate_ids or []) if str(cid) in graph]
+        _stage_end(
+            "phase8_pamae_proposal",
+            t0,
+            num_nodes=int(len(phase8_result.entity_universe)),
+            num_edges=0,
+            num_candidates_in=int(len(phase8_result.entity_universe)),
+            num_candidates_out=int(len(phase8_candidate_ids)),
+        )
+
+        t0 = _stage_begin()
+        local_graph, local_diag = _build_local_graph(
+            graph=graph,
+            anchor_nodes=anchor_nodes,
+            semantic_chunk_nodes=phase8_candidate_ids,
+            semantic_entity_nodes=refined_seed_ids,
+        )
+        _stage_end(
+            "phase8_local_graph_build",
+            t0,
+            num_nodes=int(local_diag.get("local_nodes", 0)),
+            num_edges=int(local_diag.get("local_edges", 0)),
+        )
+
+        t0 = _stage_begin()
+        flow = _flow_scores(local_graph, seed_nodes=(anchor_nodes + refined_seed_ids + phase8_candidate_ids), p7=p7)
+        _stage_end(
+            "phase8_graph_flow",
+            t0,
+            num_nodes=int(local_graph.number_of_nodes()),
+            num_edges=int(local_graph.number_of_edges()),
+        )
+        sem_entities = [sid for sid in refined_seed_ids if sid in graph]
+        sem_entity_scores = {
+            str(seed.entity_id): float(seed.score)
+            for seed in list(phase8_result.refined_medoid_set or [])
+            if str(seed.entity_id) in graph
+        }
+        phase1_seed_rows = [
+            {
+                "node_id": str(seed.entity_id),
+                "source_id": str(seed.entity_id),
+                "node_type": "entity",
+                "carrier_id": "",
+                "title": str((graph.nodes[str(seed.entity_id)].get("title", "") if str(seed.entity_id) in graph else "") or ""),
+                "text": str((graph.nodes[str(seed.entity_id)].get("name", "") if str(seed.entity_id) in graph else "") or str(seed.entity_id)),
+                "score": float(seed.score),
+            }
+            for seed in list(phase8_result.refined_medoid_set or [])
+        ]
+
     # candidate truncation (top-M atoms)
     t0 = _stage_begin()
     local_node_type_counts = _count_nodes_by_type(local_graph)
@@ -1917,23 +2096,41 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "entity": int(local_node_type_counts.get("entity", 0)),
     }
     num_candidate_atoms_before_truncation = int(candidate_source_breakdown["sentence"])
-    atoms, aux = _candidate_atoms_from_local_graph(
-        question=str(getattr(sample, "question", "") or ""),
-        local_graph=local_graph,
-        flow_scores=flow,
-        semantic_chunk_scores=sem_chunk_scores,
-        anchor_nodes=anchor_nodes,
-        candidate_top_m=int(candidate_top_m_eff),
-        source_balanced_enabled=bool(p7.source_balanced_proposal_enabled),
-        source_balanced_top_m=int(candidate_top_m_eff),
-        source_quotas={
-            "semantic": int(p7.source_quota_semantic),
-            "entity_title": int(p7.source_quota_entity_title),
-            "graph_flow": int(p7.source_quota_graph_flow),
-            "anchor_neighborhood": int(p7.source_quota_anchor_neighborhood),
-        },
-        source_balanced_fill_remaining=bool(p7.source_balanced_fill_remaining),
-    )
+    if phase8_enabled and phase8_result is not None:
+        phase8_tags = dict((phase8_result.diagnostics or {}).get("evidence_source_tags", {}) or {})
+        atoms, aux = _candidate_atoms_from_phase8_evidence(
+            question=str(getattr(sample, "question", "") or ""),
+            local_graph=local_graph,
+            evidence_candidate_ids=list(phase8_result.evidence_candidate_ids or []),
+            evidence_source_tags=phase8_tags,
+            flow_scores=flow,
+            anchor_nodes=anchor_nodes,
+            candidate_top_m=int(candidate_top_m_eff),
+        )
+        aux["source_balance"] = {
+            **dict(aux.get("source_balance", {}) or {}),
+            "enabled": False,
+            "phase8_pamae_enabled": True,
+            "num_phase8_evidence_candidates": int(len(phase8_result.evidence_candidate_ids or [])),
+        }
+    else:
+        atoms, aux = _candidate_atoms_from_local_graph(
+            question=str(getattr(sample, "question", "") or ""),
+            local_graph=local_graph,
+            flow_scores=flow,
+            semantic_chunk_scores=sem_chunk_scores,
+            anchor_nodes=anchor_nodes,
+            candidate_top_m=int(candidate_top_m_eff),
+            source_balanced_enabled=bool(p7.source_balanced_proposal_enabled),
+            source_balanced_top_m=int(candidate_top_m_eff),
+            source_quotas={
+                "semantic": int(p7.source_quota_semantic),
+                "entity_title": int(p7.source_quota_entity_title),
+                "graph_flow": int(p7.source_quota_graph_flow),
+                "anchor_neighborhood": int(p7.source_quota_anchor_neighborhood),
+            },
+            source_balanced_fill_remaining=bool(p7.source_balanced_fill_remaining),
+        )
     source_balance_diag = dict(aux.get("source_balance", {}) or {})
     source_timing_ms = dict(source_balance_diag.get("source_timing_ms", {}) or {})
     stage_ms["source_balanced_union"] = float(source_balance_diag.get("source_balanced_union_ms", 0.0) or 0.0)
@@ -2527,6 +2724,9 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "phase7_source_quota_entity_title": int(p7.source_quota_entity_title),
         "phase7_source_quota_graph_flow": int(p7.source_quota_graph_flow),
         "phase7_source_quota_anchor_neighborhood": int(p7.source_quota_anchor_neighborhood),
+        "phase8_pamae_enabled": bool(phase8_enabled),
+        "phase8_pamae_proposal_mode": str(getattr(cfg, "phase8_pamae_proposal_mode", "entity_seed_refine") or "entity_seed_refine"),
+        "phase8_diagnostics": dict((phase8_result.diagnostics if phase8_result is not None else {}) or {}),
         "phase7_chain_unit_enabled": bool(p7.chain_unit_enabled),
         "phase7_chain_unit_max_pair_units": int(p7.chain_unit_max_pair_units),
         "phase7_chain_unit_use_same_title": bool(p7.chain_unit_use_same_title),
@@ -2613,6 +2813,9 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
             "semantic_anchor_retrieval": float(stage_ms.get("semantic_anchor_retrieval", 0.0)),
             "local_graph_build": float(stage_ms.get("local_graph_build", 0.0)),
             "graph_flow": float(stage_ms.get("graph_flow", 0.0)),
+            "phase8_pamae_proposal": float(stage_ms.get("phase8_pamae_proposal", 0.0)),
+            "phase8_local_graph_build": float(stage_ms.get("phase8_local_graph_build", 0.0)),
+            "phase8_graph_flow": float(stage_ms.get("phase8_graph_flow", 0.0)),
             "source_balanced_union": float(stage_ms.get("source_balanced_union", 0.0)),
             "entity_title_retrieval": float(stage_ms.get("entity_title_retrieval", 0.0)),
             "anchor_neighborhood": float(stage_ms.get("anchor_neighborhood", 0.0)),
@@ -2668,6 +2871,13 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "phase7_source_quota_entity_title": int(p7.source_quota_entity_title),
         "phase7_source_quota_graph_flow": int(p7.source_quota_graph_flow),
         "phase7_source_quota_anchor_neighborhood": int(p7.source_quota_anchor_neighborhood),
+        "phase8_pamae_enabled": bool(phase8_enabled),
+        "phase8_pamae_proposal_mode": str(getattr(cfg, "phase8_pamae_proposal_mode", "entity_seed_refine") or "entity_seed_refine"),
+        "phase8_diagnostics": dict((phase8_result.diagnostics if phase8_result is not None else {}) or {}),
+        "phase8_query_trace_path": str(Path(out_dir) / "phase8_query_trace.jsonl"),
+        "phase8_stage_timing_path": str(Path(out_dir) / "phase8_stage_timing.jsonl"),
+        "phase8_seed_trace_path": str(Path(out_dir) / "phase8_seed_trace.jsonl"),
+        "phase8_evidence_trace_path": str(Path(out_dir) / "phase8_evidence_trace.jsonl"),
         "phase7_chain_unit_enabled": bool(p7.chain_unit_enabled),
         "phase7_chain_unit_max_pair_units": int(p7.chain_unit_max_pair_units),
         "phase7_chain_unit_use_same_title": bool(p7.chain_unit_use_same_title),
@@ -2686,6 +2896,9 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "latency_breakdown_ms": {
             "query_embed_ms": float(stage_ms.get("query_embedding", 0.0)),
             "semantic_lookup_chunk_ms": float(stage_ms.get("semantic_anchor_retrieval", 0.0)),
+            "phase8_pamae_proposal_ms": float(stage_ms.get("phase8_pamae_proposal", 0.0)),
+            "phase8_local_graph_build_ms": float(stage_ms.get("phase8_local_graph_build", 0.0)),
+            "phase8_graph_flow_ms": float(stage_ms.get("phase8_graph_flow", 0.0)),
             "source_balanced_union_ms": float(stage_ms.get("source_balanced_union", 0.0)),
             "entity_title_retrieval_ms": float(stage_ms.get("entity_title_retrieval", 0.0)),
             "anchor_neighborhood_ms": float(stage_ms.get("anchor_neighborhood", 0.0)),
