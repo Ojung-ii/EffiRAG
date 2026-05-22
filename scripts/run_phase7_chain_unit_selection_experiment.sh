@@ -44,6 +44,26 @@ VARIANTS=(
   "chain_unit_selection:true:128:48:32:32:16:true:chain_unit"
 )
 
+VARIANTS_FILTER="${VARIANTS_FILTER:-}"
+if [[ -n "${VARIANTS_FILTER}" ]]; then
+  IFS="," read -r -a WANTED_VARIANTS <<<"${VARIANTS_FILTER}"
+  FILTERED_VARIANTS=()
+  for row in "${VARIANTS[@]}"; do
+    IFS=":" read -r ROW_VARIANT _rest <<<"${row}"
+    for wanted in "${WANTED_VARIANTS[@]}"; do
+      wanted="$(echo "${wanted}" | xargs)"
+      if [[ "${ROW_VARIANT}" == "${wanted}" ]]; then
+        FILTERED_VARIANTS+=("${row}")
+      fi
+    done
+  done
+  if [[ "${#FILTERED_VARIANTS[@]}" -eq 0 ]]; then
+    echo "[chain-unit] no matching variants for VARIANTS_FILTER=${VARIANTS_FILTER}" >&2
+    exit 1
+  fi
+  VARIANTS=("${FILTERED_VARIANTS[@]}")
+fi
+
 for row in "${VARIANTS[@]}"; do
   IFS=":" read -r VARIANT SB_ENABLED TOP_M Q_SEM Q_ENTITY Q_FLOW Q_NBR CU_ENABLED OBJECTIVE <<<"${row}"
   RUN_DIR="${OUT_ROOT}/${PROFILE}/${VARIANT}/${DATASET}"
