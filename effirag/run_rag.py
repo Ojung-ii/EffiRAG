@@ -20,6 +20,7 @@ from .metrics import (
     supporting_fact_recall,
     supporting_fact_recall_at_ks,
 )
+from .phase7_diagnostics import build_phase7_diagnostic_record
 from .registry import get_dataset_loader, get_generator, get_method, register_defaults
 from .render import render_context
 from .types import AnchorResult, RetrievalResult
@@ -652,7 +653,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-path", type=str, default=None)
     parser.add_argument("--split", type=str, default=None)
     parser.add_argument("--limit", type=int, default=None)
-    parser.add_argument("--method", type=str, default=None, choices=["effirag", "naive_graphrag"])
+    parser.add_argument(
+        "--method",
+        type=str,
+        default=None,
+        choices=["effirag", "naive_graphrag", "phase7_evidence_flow"],
+    )
     parser.add_argument("--output-dir", type=str, default=None)
     parser.add_argument("--timestamp-output", type=str, default=None)
     parser.add_argument("--global-corpus-path", type=str, default=None)
@@ -715,6 +721,91 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--semantic-topn-chunk", type=int, default=None)
     parser.add_argument("--graph-reserve-topn", type=int, default=None)
     parser.add_argument("--semantic-topn", type=int, default=None)
+    parser.add_argument("--phase7-atom-unit", type=str, default=None, choices=["sentence"])
+    parser.add_argument("--phase7-carrier-chunk-size-sentences", type=int, default=None)
+    parser.add_argument("--phase7-carrier-chunk-stride-sentences", type=int, default=None)
+    parser.add_argument("--phase7-semantic-anchor-top-t", type=int, default=None)
+    parser.add_argument("--phase7-candidate-top-m", type=int, default=None)
+    parser.add_argument("--phase7-flow-alpha", type=float, default=None)
+    parser.add_argument("--phase7-max-flow-iterations", type=int, default=None)
+    parser.add_argument("--phase7-flow-tolerance", type=float, default=None)
+    parser.add_argument("--phase7-max-selected-atoms", type=int, default=None)
+    parser.add_argument("--phase7-max-context-tokens", type=int, default=None)
+    parser.add_argument("--phase7-min-positive-gain", type=float, default=None)
+    parser.add_argument("--phase7-enable-phase2-refinement", type=str, default=None)
+    parser.add_argument(
+        "--phase7-objective-mode",
+        type=str,
+        default=None,
+        choices=[
+            "normalized_equal_weight",
+            "a_only",
+            "a_plus_b",
+            "a_minus_r",
+            "a_plus_b_minus_r",
+            "a_plus_decay_minus_r",
+            "a_plus_bq_minus_r",
+            "a_plus_bq_eff_minus_r",
+            "a_plus_bq_minus_rq",
+            "aq_plus_bq_minus_r",
+            "aq_plus_bq_minus_rq",
+            "chain_unit",
+        ],
+    )
+    parser.add_argument("--phase7-lambda-bridge", type=float, default=None)
+    parser.add_argument("--phase7-lambda-decay", type=float, default=None)
+    parser.add_argument("--phase7-lambda-bq", type=float, default=None)
+    parser.add_argument("--phase7-mu-redundancy", type=float, default=None)
+    parser.add_argument("--phase7-conditional-redundancy-enabled", type=str, default=None)
+    parser.add_argument("--phase7-corridor-enabled", type=str, default=None)
+    parser.add_argument("--phase7-corridor-max-anchors", type=int, default=None)
+    parser.add_argument("--phase7-corridor-max-seeds", type=int, default=None)
+    parser.add_argument("--phase7-corridor-max-hops", type=int, default=None)
+    parser.add_argument("--phase7-corridor-max-paths-per-pair", type=int, default=None)
+    parser.add_argument("--phase7-corridor-degree-cap", type=int, default=None)
+    parser.add_argument("--phase7-corridor-max-pairs", type=int, default=None)
+    parser.add_argument("--phase7-anchor-decay-enabled", type=str, default=None)
+    parser.add_argument("--phase7-anchor-decay-gamma", type=float, default=None)
+    parser.add_argument("--phase7-anchor-decay-max-hops", type=int, default=None)
+    parser.add_argument("--phase7-query-intent-enabled", type=str, default=None)
+    parser.add_argument("--phase7-intent-phase1-enabled", type=str, default=None)
+    parser.add_argument("--phase7-intent-max-relation-candidates", type=int, default=None)
+    parser.add_argument("--phase7-intent-max-answer-type-candidates", type=int, default=None)
+    parser.add_argument("--phase7-intent-max-entity-candidates", type=int, default=None)
+    parser.add_argument("--phase7-intent-candidate-top-m", type=int, default=None)
+    parser.add_argument("--phase7-source-balanced-proposal-enabled", type=str, default=None)
+    parser.add_argument("--phase7-source-balanced-candidate-top-m", type=int, default=None)
+    parser.add_argument("--phase7-source-balanced-fill-remaining", type=str, default=None)
+    parser.add_argument("--phase7-source-quota-semantic", type=int, default=None)
+    parser.add_argument("--phase7-source-quota-entity-title", type=int, default=None)
+    parser.add_argument("--phase7-source-quota-graph-flow", type=int, default=None)
+    parser.add_argument("--phase7-source-quota-anchor-neighborhood", type=int, default=None)
+    parser.add_argument("--phase7-chain-unit-enabled", type=str, default=None)
+    parser.add_argument("--phase7-chain-unit-max-pair-units", type=int, default=None)
+    parser.add_argument("--phase7-chain-unit-use-same-title", type=str, default=None)
+    parser.add_argument("--phase7-chain-unit-use-explicit-transition", type=str, default=None)
+    parser.add_argument("--phase7-chain-unit-use-same-carrier", type=str, default=None)
+    parser.add_argument("--phase7-chain-unit-use-shared-entity", type=str, default=None)
+    parser.add_argument("--phase7-chain-unit-max-unit-size", type=int, default=None)
+    parser.add_argument(
+        "--phase7-variant",
+        type=str,
+        default=None,
+        choices=[
+            "full",
+            "phase1_only",
+            "no_phase2_refinement",
+            "phase2_budget_x2",
+            "phase2_budget_x3",
+            "legacy_compatible_render",
+        ],
+    )
+    parser.add_argument("--phase7-diagnostics-enabled", type=str, default=None)
+    parser.add_argument("--phase7-diagnostics-max-examples-to-dump", type=int, default=None)
+    parser.add_argument("--phase7-diagnostics-dump-text", type=str, default=None)
+    parser.add_argument("--phase7-diagnostics-dump-context", type=str, default=None)
+    parser.add_argument("--phase7-diagnostics-dump-scores", type=str, default=None)
+    parser.add_argument("--phase7-diagnostics-fail-on-unit-mismatch", type=str, default=None)
     parser.add_argument("--index-chunk-unit", type=str, default=None, choices=["auto", "sentence", "passage"])
     parser.add_argument("--graph-mode", type=str, default=None, choices=["current_entity_graph", "entity_chunk_graph"])
     parser.add_argument("--chunk-scoring-mode", type=str, default=None, choices=["entity_aggregate", "direct_chunk"])
@@ -837,6 +928,17 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--reserve-top-corridor", type=str, default=None)
     parser.add_argument("--order-strategy", type=str, default=None)
     parser.add_argument("--prompt-variant", type=str, default=None, choices=["default", "evidence_first"])
+    parser.add_argument(
+        "--qa-prompt-mode",
+        type=str,
+        default=None,
+        choices=["current_phase7", "lightrag_short", "phase7_short"],
+    )
+    parser.add_argument("--qa-prompt-profile", type=str, default=None)
+    parser.add_argument("--generation-intervention-enabled", type=str, default=None)
+    parser.add_argument("--raw-focus-scaffold-light-enabled", type=str, default=None)
+    parser.add_argument("--answer-type-postprocess-enabled", type=str, default=None)
+    parser.add_argument("--method-specific-generation-enabled", type=str, default=None)
     parser.add_argument("--precomputed-retrieval-path", type=str, default=None)
     parser.add_argument("--precomputed-retrieval-strict", type=str, default=None)
     parser.add_argument("--measure-gpu-peak", type=str, default=None)
@@ -869,7 +971,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
 
 def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieval_path: str = None):
-    register_defaults()
+    register_defaults(getattr(cfg, "method", ""))
 
     loader = get_dataset_loader(cfg.dataset)
     method_fn = get_method(cfg.method)
@@ -900,11 +1002,25 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
     else:
         out_dir = Path(cfg.output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
+    setattr(cfg, "_resolved_output_dir", str(out_dir.resolve()))
     query_path = out_dir / "rag_query_results.jsonl"
     summary_path = out_dir / "rag_summary.json"
+    prompt_text_path = out_dir / "prompt.txt"
+    run_metadata_path = out_dir / "metadata.json"
     selector_diagnostics_path = out_dir / "selector_diagnostics.jsonl"
     render_diagnostics_path = out_dir / "render_diagnostics.jsonl"
     contextual_render_diagnostics_path = out_dir / "contextual_render_diagnostics.jsonl"
+    phase7_diagnostics_path = out_dir / "phase7_diagnostics.jsonl"
+    phase7_diagnostics_enabled = bool(
+        str(getattr(cfg, "method", "") or "").strip().lower() == "phase7_evidence_flow"
+        and bool(getattr(cfg, "phase7_diagnostics_enabled", False))
+    )
+    phase7_diag_dump_limit = max(1, int(getattr(cfg, "phase7_diagnostics_max_examples_to_dump", 100) or 100))
+    phase7_diag_dump_text = bool(getattr(cfg, "phase7_diagnostics_dump_text", True))
+    phase7_diag_dump_context = bool(getattr(cfg, "phase7_diagnostics_dump_context", True))
+    phase7_diag_dump_scores = bool(getattr(cfg, "phase7_diagnostics_dump_scores", True))
+    phase7_diag_fail_on_unit_mismatch = bool(getattr(cfg, "phase7_diagnostics_fail_on_unit_mismatch", False))
+    phase7_diag_written = 0
     sf_debug_rows = []
     sf_debug_limit = max(0, int(getattr(cfg, "sf_debug_sample_limit", 0) or 0))
     sf_debug_enabled = bool(sf_debug_limit > 0)
@@ -916,10 +1032,20 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         render_diagnostics_path.write_text("", encoding="utf-8")
     if bool(getattr(cfg, "render_selected_centered", False)):
         contextual_render_diagnostics_path.write_text("", encoding="utf-8")
+    if phase7_diagnostics_enabled:
+        phase7_diagnostics_path.write_text("", encoding="utf-8")
     render_mode_requested = str(cfg.render_mode or "").strip()
-    resolved_render_mode = render_mode_requested or ("corridor_aware_flat" if cfg.method == "effirag" else "flat")
+    if render_mode_requested:
+        resolved_render_mode = render_mode_requested
+    elif str(cfg.method or "").strip().lower() == "effirag":
+        resolved_render_mode = "corridor_aware_flat"
+    elif str(cfg.method or "").strip().lower() == "phase7_evidence_flow":
+        resolved_render_mode = "phase7_flat"
+    else:
+        resolved_render_mode = "flat"
     retrieval_source_counts = {"precomputed": 0, "on_the_fly": 0}
     fallback_count = 0
+    common_prompt_metadata_written = False
     profile_rows = []
     retrieval_bar = tqdm(
         total=len(indexed_samples),
@@ -1148,6 +1274,54 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
             completion_tokens = _safe_int(generation_meta.get("completion_tokens", 0) or 0, default=0)
             finish_reason = str(generation_meta.get("finish_reason", "") or "")
             prompt_variant = str(generation_meta.get("prompt_variant", getattr(cfg, "prompt_variant", "default")) or "default")
+            qa_prompt_profile = str(
+                generation_meta.get("qa_prompt_profile", getattr(cfg, "qa_prompt_profile", "")) or ""
+            )
+            prompt_hash = str(generation_meta.get("prompt_hash", "") or "")
+            prompt_template_hash = str(generation_meta.get("prompt_template_hash", prompt_hash) or prompt_hash)
+            full_prompt_hash = str(generation_meta.get("full_prompt_hash", "") or "")
+            prompt_text = str(generation_meta.get("prompt_text", "") or "")
+            common_prompt_enabled = bool(generation_meta.get("common_prompt_enabled", False))
+            generation_intervention_enabled = bool(generation_meta.get("generation_intervention_enabled", False))
+            raw_focus_scaffold_light_enabled = bool(
+                generation_meta.get("raw_focus_scaffold_light_enabled", False)
+            )
+            method_specific_generation_enabled = bool(
+                generation_meta.get(
+                    "method_specific_generation_enabled",
+                    getattr(cfg, "method_specific_generation_enabled", True),
+                )
+            )
+            method_specific_postprocessing_enabled = bool(
+                generation_meta.get("method_specific_postprocessing_enabled", False)
+            )
+            answer_type_postprocess_enabled = bool(
+                generation_meta.get(
+                    "answer_type_postprocess_enabled",
+                    getattr(cfg, "answer_type_postprocess_enabled", True),
+                )
+            )
+            if run_qa_enabled and common_prompt_enabled and prompt_text and not common_prompt_metadata_written:
+                prompt_text_path.write_text(prompt_text, encoding="utf-8")
+                write_json(
+                    run_metadata_path,
+                    {
+                        "qa_prompt_profile": qa_prompt_profile,
+                        "prompt_hash": prompt_hash,
+                        "prompt_template_hash": prompt_template_hash,
+                        "full_prompt_hash": full_prompt_hash,
+                        "prompt_text": prompt_text,
+                        "prompt_text_path": str(prompt_text_path.resolve()),
+                        "common_prompt_enabled": True,
+                        "generation_intervention_enabled": False,
+                        "raw_focus_scaffold_light_enabled": False,
+                        "method_specific_generation_enabled": False,
+                        "method_specific_postprocessing_enabled": False,
+                        "answer_type_postprocess_enabled": False,
+                        "output_dir": str(out_dir.resolve()),
+                    },
+                )
+                common_prompt_metadata_written = True
             qa_utilization_variant = str(generation_meta.get("qa_utilization_variant", "") or "")
             qa_utilization_applied = bool(generation_meta.get("qa_utilization_applied", False))
             qa_utilization_changed = bool(generation_meta.get("qa_utilization_changed", False))
@@ -1372,6 +1546,17 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     "completion_tokens": completion_tokens,
                     "finish_reason": finish_reason,
                     "prompt_variant": str(prompt_variant),
+                    "qa_prompt_profile": str(qa_prompt_profile),
+                    "prompt_hash": str(prompt_hash),
+                    "prompt_template_hash": str(prompt_template_hash),
+                    "full_prompt_hash": str(full_prompt_hash),
+                    "prompt_text": str(prompt_text),
+                    "common_prompt_enabled": bool(common_prompt_enabled),
+                    "generation_intervention_enabled": bool(generation_intervention_enabled),
+                    "raw_focus_scaffold_light_enabled": bool(raw_focus_scaffold_light_enabled),
+                    "method_specific_generation_enabled": bool(method_specific_generation_enabled),
+                    "method_specific_postprocessing_enabled": bool(method_specific_postprocessing_enabled),
+                    "answer_type_postprocess_enabled": bool(answer_type_postprocess_enabled),
                     "initial_em": float(initial_em),
                     "initial_f1": float(initial_f1),
                     "qa_utilization_variant": str(qa_utilization_variant),
@@ -1445,9 +1630,48 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                 "oracle_support_injection_enabled": bool(getattr(cfg, "oracle_support_injection_enabled", False)),
                 "generation": asdict(generation) if generation else None,
                 "run_timestamp": run_stamp,
+                "dataset": str(cfg.dataset),
+                "config_snapshot": {
+                    "dataset": str(cfg.dataset),
+                    "graph_mode": str(getattr(cfg, "graph_mode", "")),
+                    "index_chunk_unit": str(getattr(cfg, "index_chunk_unit", "")),
+                    "prompt_variant": str(getattr(cfg, "prompt_variant", "default")),
+                    "qa_prompt_profile": str(getattr(cfg, "qa_prompt_profile", "") or ""),
+                    "phase7_variant": str(getattr(cfg, "phase7_variant", "full")),
+                },
             }
             rows.append(row)
             append_jsonl(query_path, row)
+            if phase7_diagnostics_enabled and phase7_diag_written < phase7_diag_dump_limit:
+                phase7_diag_row = build_phase7_diagnostic_record(
+                    sample=sample,
+                    row=row,
+                    dump_text=phase7_diag_dump_text,
+                    dump_context=phase7_diag_dump_context,
+                    dump_scores=phase7_diag_dump_scores,
+                )
+                append_jsonl(phase7_diagnostics_path, phase7_diag_row)
+                phase7_diag_written += 1
+                if (
+                    phase7_diag_fail_on_unit_mismatch
+                    and list(phase7_diag_row.get("unit_mismatch_reasons", []) or [])
+                ):
+                    raise RuntimeError(
+                        "Phase7 unit mismatch detected during diagnostics "
+                        f"(qid={sample.qid}): {phase7_diag_row.get('unit_mismatch_reasons', [])}"
+                    )
+            if str(getattr(cfg, "method", "") or "").strip().lower() == "phase7_evidence_flow":
+                try:
+                    from .phase7_logging import append_phase7_runtime_stages
+
+                    append_phase7_runtime_stages(
+                        output_dir=str(out_dir.resolve()),
+                        query_id=str(sample.qid),
+                        generation_ms=float(generation_call_ms if generation is not None else 0.0),
+                        total_query_ms=float(efficiency.get("total_latency_ms", 0.0) or 0.0),
+                    )
+                except Exception:
+                    pass
             if bool(getattr(cfg, "dynamic_compact_selection_enabled", False)):
                 selector_diag = dict(rendered_meta.get("dynamic_compact_selector", {}) or {})
                 selector_diag.update(
@@ -1503,6 +1727,7 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         "n_samples": float(len(rows)),
         "dataset": cfg.dataset,
         "method": cfg.method,
+        "phase7_variant": str(getattr(cfg, "phase7_variant", "full")),
         "generator": cfg.generator,
         "generator_display": str(cfg.model_name or cfg.generator),
         "evaluator_mode": str(qa_evaluator.mode),
@@ -1639,6 +1864,9 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         "contextual_render_diagnostics_path": str(contextual_render_diagnostics_path)
         if bool(getattr(cfg, "render_selected_centered", False))
         else "",
+        "phase7_diagnostics_enabled": bool(phase7_diagnostics_enabled),
+        "phase7_diagnostics_path": str(phase7_diagnostics_path) if bool(phase7_diagnostics_enabled) else "",
+        "phase7_diagnostics_rows": int(phase7_diag_written),
         "selected_core_avg": mean_or_zero(
             [float(_render_diag_from_row(r).get("num_selected_core", 0.0) or 0.0) for r in rows]
         ),
@@ -2132,6 +2360,13 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         summary["generation_latency_ms"] = mean_or_zero([r["efficiency"]["generation_latency_ms"] for r in rows])
         summary["generation_ms"] = mean_or_zero([r["efficiency"].get("generation_ms", 0.0) for r in rows])
         gdiag_rows = [dict((r.get("generation_diagnostics", {}) or {})) for r in rows]
+        prompt_profiles = sorted({str(g.get("qa_prompt_profile", "") or "") for g in gdiag_rows})
+        prompt_hashes = sorted({str(g.get("prompt_hash", "") or "") for g in gdiag_rows if str(g.get("prompt_hash", "") or "")})
+        summary["qa_prompt_profile"] = prompt_profiles[0] if len(prompt_profiles) == 1 else prompt_profiles
+        summary["prompt_hash"] = prompt_hashes[0] if len(prompt_hashes) == 1 else prompt_hashes
+        summary["common_prompt_enabled_rate"] = mean_or_zero(
+            [1.0 if bool(g.get("common_prompt_enabled", False)) else 0.0 for g in gdiag_rows]
+        )
         summary["exact_match_surface_correction_rate"] = mean_or_zero(
             [float(g.get("exact_match_surface_correction", 0.0)) for g in gdiag_rows]
         )
@@ -2240,6 +2475,13 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
         summary["supporting_fact_debug_samples"] = int(len(sf_debug_rows))
 
     write_json(summary_path, summary)
+    if str(getattr(cfg, "method", "") or "").strip().lower() == "phase7_evidence_flow":
+        try:
+            from .phase7_logging import finalize_phase7_manifest
+
+            finalize_phase7_manifest(str(out_dir.resolve()))
+        except Exception:
+            pass
 
     if bool(getattr(cfg, "profile_stages", False)):
         raw_profile_path = str(getattr(cfg, "profile_output", "") or "").strip()
@@ -2301,6 +2543,56 @@ def main() -> None:
     args = parser.parse_args()
 
     base_config = load_yaml(args.config) if args.config else {}
+    phase7_diag_block = base_config.get("phase7_diagnostics", {}) if isinstance(base_config, dict) else {}
+    if isinstance(phase7_diag_block, dict):
+        diag_key_map = {
+            "enabled": "phase7_diagnostics_enabled",
+            "max_examples_to_dump": "phase7_diagnostics_max_examples_to_dump",
+            "dump_text": "phase7_diagnostics_dump_text",
+            "dump_context": "phase7_diagnostics_dump_context",
+            "dump_scores": "phase7_diagnostics_dump_scores",
+            "fail_on_unit_mismatch": "phase7_diagnostics_fail_on_unit_mismatch",
+        }
+        for src, dst in diag_key_map.items():
+            if src in phase7_diag_block and dst not in base_config:
+                base_config[dst] = phase7_diag_block[src]
+    phase7_corridor_block = base_config.get("phase7_corridor", {}) if isinstance(base_config, dict) else {}
+    if isinstance(phase7_corridor_block, dict):
+        corridor_key_map = {
+            "enabled": "phase7_corridor_enabled",
+            "max_anchors": "phase7_corridor_max_anchors",
+            "max_seeds": "phase7_corridor_max_seeds",
+            "max_hops": "phase7_corridor_max_hops",
+            "max_paths_per_pair": "phase7_corridor_max_paths_per_pair",
+            "degree_cap": "phase7_corridor_degree_cap",
+            "max_pairs": "phase7_corridor_max_pairs",
+        }
+        for src, dst in corridor_key_map.items():
+            if src in phase7_corridor_block and dst not in base_config:
+                base_config[dst] = phase7_corridor_block[src]
+    phase7_anchor_decay_block = base_config.get("phase7_anchor_decay", {}) if isinstance(base_config, dict) else {}
+    if isinstance(phase7_anchor_decay_block, dict):
+        decay_key_map = {
+            "enabled": "phase7_anchor_decay_enabled",
+            "gamma": "phase7_anchor_decay_gamma",
+            "max_hops": "phase7_anchor_decay_max_hops",
+        }
+        for src, dst in decay_key_map.items():
+            if src in phase7_anchor_decay_block and dst not in base_config:
+                base_config[dst] = phase7_anchor_decay_block[src]
+    phase7_objective_block = base_config.get("phase7_objective", {}) if isinstance(base_config, dict) else {}
+    if isinstance(phase7_objective_block, dict):
+        objective_key_map = {
+            "mode": "phase7_objective_mode",
+            "lambda_bridge": "phase7_lambda_bridge",
+            "lambda_decay": "phase7_lambda_decay",
+            "lambda_bq": "phase7_lambda_bq",
+            "mu_redundancy": "phase7_mu_redundancy",
+            "conditional_redundancy_enabled": "phase7_conditional_redundancy_enabled",
+        }
+        for src, dst in objective_key_map.items():
+            if src in phase7_objective_block and dst not in base_config:
+                base_config[dst] = phase7_objective_block[src]
     merged = apply_cli_overrides(base_config, args)
     strict_unknown_keys = str(os.environ.get("EFFIRAG_STRICT_UNKNOWN_CONFIG_KEYS", "false")).strip().lower() in {
         "1",
@@ -2323,6 +2615,7 @@ def main() -> None:
         strict_unknown_keys=strict_unknown_keys,
         ignored_unknown_keys={"config"},
     )
+    setattr(cfg, "_config_path", str(args.config or ""))
 
     precomputed_retrieval_path = str(getattr(cfg, "precomputed_retrieval_path", "") or "").strip() or None
     _, summary = execute_rag_experiment(cfg, precomputed_retrieval_path=precomputed_retrieval_path)

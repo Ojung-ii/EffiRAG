@@ -1,0 +1,63 @@
+dataset: hotpotqa
+data_path: /home/ojungii/EffiRAG/data/qa/hotpotqa.json
+split: validation
+limit: 1000
+method: phase7_evidence_flow
+retrieval_method: phase7_evidence_flow
+phase7_enabled: true
+output_dir: outputs/phase7_evidence_flow/hotpotqa
+timestamp_output: true
+
+global_corpus_path: /home/ojungii/HippoRAG2/dataset/hotpotqa_corpus.json
+graph_cache_dir: /home/ojungii/EffiRAG/outputs/index_cache
+force_rebuild_graph_index: false
+
+graph_mode: entity_chunk_graph
+index_chunk_unit: passage
+openie_mode: llm
+openie_model_name: Qwen/Qwen2.5-7B-Instruct
+openie_api_base_url: http://localhost:8011/v1
+openie_api_key: EMPTY
+openie_local_files_only: true
+openie_parallel_workers: 6
+
+embedding_enabled: true
+embedding_model_name: nvidia/NV-Embed-v2
+embedding_batch_size: 16
+embedding_max_length: 256
+embedding_text_max_chars: 800
+query_embedding_max_length: 96
+query_embedding_text_max_chars: 384
+
+run_qa: true
+generator: openai_compat
+model_name: Qwen/Qwen2.5-7B-Instruct
+llm_base_url: http://localhost:8011/v1
+llm_api_key: EMPTY
+prompt_variant: evidence_first
+
+render_mode: phase7_flat
+max_context_sentences: 14
+
+phase7_atom_unit: sentence
+phase7_require_sentence_layer: true
+phase7_carrier_unit: sentence_window
+phase7_build_sentence_layer: true
+phase7_build_carrier_layer: true
+phase7_link_sentence_to_carrier: true
+phase7_link_sentence_to_entities: true
+phase7_carrier_chunk_size_sentences: 3
+phase7_carrier_chunk_stride_sentences: 1
+phase7_allow_empty_candidates_for_debug: false
+phase7_semantic_anchor_top_t: 128
+phase7_candidate_top_m: 96
+phase7_flow_alpha: 0.15
+phase7_max_flow_iterations: 30
+phase7_flow_tolerance: 1.0e-6
+phase7_max_selected_atoms: 8
+phase7_max_context_tokens: 192
+phase7_min_positive_gain: 0.0
+phase7_enable_phase2_refinement: false
+phase7_objective_mode: normalized_equal_weight
+phase7_lambda_bridge: 1.0
+phase7_mu_redundancy: 1.0

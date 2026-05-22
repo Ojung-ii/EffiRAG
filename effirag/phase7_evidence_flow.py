@@ -16,6 +16,7 @@ from .global_index import load_or_build_global_index, load_semantic_index
 from .metrics import supporting_fact_match_details
 from .phase7_config import Phase7Config, phase7_config_from_cfg
 from .phase7_logging import get_phase7_logger
+from .phase7_source_balanced import SOURCE_ORDER, disabled_source_balance_diagnostics, source_balanced_union
 from .registry import register_method
 from .types import RetrievalResult
 from .utils import content_tokens
@@ -58,6 +59,18 @@ class Phase7EvidenceAtom:
     connected_anchor_ids: Set[str] = field(default_factory=set)
     connected_seed_ids: Set[str] = field(default_factory=set)
     corridor_path_ids: Set[str] = field(default_factory=set)
+    source_tags: Set[str] = field(default_factory=set)
+    proposal_source: str = ""
+
+
+@dataclass
+class Phase7ChainUnit:
+    unit_id: str
+    unit_type: str
+    atoms: Tuple[Phase7EvidenceAtom, ...]
+    source_ids: Tuple[str, ...]
+    token_count: int
+    base_score: float
 
 
 _PHASE7_INDEX_CACHE: Dict[Tuple[Any, ...], Dict[str, Any]] = {}
@@ -110,6 +123,10 @@ def _entity_token(node_id: str) -> str:
     if sid.startswith("e::"):
         return sid.split("::", 1)[1].strip().lower()
     return sid.strip().lower()
+
+
+def _slot_key(value: Any) -> str:
+    return str(value or "").strip().lower()
 
 
 def _normalize_anchor_nodes(anchors: Iterable[str], graph: nx.Graph) -> List[str]:
@@ -419,6 +436,10 @@ def _candidate_atoms_from_local_graph(
     semantic_chunk_scores: Dict[str, float],
     anchor_nodes: List[str],
     candidate_top_m: int,
+    source_balanced_enabled: bool = False,
+    source_balanced_top_m: Optional[int] = None,
+    source_quotas: Optional[Dict[str, int]] = None,
+    source_balanced_fill_remaining: bool = True,
 ) -> Tuple[List[Phase7EvidenceAtom], Dict[str, Any]]:
     query_tokens = set(content_tokens(question))
     anchor_tokens = set(_entity_token(a) for a in anchor_nodes)
@@ -438,7 +459,21 @@ def _candidate_atoms_from_local_graph(
             bridge_entities.add(_entity_token(str(node)))
 
     sentence_nodes = [str(n) for n in local_graph.nodes if str(local_graph.nodes[n].get("node_type", "") or "").strip().lower() == "sentence"]
-    scored_rows = []
+    anchor_entity_nodes = set(
+        str(a)
+        for a in list(anchor_nodes or [])
+        if str(a) in local_graph and str(local_graph.nodes[str(a)].get("node_type", "") or "").strip().lower() == "entity"
+    )
+    try:
+        anchor_distance_map = (
+            nx.multi_source_shortest_path_length(local_graph, list(anchor_entity_nodes), cutoff=8)
+            if anchor_entity_nodes
+            else {}
+        )
+    except Exception:
+        anchor_distance_map = {}
+
+    scored_rows: List[Dict[str, Any]] = []
     for node in sentence_nodes:
         carrier_nodes = _candidate_chunk_neighbors(local_graph, node)
         semantic_score = 0.0
@@ -450,14 +485,135 @@ def _candidate_atoms_from_local_graph(
                 carrier_id = str(cnode)
         flow_score = float(flow_scores.get(node, 0.0) or 0.0)
         blend = 0.55 * flow_score + 0.45 * semantic_score
-        scored_rows.append((node, blend, semantic_score, flow_score, carrier_id))
+        sid = _sentence_node_to_id(local_graph, node)
+        title = _sentence_node_title(local_graph, node)
+        entity_set = _entity_neighbors(local_graph, node)
+        neighbor_ids = set(str(n) for n in local_graph.neighbors(node))
+        direct_anchor_entity = bool(anchor_entity_nodes.intersection(neighbor_ids))
+        title_key = str(title or "").strip().lower()
+        entity_title_hit = bool(direct_anchor_entity or entity_set.intersection(anchor_tokens) or title_key in anchor_tokens)
+        anchor_distance = anchor_distance_map.get(node, None)
+        anchor_neighborhood_score = 0.0 if anchor_distance is None else float(1.0 / (1.0 + float(anchor_distance)))
+        source_tags = set()
+        if semantic_score > 0.0:
+            source_tags.add("semantic")
+        if entity_title_hit:
+            source_tags.add("entity_title")
+        if flow_score > 0.0:
+            source_tags.add("graph_flow")
+        if anchor_distance is not None:
+            source_tags.add("anchor_neighborhood")
+        scored_rows.append(
+            {
+                "node": str(node),
+                "source_id": str(sid),
+                "title": str(title),
+                "proposal_score": float(blend),
+                "semantic_score": float(semantic_score),
+                "flow_score": float(flow_score),
+                "carrier_id": str(carrier_id),
+                "anchor_neighborhood_score": float(anchor_neighborhood_score),
+                "entity_title_score": 1.0 if entity_title_hit else 0.0,
+                "source_tags": source_tags,
+            }
+        )
 
-    scored_rows.sort(key=lambda x: (float(x[1]), float(x[3]), float(x[2]), str(x[0])), reverse=True)
-    head = scored_rows[: max(1, int(candidate_top_m))]
-    flow_rank = {str(node): int(rank + 1) for rank, (node, *_rest) in enumerate(head)}
+    source_timing_ms: Dict[str, float] = {}
+    t_src = time.perf_counter()
+    ranked_semantic = sorted(
+        [row for row in scored_rows if "semantic" in set(row.get("source_tags", set()) or set())],
+        key=lambda row: (
+            float(row.get("semantic_score", 0.0) or 0.0),
+            float(row.get("proposal_score", 0.0) or 0.0),
+            float(row.get("flow_score", 0.0) or 0.0),
+            str(row.get("node", "") or ""),
+        ),
+        reverse=True,
+    )
+    source_timing_ms["semantic_candidates_ms"] = float((time.perf_counter() - t_src) * 1000.0)
+    t_src = time.perf_counter()
+    ranked_entity_title = sorted(
+        [row for row in scored_rows if "entity_title" in set(row.get("source_tags", set()) or set())],
+        key=lambda row: (
+            float(row.get("entity_title_score", 0.0) or 0.0),
+            float(row.get("proposal_score", 0.0) or 0.0),
+            float(row.get("flow_score", 0.0) or 0.0),
+            str(row.get("node", "") or ""),
+        ),
+        reverse=True,
+    )
+    source_timing_ms["entity_title_candidates_ms"] = float((time.perf_counter() - t_src) * 1000.0)
+    t_src = time.perf_counter()
+    ranked_graph_flow = sorted(
+        [row for row in scored_rows if "graph_flow" in set(row.get("source_tags", set()) or set())],
+        key=lambda row: (
+            float(row.get("flow_score", 0.0) or 0.0),
+            float(row.get("proposal_score", 0.0) or 0.0),
+            float(row.get("semantic_score", 0.0) or 0.0),
+            str(row.get("node", "") or ""),
+        ),
+        reverse=True,
+    )
+    source_timing_ms["graph_flow_candidates_ms"] = float((time.perf_counter() - t_src) * 1000.0)
+    t_src = time.perf_counter()
+    ranked_anchor_neighborhood = sorted(
+        [row for row in scored_rows if "anchor_neighborhood" in set(row.get("source_tags", set()) or set())],
+        key=lambda row: (
+            float(row.get("anchor_neighborhood_score", 0.0) or 0.0),
+            float(row.get("proposal_score", 0.0) or 0.0),
+            float(row.get("flow_score", 0.0) or 0.0),
+            str(row.get("node", "") or ""),
+        ),
+        reverse=True,
+    )
+    source_timing_ms["anchor_neighborhood_candidates_ms"] = float((time.perf_counter() - t_src) * 1000.0)
+
+    if bool(source_balanced_enabled):
+        head, source_balance_diag = source_balanced_union(
+            ranked_candidates={
+                "semantic": ranked_semantic,
+                "entity_title": ranked_entity_title,
+                "graph_flow": ranked_graph_flow,
+                "anchor_neighborhood": ranked_anchor_neighborhood,
+            },
+            quotas=dict(source_quotas or {}),
+            top_m=max(1, int(source_balanced_top_m or candidate_top_m)),
+            fill_remaining=bool(source_balanced_fill_remaining),
+        )
+    else:
+        scored_rows.sort(
+            key=lambda row: (
+                float(row.get("proposal_score", 0.0) or 0.0),
+                float(row.get("flow_score", 0.0) or 0.0),
+                float(row.get("semantic_score", 0.0) or 0.0),
+                str(row.get("node", "") or ""),
+            ),
+            reverse=True,
+        )
+        head = scored_rows[: max(1, int(candidate_top_m))]
+        source_balance_diag = disabled_source_balance_diagnostics(top_m=max(1, int(candidate_top_m)))
+
+    source_balance_diag["source_membership_counts"] = {
+        src: int(sum(1 for row in head if src in set(row.get("source_tags", set()) or set())))
+        for src in SOURCE_ORDER
+    }
+    source_balance_diag["num_selected_candidates"] = int(len(head))
+    source_balance_diag["source_candidate_counts"] = {
+        "semantic": int(len(ranked_semantic)),
+        "entity_title": int(len(ranked_entity_title)),
+        "graph_flow": int(len(ranked_graph_flow)),
+        "anchor_neighborhood": int(len(ranked_anchor_neighborhood)),
+    }
+    source_balance_diag["source_timing_ms"] = dict(source_timing_ms)
+    flow_rank = {str(row.get("node", "") or ""): int(rank + 1) for rank, row in enumerate(head)}
+    selected_by_source = dict(source_balance_diag.get("selected_by_source", {}) or {})
 
     atoms = []
-    for node, _blend, semantic_score, flow_score, carrier_id in head:
+    for row in head:
+        node = str(row.get("node", "") or "")
+        semantic_score = float(row.get("semantic_score", 0.0) or 0.0)
+        flow_score = float(row.get("flow_score", 0.0) or 0.0)
+        carrier_id = str(row.get("carrier_id", "") or "")
         text = _sentence_node_text(local_graph, node)
         title = _sentence_node_title(local_graph, node)
         sid = _sentence_node_to_id(local_graph, node)
@@ -499,6 +655,8 @@ def _candidate_atoms_from_local_graph(
                 bridge_base=0.0,
                 carrier_id=str(carrier_id),
                 flow_rank=int(flow_rank.get(node, 0)),
+                source_tags=set(str(x) for x in set(row.get("source_tags", set()) or set()) if str(x)),
+                proposal_source=str(selected_by_source.get(str(sid), "")),
             )
         )
 
@@ -507,6 +665,7 @@ def _candidate_atoms_from_local_graph(
         "anchor_tokens": anchor_tokens,
         "relation_terms": relation_terms,
         "bridge_entities": bridge_entities,
+        "source_balance": dict(source_balance_diag),
     }
 
 
@@ -986,6 +1145,305 @@ def _conditional_novelty_q(
     return _clip01(_mean([new_anchor_cov, new_corridor_cov, new_source_cov]))
 
 
+def _atom_title_key(atom: Phase7EvidenceAtom) -> str:
+    return _slot_key(atom.title or atom.source_key)
+
+
+def _canonical_source_ids(atoms: Iterable[Phase7EvidenceAtom]) -> Tuple[str, ...]:
+    return tuple(sorted(str(a.source_id) for a in list(atoms or []) if str(a.source_id)))
+
+
+def _unit_id_for(atoms: Iterable[Phase7EvidenceAtom]) -> str:
+    return "||".join(_canonical_source_ids(atoms))
+
+
+def _explicit_transition_pair(a: Phase7EvidenceAtom, b: Phase7EvidenceAtom) -> bool:
+    title_a = _atom_title_key(a)
+    title_b = _atom_title_key(b)
+    ents_a = set(str(x) for x in set(a.entity_set or set()) if str(x))
+    ents_b = set(str(x) for x in set(b.entity_set or set()) if str(x))
+    if title_a and title_a in ents_b:
+        return True
+    if title_b and title_b in ents_a:
+        return True
+    text_a = str(a.text or "").lower()
+    text_b = str(b.text or "").lower()
+    if title_a and len(title_a) >= 4 and title_a in text_b:
+        return True
+    if title_b and len(title_b) >= 4 and title_b in text_a:
+        return True
+    return False
+
+
+def _same_title_pair(a: Phase7EvidenceAtom, b: Phase7EvidenceAtom) -> bool:
+    ta = _atom_title_key(a)
+    tb = _atom_title_key(b)
+    return bool(ta and tb and ta == tb)
+
+
+def _same_carrier_pair(a: Phase7EvidenceAtom, b: Phase7EvidenceAtom) -> bool:
+    ca = str(a.carrier_id or "")
+    cb = str(b.carrier_id or "")
+    return bool(ca and cb and ca == cb)
+
+
+def _strict_pair_type(a: Phase7EvidenceAtom, b: Phase7EvidenceAtom, p7: Phase7Config) -> str:
+    if bool(p7.chain_unit_use_explicit_transition) and _explicit_transition_pair(a, b):
+        return "explicit_transition_pair"
+    if bool(p7.chain_unit_use_same_title) and _same_title_pair(a, b):
+        return "same_title_pair"
+    if bool(p7.chain_unit_use_same_carrier) and _same_carrier_pair(a, b):
+        return "same_carrier_pair"
+    return ""
+
+
+def _unit_type_priority(unit_type: str) -> int:
+    return {
+        "explicit_transition_pair": 0,
+        "same_title_pair": 1,
+        "same_carrier_pair": 2,
+        "single_atom": 3,
+    }.get(str(unit_type), 9)
+
+
+def _build_chain_units(atoms: List[Phase7EvidenceAtom], p7: Phase7Config) -> Tuple[List[Phase7ChainUnit], Dict[str, Any]]:
+    t0 = time.perf_counter()
+    units: List[Phase7ChainUnit] = []
+    seen: Set[str] = set()
+
+    for atom in list(atoms or []):
+        uid = _unit_id_for([atom])
+        if uid in seen:
+            continue
+        seen.add(uid)
+        units.append(
+            Phase7ChainUnit(
+                unit_id=str(uid),
+                unit_type="single_atom",
+                atoms=(atom,),
+                source_ids=(str(atom.source_id),),
+                token_count=int(atom.token_count),
+                base_score=float(0.55 * atom.answerability_base + 0.45 * atom.corridor_score),
+            )
+        )
+
+    pair_rows: List[Tuple[int, float, str, str, Phase7EvidenceAtom, Phase7EvidenceAtom]] = []
+    max_unit_size = max(1, int(p7.chain_unit_max_unit_size))
+    if max_unit_size >= 2:
+        atom_list = list(atoms or [])
+        for i, a in enumerate(atom_list):
+            for b in atom_list[i + 1 :]:
+                unit_type = _strict_pair_type(a, b, p7)
+                if not unit_type:
+                    continue
+                pair_score = float(
+                    _mean(
+                        [
+                            0.55 * a.answerability_base + 0.45 * a.corridor_score,
+                            0.55 * b.answerability_base + 0.45 * b.corridor_score,
+                        ]
+                    )
+                )
+                pair_rows.append(
+                    (
+                        _unit_type_priority(unit_type),
+                        -pair_score,
+                        _unit_id_for([a, b]),
+                        unit_type,
+                        a,
+                        b,
+                    )
+                )
+    pair_rows.sort(key=lambda row: (int(row[0]), float(row[1]), str(row[2])))
+    max_pairs = max(0, int(p7.chain_unit_max_pair_units))
+    for _prio, neg_score, uid, unit_type, a, b in pair_rows[:max_pairs]:
+        if uid in seen:
+            continue
+        seen.add(uid)
+        units.append(
+            Phase7ChainUnit(
+                unit_id=str(uid),
+                unit_type=str(unit_type),
+                atoms=(a, b),
+                source_ids=_canonical_source_ids([a, b]),
+                token_count=int(a.token_count + b.token_count),
+                base_score=float(-neg_score),
+            )
+        )
+
+    pair_units = [u for u in units if len(u.atoms) > 1]
+    diag = {
+        "num_single_units": int(sum(1 for u in units if u.unit_type == "single_atom")),
+        "num_pair_units": int(len(pair_units)),
+        "num_explicit_transition_units": int(sum(1 for u in pair_units if u.unit_type == "explicit_transition_pair")),
+        "num_same_title_units": int(sum(1 for u in pair_units if u.unit_type == "same_title_pair")),
+        "num_same_carrier_units": int(sum(1 for u in pair_units if u.unit_type == "same_carrier_pair")),
+        "num_selected_units": 0,
+        "num_selected_atoms": 0,
+        "chain_unit_ms": float((time.perf_counter() - t0) * 1000.0),
+    }
+    return units, diag
+
+
+def _chain_graph_from_units(units: List[Phase7ChainUnit]) -> nx.Graph:
+    graph = nx.Graph()
+    for unit in list(units or []):
+        ids = [str(sid) for sid in unit.source_ids]
+        for sid in ids:
+            graph.add_node(sid)
+        if len(ids) >= 2:
+            graph.add_edge(ids[0], ids[1], unit_type=str(unit.unit_type))
+    return graph
+
+
+def _unit_connects_to_selected(unit: Phase7ChainUnit, selected: List[Phase7EvidenceAtom], p7: Phase7Config) -> bool:
+    if not selected:
+        return False
+    for atom in list(unit.atoms or ()):
+        for sel in selected:
+            if _strict_pair_type(atom, sel, p7):
+                return True
+    return False
+
+
+def _unit_chain_base(unit_type: str) -> float:
+    return {
+        "explicit_transition_pair": 1.0,
+        "same_title_pair": 0.7,
+        "same_carrier_pair": 0.5,
+        "single_atom": 0.0,
+    }.get(str(unit_type), 0.0)
+
+
+def _unit_delta(
+    unit: Phase7ChainUnit,
+    selected: List[Phase7EvidenceAtom],
+    selected_query_tokens: Set[str],
+    selected_bridge_entities: Set[str],
+    selected_anchor_coverage: Set[str],
+    selected_corridor_paths: Set[str],
+    selected_sources: Set[str],
+    max_selected_atoms: int,
+    max_context_tokens: int,
+    selected_token_count: int,
+    p7: Phase7Config,
+) -> Dict[str, Any]:
+    selected_ids = set(str(a.source_id) for a in selected)
+    new_atoms = [a for a in list(unit.atoms or ()) if str(a.source_id) not in selected_ids]
+    if not new_atoms:
+        return {"final_gain": -1.0e9, "new_atoms": []}
+    remaining_atoms = max(1, int(max_selected_atoms) - int(len(selected)))
+    remaining_tokens = max(1, int(max_context_tokens) - int(selected_token_count))
+    new_atom_count = int(len(new_atoms))
+    new_token_count = int(sum(int(a.token_count) for a in new_atoms))
+    if new_atom_count > remaining_atoms or new_token_count > remaining_tokens:
+        return {"final_gain": -1.0e9, "new_atoms": new_atoms, "budget_blocked": True}
+
+    atom_terms = [
+        _objective_delta(
+            cand=atom,
+            selected=selected,
+            selected_query_tokens=selected_query_tokens,
+            selected_bridge_entities=selected_bridge_entities,
+            selected_anchor_coverage=selected_anchor_coverage,
+            selected_corridor_paths=selected_corridor_paths,
+            selected_sources=selected_sources,
+            objective_mode="a_plus_bq_minus_r",
+            lambda_bridge=float(p7.lambda_bridge),
+            lambda_decay=float(p7.lambda_decay),
+            lambda_bq=float(p7.lambda_bq),
+            mu_redundancy=float(p7.mu_redundancy),
+            conditional_redundancy_enabled=False,
+        )
+        for atom in new_atoms
+    ]
+    a_unit = _clip01(_mean(t.get("A", 0.0) for t in atom_terms))
+    r_unit = _clip01(_mean(t.get("R", 0.0) for t in atom_terms))
+    connect_bonus = 0.15 if _unit_connects_to_selected(unit, selected, p7) else 0.0
+    c_unit = _clip01(_unit_chain_base(unit.unit_type) + connect_bonus)
+    cost_penalty = _clip01(0.15 * _mean([new_atom_count / float(remaining_atoms), new_token_count / float(remaining_tokens)]))
+    gain = float(a_unit + c_unit - r_unit - cost_penalty)
+    return {
+        "final_gain": float(gain),
+        "A_unit": float(a_unit),
+        "C_unit": float(c_unit),
+        "R_unit": float(r_unit),
+        "cost_penalty": float(cost_penalty),
+        "new_atoms": list(new_atoms),
+        "new_atom_count": int(new_atom_count),
+        "new_token_count": int(new_token_count),
+        "unit_type": str(unit.unit_type),
+    }
+
+
+def _chain_feasibility_diagnostics(
+    atoms: List[Phase7EvidenceAtom],
+    units: List[Phase7ChainUnit],
+    gold_unit_ids: Set[str],
+    selected_ids: Set[str],
+    max_selected_atoms: int,
+    max_context_tokens: int,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    candidate_by_id = {str(a.source_id): a for a in list(atoms or [])}
+    candidate_ids = set(candidate_by_id.keys())
+    gold_ids = set(str(x) for x in set(gold_unit_ids or set()) if str(x))
+    present_gold = sorted(gold_ids.intersection(candidate_ids))
+    candidate_partial = bool(present_gold)
+    candidate_full = bool(gold_ids) and gold_ids.issubset(candidate_ids)
+    candidate_recall = float(len(present_gold) / float(max(1, len(gold_ids)))) if gold_ids else 0.0
+
+    unit_graph = _chain_graph_from_units(units)
+    graph_connected = False
+    if candidate_full:
+        if len(gold_ids) <= 1:
+            graph_connected = True
+        else:
+            try:
+                graph_connected = bool(nx.is_connected(unit_graph.subgraph(list(gold_ids))))
+            except Exception:
+                graph_connected = False
+
+    minimal_atoms = int(len(gold_ids)) if candidate_full else 0
+    minimal_tokens = int(sum(candidate_by_id[sid].token_count for sid in gold_ids)) if candidate_full else 0
+    budget_feasible = bool(
+        candidate_full
+        and minimal_atoms <= int(max_selected_atoms)
+        and minimal_tokens <= int(max_context_tokens)
+    )
+    unit_covered_ids: Set[str] = set()
+    for unit in list(units or []):
+        unit_covered_ids.update(str(sid) for sid in unit.source_ids)
+    chain_unit_oracle_feasible = bool(
+        budget_feasible
+        and gold_ids.issubset(unit_covered_ids)
+        and (graph_connected or len(gold_ids) <= 1)
+    )
+    selected_full = bool(gold_ids) and gold_ids.issubset(set(selected_ids or set()))
+    carrier_ids = set(candidate_by_id[sid].carrier_id for sid in gold_ids if sid in candidate_by_id and candidate_by_id[sid].carrier_id)
+    carrier_feasible_but_atom_failed = bool(budget_feasible and len(carrier_ids) == 1 and not selected_full)
+
+    feasibility = {
+        "candidate_gold_partial": bool(candidate_partial),
+        "candidate_gold_full": bool(candidate_full),
+        "candidate_gold_recall": float(candidate_recall),
+        "candidate_graph_gold_connected": bool(graph_connected),
+        "minimal_gold_chain_atoms": int(minimal_atoms),
+        "minimal_gold_chain_tokens": int(minimal_tokens),
+        "budget_feasible_gold_chain": bool(budget_feasible),
+        "chain_unit_oracle_feasible": bool(chain_unit_oracle_feasible),
+        "carrier_feasible_but_atom_failed": bool(carrier_feasible_but_atom_failed),
+    }
+    selected_unit_ids = set(str(sid) for sid in set(selected_ids or set()) if str(sid))
+    gold_units_selected = int(sum(1 for unit in units if set(unit.source_ids).intersection(gold_ids).intersection(selected_unit_ids)))
+    gold_eval = {
+        "gold_unit_partial": bool(gold_ids.intersection(unit_covered_ids)),
+        "gold_unit_full": bool(gold_ids) and gold_ids.issubset(unit_covered_ids),
+        "num_gold_atoms_covered_by_units": int(len(gold_ids.intersection(unit_covered_ids))),
+        "gold_units_selected": int(gold_units_selected),
+    }
+    return feasibility, gold_eval
+
+
 def _objective_delta(
     cand: Phase7EvidenceAtom,
     selected: List[Phase7EvidenceAtom],
@@ -1040,6 +1498,7 @@ def _objective_delta(
 
     d_gain = _clip01(cand.anchor_decay_score)
     bq_gain = _clip01(cand.corridor_score)
+    bq_eff_gain = _clip01(float(bq_gain) * math.sqrt(_clip01(a_gain)))
     mode = str(objective_mode or "normalized_equal_weight").strip().lower()
     if mode == "a_only":
         gain = float(a_gain)
@@ -1051,6 +1510,8 @@ def _objective_delta(
         gain = float(a_gain + float(lambda_decay) * d_gain - float(mu_redundancy) * r_pen)
     elif mode == "a_plus_bq_minus_r":
         gain = float(a_gain + float(lambda_bq) * bq_gain - float(mu_redundancy) * r_pen)
+    elif mode == "a_plus_bq_eff_minus_r":
+        gain = float(a_gain + float(lambda_bq) * bq_eff_gain - float(mu_redundancy) * r_pen)
     elif mode == "a_plus_bq_minus_rq":
         gain = float(a_gain + float(lambda_bq) * bq_gain - float(mu_redundancy) * rq_pen)
     else:
@@ -1062,6 +1523,7 @@ def _objective_delta(
         "D": float(d_gain),
         "B": float(b_gain),
         "Bq": float(bq_gain),
+        "Bq_eff": float(bq_eff_gain),
         "R": float(r_pen),
         "Rq": float(rq_pen),
         "novelty_q": float(novelty_q),
@@ -1310,7 +1772,10 @@ def _select_from_rows_with_budget(
 @register_method("phase7_evidence_flow")
 def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
     p7 = phase7_config_from_cfg(cfg)
-    candidate_top_m_eff = max(1, int(p7.candidate_top_m))
+    candidate_top_m_eff = max(
+        1,
+        int(p7.source_balanced_candidate_top_m if bool(p7.source_balanced_proposal_enabled) else p7.candidate_top_m),
+    )
     max_selected_atoms_eff = max(1, int(p7.max_selected_atoms))
     max_context_tokens_eff = max(32, int(p7.max_context_tokens))
     out_dir = _resolved_output_dir(cfg)
@@ -1438,7 +1903,21 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         semantic_chunk_scores=sem_chunk_scores,
         anchor_nodes=anchor_nodes,
         candidate_top_m=int(candidate_top_m_eff),
+        source_balanced_enabled=bool(p7.source_balanced_proposal_enabled),
+        source_balanced_top_m=int(candidate_top_m_eff),
+        source_quotas={
+            "semantic": int(p7.source_quota_semantic),
+            "entity_title": int(p7.source_quota_entity_title),
+            "graph_flow": int(p7.source_quota_graph_flow),
+            "anchor_neighborhood": int(p7.source_quota_anchor_neighborhood),
+        },
+        source_balanced_fill_remaining=bool(p7.source_balanced_fill_remaining),
     )
+    source_balance_diag = dict(aux.get("source_balance", {}) or {})
+    source_timing_ms = dict(source_balance_diag.get("source_timing_ms", {}) or {})
+    stage_ms["source_balanced_union"] = float(source_balance_diag.get("source_balanced_union_ms", 0.0) or 0.0)
+    stage_ms["entity_title_retrieval"] = float(source_timing_ms.get("entity_title_candidates_ms", 0.0) or 0.0)
+    stage_ms["anchor_neighborhood"] = float(source_timing_ms.get("anchor_neighborhood_candidates_ms", 0.0) or 0.0)
     _stage_end(
         "candidate_truncation",
         t0,
@@ -1579,9 +2058,34 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "corridor_feature_ms": float((time.perf_counter() - t_corridor_start) * 1000.0),
     }
 
+    t0 = _stage_begin()
+    if bool(p7.chain_unit_enabled) or str(p7.objective_mode).strip().lower() == "chain_unit" or bool(p7.diagnostics_enabled):
+        chain_units, chain_unit_diag = _build_chain_units(atoms=atoms, p7=p7)
+    else:
+        chain_units, chain_unit_diag = [], {
+            "num_single_units": 0,
+            "num_pair_units": 0,
+            "num_explicit_transition_units": 0,
+            "num_same_title_units": 0,
+            "num_same_carrier_units": 0,
+            "num_selected_units": 0,
+            "num_selected_atoms": 0,
+            "chain_unit_ms": 0.0,
+        }
+    _stage_end(
+        "chain_unit_build",
+        t0,
+        num_nodes=int(local_graph.number_of_nodes()),
+        num_edges=int(local_graph.number_of_edges()),
+        num_candidates_in=int(len(atoms)),
+        num_candidates_out=int(len(chain_units)),
+    )
+    chain_unit_diag["chain_unit_ms"] = float(stage_ms.get("chain_unit_build", 0.0))
+
     # single budgeted marginal selection
     t0 = _stage_begin()
     selected: List[Phase7EvidenceAtom] = []
+    selected_units: List[Phase7ChainUnit] = []
     selected_query_tokens: Set[str] = set()
     selected_bridge_entities: Set[str] = set()
     selected_anchor_coverage: Set[str] = set()
@@ -1591,6 +2095,7 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
     answerability_gain_total = 0.0
     decay_gain_total = 0.0
     corridor_gain_total = 0.0
+    bq_eff_gain_total = 0.0
     bridge_gain_total = 0.0
     redundancy_penalty_total = 0.0
     conditional_redundancy_penalty_total = 0.0
@@ -1599,68 +2104,139 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
     selected_feature_breakdown: List[Dict[str, Any]] = []
     conditional_redundancy_ms = 0.0
 
-    while len(selected) < int(max_selected_atoms_eff):
-        best_atom = None
-        best_gain = float(p7.min_positive_gain)
-        best_terms: Dict[str, float] = {}
-        for atom in atoms:
-            if atom.atom_id in {s.atom_id for s in selected}:
-                continue
-            if selected_token_count + int(atom.token_count) > int(max_context_tokens_eff):
-                budget_filtered_candidates += 1
-                continue
-            t_cr = time.perf_counter()
-            terms = _objective_delta(
-                cand=atom,
-                selected=selected,
-                selected_query_tokens=selected_query_tokens,
-                selected_bridge_entities=selected_bridge_entities,
-                selected_anchor_coverage=selected_anchor_coverage,
-                selected_corridor_paths=selected_corridor_paths,
-                selected_sources=selected_sources,
-                objective_mode=str(p7.objective_mode),
-                lambda_bridge=float(p7.lambda_bridge),
-                lambda_decay=float(p7.lambda_decay),
-                lambda_bq=float(p7.lambda_bq),
-                mu_redundancy=float(p7.mu_redundancy),
-                conditional_redundancy_enabled=bool(p7.conditional_redundancy_enabled),
+    if str(p7.objective_mode).strip().lower() == "chain_unit" and bool(p7.chain_unit_enabled):
+        while len(selected) < int(max_selected_atoms_eff):
+            best_unit = None
+            best_terms: Dict[str, Any] = {}
+            best_gain = float(p7.min_positive_gain)
+            for unit in chain_units:
+                t_cr = time.perf_counter()
+                terms = _unit_delta(
+                    unit=unit,
+                    selected=selected,
+                    selected_query_tokens=selected_query_tokens,
+                    selected_bridge_entities=selected_bridge_entities,
+                    selected_anchor_coverage=selected_anchor_coverage,
+                    selected_corridor_paths=selected_corridor_paths,
+                    selected_sources=selected_sources,
+                    max_selected_atoms=int(max_selected_atoms_eff),
+                    max_context_tokens=int(max_context_tokens_eff),
+                    selected_token_count=int(selected_token_count),
+                    p7=p7,
+                )
+                conditional_redundancy_ms += float((time.perf_counter() - t_cr) * 1000.0)
+                if bool(terms.get("budget_blocked", False)):
+                    budget_filtered_candidates += 1
+                gain = float(terms.get("final_gain", 0.0))
+                if gain > best_gain:
+                    best_gain = float(gain)
+                    best_unit = unit
+                    best_terms = dict(terms)
+            if best_unit is None:
+                break
+            selected_units.append(best_unit)
+            new_atoms = list(best_terms.get("new_atoms", []) or [])
+            for atom in new_atoms:
+                selected.append(atom)
+                selected_token_count += int(atom.token_count)
+                selected_query_tokens.update(atom.normalized_token_set)
+                selected_bridge_entities.update(atom.entity_set)
+                selected_anchor_coverage.update(set(atom.connected_anchor_ids))
+                selected_corridor_paths.update(set(atom.corridor_path_ids))
+                if atom.source_key:
+                    selected_sources.add(str(atom.source_key))
+            answerability_gain_total += float(best_terms.get("A_unit", 0.0))
+            corridor_gain_total += float(best_terms.get("C_unit", 0.0))
+            redundancy_penalty_total += float(best_terms.get("R_unit", 0.0))
+            objective_gain_total += float(best_terms.get("final_gain", best_gain))
+            selected_feature_breakdown.append(
+                {
+                    "node_id": str(best_unit.unit_id),
+                    "atom_id": str(best_unit.unit_id),
+                    "unit_id": str(best_unit.unit_id),
+                    "unit_type": str(best_unit.unit_type),
+                    "unit_source_ids": list(best_unit.source_ids),
+                    "A": float(best_terms.get("A_unit", 0.0)),
+                    "D": 0.0,
+                    "Bq": 0.0,
+                    "Bq_eff": 0.0,
+                    "C_unit": float(best_terms.get("C_unit", 0.0)),
+                    "R": float(best_terms.get("R_unit", 0.0)),
+                    "Rq": float(best_terms.get("R_unit", 0.0)),
+                    "cost_penalty": float(best_terms.get("cost_penalty", 0.0)),
+                    "final_gain": float(best_terms.get("final_gain", best_gain)),
+                    "is_corridor_node": any(bool(a.is_corridor_node) for a in new_atoms),
+                    "num_new_atoms": int(len(new_atoms)),
+                    "new_token_count": int(best_terms.get("new_token_count", 0)),
+                }
             )
-            conditional_redundancy_ms += float((time.perf_counter() - t_cr) * 1000.0)
-            gain = float(terms.get("final_gain", 0.0))
-            if gain > best_gain:
-                best_gain = float(gain)
-                best_atom = atom
-                best_terms = dict(terms)
-        if best_atom is None:
-            break
-        selected.append(best_atom)
-        selected_token_count += int(best_atom.token_count)
-        selected_query_tokens.update(best_atom.normalized_token_set)
-        selected_bridge_entities.update(best_atom.entity_set)
-        selected_anchor_coverage.update(set(best_atom.connected_anchor_ids))
-        selected_corridor_paths.update(set(best_atom.corridor_path_ids))
-        if best_atom.source_key:
-            selected_sources.add(str(best_atom.source_key))
-        answerability_gain_total += float(best_terms.get("A", 0.0))
-        decay_gain_total += float(best_terms.get("D", 0.0))
-        corridor_gain_total += float(best_terms.get("Bq", 0.0))
-        bridge_gain_total += float(best_terms.get("B", 0.0))
-        redundancy_penalty_total += float(best_terms.get("R", 0.0))
-        conditional_redundancy_penalty_total += float(best_terms.get("Rq", 0.0))
-        objective_gain_total += float(best_terms.get("final_gain", best_gain))
-        selected_feature_breakdown.append(
-            {
-                "node_id": str(best_atom.source_id),
-                "atom_id": str(best_atom.atom_id),
-                "A": float(best_terms.get("A", 0.0)),
-                "D": float(best_terms.get("D", 0.0)),
-                "Bq": float(best_terms.get("Bq", 0.0)),
-                "R": float(best_terms.get("R", 0.0)),
-                "Rq": float(best_terms.get("Rq", 0.0)),
-                "final_gain": float(best_terms.get("final_gain", best_gain)),
-                "is_corridor_node": bool(best_atom.is_corridor_node),
-            }
-        )
+    else:
+        while len(selected) < int(max_selected_atoms_eff):
+            best_atom = None
+            best_gain = float(p7.min_positive_gain)
+            best_terms: Dict[str, float] = {}
+            for atom in atoms:
+                if atom.atom_id in {s.atom_id for s in selected}:
+                    continue
+                if selected_token_count + int(atom.token_count) > int(max_context_tokens_eff):
+                    budget_filtered_candidates += 1
+                    continue
+                t_cr = time.perf_counter()
+                terms = _objective_delta(
+                    cand=atom,
+                    selected=selected,
+                    selected_query_tokens=selected_query_tokens,
+                    selected_bridge_entities=selected_bridge_entities,
+                    selected_anchor_coverage=selected_anchor_coverage,
+                    selected_corridor_paths=selected_corridor_paths,
+                    selected_sources=selected_sources,
+                    objective_mode=str(p7.objective_mode),
+                    lambda_bridge=float(p7.lambda_bridge),
+                    lambda_decay=float(p7.lambda_decay),
+                    lambda_bq=float(p7.lambda_bq),
+                    mu_redundancy=float(p7.mu_redundancy),
+                    conditional_redundancy_enabled=bool(p7.conditional_redundancy_enabled),
+                )
+                conditional_redundancy_ms += float((time.perf_counter() - t_cr) * 1000.0)
+                gain = float(terms.get("final_gain", 0.0))
+                if gain > best_gain:
+                    best_gain = float(gain)
+                    best_atom = atom
+                    best_terms = dict(terms)
+            if best_atom is None:
+                break
+            selected.append(best_atom)
+            selected_token_count += int(best_atom.token_count)
+            selected_query_tokens.update(best_atom.normalized_token_set)
+            selected_bridge_entities.update(best_atom.entity_set)
+            selected_anchor_coverage.update(set(best_atom.connected_anchor_ids))
+            selected_corridor_paths.update(set(best_atom.corridor_path_ids))
+            if best_atom.source_key:
+                selected_sources.add(str(best_atom.source_key))
+            answerability_gain_total += float(best_terms.get("A", 0.0))
+            decay_gain_total += float(best_terms.get("D", 0.0))
+            corridor_gain_total += float(best_terms.get("Bq", 0.0))
+            bq_eff_gain_total += float(best_terms.get("Bq_eff", 0.0))
+            bridge_gain_total += float(best_terms.get("B", 0.0))
+            redundancy_penalty_total += float(best_terms.get("R", 0.0))
+            conditional_redundancy_penalty_total += float(best_terms.get("Rq", 0.0))
+            objective_gain_total += float(best_terms.get("final_gain", best_gain))
+            selected_feature_breakdown.append(
+                {
+                    "node_id": str(best_atom.source_id),
+                    "atom_id": str(best_atom.atom_id),
+                    "A": float(best_terms.get("A", 0.0)),
+                    "D": float(best_terms.get("D", 0.0)),
+                    "Bq": float(best_terms.get("Bq", 0.0)),
+                    "Bq_eff": float(best_terms.get("Bq_eff", 0.0)),
+                    "R": float(best_terms.get("R", 0.0)),
+                    "Rq": float(best_terms.get("Rq", 0.0)),
+                    "final_gain": float(best_terms.get("final_gain", best_gain)),
+                    "is_corridor_node": bool(best_atom.is_corridor_node),
+                    "unit_type": "single_atom",
+                    "unit_source_ids": [str(best_atom.source_id)],
+                }
+            )
 
     # Anti-heuristic mainline contract:
     # Phase II performs feature extraction only; no second-stage refinement/pruning.
@@ -1675,6 +2251,13 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         num_candidates_out=int(len(selected)),
     )
     stage_ms["conditional_redundancy"] = float(conditional_redundancy_ms)
+    stage_ms["chain_unit_selection"] = (
+        float(stage_ms.get("marginal_selection", 0.0))
+        if str(p7.objective_mode).strip().lower() == "chain_unit" and bool(p7.chain_unit_enabled)
+        else 0.0
+    )
+    chain_unit_diag["num_selected_units"] = int(len(selected_units) if selected_units else len(selected))
+    chain_unit_diag["num_selected_atoms"] = int(len(selected))
     stage_rows.append(
         {
             "query_id": str(getattr(sample, "qid", "") or ""),
@@ -1684,6 +2267,17 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
             "num_edges": int(local_graph.number_of_edges()),
             "num_candidates_in": int(len(atoms)),
             "num_candidates_out": int(len(selected)),
+        }
+    )
+    stage_rows.append(
+        {
+            "query_id": str(getattr(sample, "qid", "") or ""),
+            "stage": "chain_unit_selection",
+            "elapsed_ms": float(stage_ms.get("chain_unit_selection", 0.0)),
+            "num_nodes": int(local_graph.number_of_nodes()),
+            "num_edges": int(local_graph.number_of_edges()),
+            "num_candidates_in": int(len(chain_units)),
+            "num_candidates_out": int(len(selected_units)),
         }
     )
 
@@ -1734,6 +2328,31 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
     phase1_gold_candidate_ids = [a.source_id for a in atoms if a.source_id in gold_unit_ids]
     corridor_gold_candidate_ids = [a.source_id for a in atoms if (a.source_id in gold_unit_ids and bool(a.is_corridor_node))]
     selected_gold_candidate_ids = [a.source_id for a in selected_ordered if a.source_id in gold_unit_ids]
+    chain_feasibility_diag, chain_unit_gold_eval_only = _chain_feasibility_diagnostics(
+        atoms=atoms,
+        units=chain_units,
+        gold_unit_ids=gold_unit_ids,
+        selected_ids=set(selected_ids),
+        max_selected_atoms=int(max_selected_atoms_eff),
+        max_context_tokens=int(max_context_tokens_eff),
+    )
+    selected_pair_unit_rate = float(
+        sum(1 for u in selected_units if len(u.atoms) > 1) / float(max(1, len(selected_units)))
+    ) if selected_units else 0.0
+    selected_explicit_transition_unit_rate = float(
+        sum(1 for u in selected_units if u.unit_type == "explicit_transition_pair") / float(max(1, len(selected_units)))
+    ) if selected_units else 0.0
+    source_gold_hit_rates_eval_only: Dict[str, float] = {}
+    source_gold_hit_any_eval_only: Dict[str, bool] = {}
+    for source_name in SOURCE_ORDER:
+        source_atoms = [a for a in atoms if source_name in set(a.source_tags or set())]
+        source_gold_atoms = [a for a in source_atoms if a.source_id in gold_unit_ids]
+        source_gold_hit_rates_eval_only[source_name] = (
+            float(len(source_gold_atoms) / float(len(source_atoms))) if source_atoms else 0.0
+        )
+        source_gold_hit_any_eval_only[source_name] = bool(source_gold_atoms)
+    source_balance_diag["source_gold_hit_rates_eval_only"] = dict(source_gold_hit_rates_eval_only)
+    source_balance_diag["source_gold_hit_any_eval_only"] = dict(source_gold_hit_any_eval_only)
 
     ranked_by_bq = sorted(
         list(atoms or []),
@@ -1795,6 +2414,18 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
     candidate_sf = _support_metrics_eval_only(sample, candidate_ids, candidate_texts, graph_mode=graph_mode)
     selected_sf = _support_metrics_eval_only(sample, selected_ids, selected_texts, graph_mode=graph_mode)
     rendered_sf = _support_metrics_eval_only(sample, selected_ids, selected_texts, graph_mode=graph_mode)
+    selected_avg_a = float(_mean([x.get("A", 0.0) for x in selected_feature_breakdown]))
+    selected_avg_bq = float(_mean([x.get("Bq", 0.0) for x in selected_feature_breakdown]))
+    selected_avg_bq_eff = float(_mean([x.get("Bq_eff", 0.0) for x in selected_feature_breakdown]))
+    selected_avg_r = float(_mean([x.get("R", 0.0) for x in selected_feature_breakdown]))
+    low_a_high_bq_selected_count = int(
+        sum(
+            1
+            for x in selected_feature_breakdown
+            if _safe_float(x.get("A", 0.0), 0.0) < 0.25
+            and _safe_float(x.get("Bq", 0.0), 0.0) > 0.75
+        )
+    )
 
     bottleneck_flags = []
     if stage_ms.get("total_retrieval", 0.0) > float(p7.bottleneck_total_retrieval_ms):
@@ -1852,6 +2483,20 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "phase7_conditional_redundancy_enabled": bool(p7.conditional_redundancy_enabled),
         "phase7_corridor_enabled": bool(p7.corridor_enabled),
         "phase7_anchor_decay_enabled": bool(p7.anchor_decay_enabled),
+        "phase7_source_balanced_proposal_enabled": bool(p7.source_balanced_proposal_enabled),
+        "phase7_source_balanced_candidate_top_m": int(p7.source_balanced_candidate_top_m),
+        "phase7_source_balanced_fill_remaining": bool(p7.source_balanced_fill_remaining),
+        "phase7_source_quota_semantic": int(p7.source_quota_semantic),
+        "phase7_source_quota_entity_title": int(p7.source_quota_entity_title),
+        "phase7_source_quota_graph_flow": int(p7.source_quota_graph_flow),
+        "phase7_source_quota_anchor_neighborhood": int(p7.source_quota_anchor_neighborhood),
+        "phase7_chain_unit_enabled": bool(p7.chain_unit_enabled),
+        "phase7_chain_unit_max_pair_units": int(p7.chain_unit_max_pair_units),
+        "phase7_chain_unit_use_same_title": bool(p7.chain_unit_use_same_title),
+        "phase7_chain_unit_use_explicit_transition": bool(p7.chain_unit_use_explicit_transition),
+        "phase7_chain_unit_use_same_carrier": bool(p7.chain_unit_use_same_carrier),
+        "phase7_chain_unit_use_shared_entity": bool(p7.chain_unit_use_shared_entity),
+        "phase7_chain_unit_max_unit_size": int(p7.chain_unit_max_unit_size),
         "num_query_anchors": int(len(anchor_nodes)),
         "num_semantic_anchor_atoms": int(len(sem_chunks)),
         "num_phase1_seeds": int(len(phase1_seed_ids)),
@@ -1885,13 +2530,37 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "answerability_gain_total": float(answerability_gain_total),
         "decay_gain_total": float(decay_gain_total),
         "corridor_gain_total": float(corridor_gain_total),
+        "bq_eff_gain_total": float(bq_eff_gain_total),
         "bridge_gain_total": float(bridge_gain_total),
         "redundancy_penalty_total": float(redundancy_penalty_total),
         "conditional_redundancy_penalty_total": float(conditional_redundancy_penalty_total),
         "final_objective_gain_total": float(objective_gain_total),
+        "selected_avg_A": float(selected_avg_a),
+        "selected_avg_Bq": float(selected_avg_bq),
+        "selected_avg_Bq_eff": float(selected_avg_bq_eff),
+        "selected_avg_R": float(selected_avg_r),
+        "low_A_high_Bq_selected_count": int(low_a_high_bq_selected_count),
         "selected_atom_ids": [a.atom_id for a in selected_ordered],
         "selected_titles": [a.title for a in selected_ordered],
         "phase7_corridor_diagnostics": dict(corridor_diag),
+        "phase7_source_balance_diagnostics": dict(source_balance_diag),
+        "candidate_chain_feasibility": dict(chain_feasibility_diag),
+        "candidate_gold_partial": bool(chain_feasibility_diag.get("candidate_gold_partial", False)),
+        "candidate_gold_full": bool(chain_feasibility_diag.get("candidate_gold_full", False)),
+        "candidate_gold_recall": float(chain_feasibility_diag.get("candidate_gold_recall", 0.0) or 0.0),
+        "candidate_graph_gold_connected": bool(chain_feasibility_diag.get("candidate_graph_gold_connected", False)),
+        "minimal_gold_chain_atoms": int(chain_feasibility_diag.get("minimal_gold_chain_atoms", 0) or 0),
+        "minimal_gold_chain_tokens": int(chain_feasibility_diag.get("minimal_gold_chain_tokens", 0) or 0),
+        "budget_feasible_gold_chain": bool(chain_feasibility_diag.get("budget_feasible_gold_chain", False)),
+        "chain_unit_oracle_feasible": bool(chain_feasibility_diag.get("chain_unit_oracle_feasible", False)),
+        "carrier_feasible_but_atom_failed": bool(chain_feasibility_diag.get("carrier_feasible_but_atom_failed", False)),
+        "chain_unit_diagnostics": dict(chain_unit_diag),
+        "chain_unit_gold_eval_only": dict(chain_unit_gold_eval_only),
+        "gold_unit_partial": bool(chain_unit_gold_eval_only.get("gold_unit_partial", False)),
+        "gold_unit_full": bool(chain_unit_gold_eval_only.get("gold_unit_full", False)),
+        "gold_units_selected": int(chain_unit_gold_eval_only.get("gold_units_selected", 0) or 0),
+        "selected_pair_unit_rate": float(selected_pair_unit_rate),
+        "selected_explicit_transition_unit_rate": float(selected_explicit_transition_unit_rate),
         "corridor_anchor_nodes": list(corridor_anchor_rows),
         "corridor_seed_nodes": list(corridor_seed_rows),
         "selected_evidence_feature_breakdown": list(selected_feature_breakdown),
@@ -1904,13 +2573,18 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
             "semantic_anchor_retrieval": float(stage_ms.get("semantic_anchor_retrieval", 0.0)),
             "local_graph_build": float(stage_ms.get("local_graph_build", 0.0)),
             "graph_flow": float(stage_ms.get("graph_flow", 0.0)),
+            "source_balanced_union": float(stage_ms.get("source_balanced_union", 0.0)),
+            "entity_title_retrieval": float(stage_ms.get("entity_title_retrieval", 0.0)),
+            "anchor_neighborhood": float(stage_ms.get("anchor_neighborhood", 0.0)),
             "candidate_truncation": float(stage_ms.get("candidate_truncation", 0.0)),
+            "chain_unit_build": float(stage_ms.get("chain_unit_build", 0.0)),
             "feature_extraction": float(stage_ms.get("feature_extraction", 0.0)),
             "corridor_extraction": float(stage_ms.get("corridor_extraction", 0.0)),
             "anchor_distance_bfs": float(stage_ms.get("anchor_distance_bfs", 0.0)),
             "bq_feature_scoring": float(stage_ms.get("bq_feature_scoring", 0.0)),
             "conditional_redundancy": float(stage_ms.get("conditional_redundancy", 0.0)),
             "marginal_selection": float(stage_ms.get("marginal_selection", 0.0)),
+            "chain_unit_selection": float(stage_ms.get("chain_unit_selection", 0.0)),
             "rendering": float(stage_ms.get("rendering", 0.0)),
             "total_retrieval": float(stage_ms.get("total_retrieval", 0.0)),
         },
@@ -1947,6 +2621,20 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "phase7_conditional_redundancy_enabled": bool(p7.conditional_redundancy_enabled),
         "phase7_corridor_enabled": bool(p7.corridor_enabled),
         "phase7_anchor_decay_enabled": bool(p7.anchor_decay_enabled),
+        "phase7_source_balanced_proposal_enabled": bool(p7.source_balanced_proposal_enabled),
+        "phase7_source_balanced_candidate_top_m": int(p7.source_balanced_candidate_top_m),
+        "phase7_source_balanced_fill_remaining": bool(p7.source_balanced_fill_remaining),
+        "phase7_source_quota_semantic": int(p7.source_quota_semantic),
+        "phase7_source_quota_entity_title": int(p7.source_quota_entity_title),
+        "phase7_source_quota_graph_flow": int(p7.source_quota_graph_flow),
+        "phase7_source_quota_anchor_neighborhood": int(p7.source_quota_anchor_neighborhood),
+        "phase7_chain_unit_enabled": bool(p7.chain_unit_enabled),
+        "phase7_chain_unit_max_pair_units": int(p7.chain_unit_max_pair_units),
+        "phase7_chain_unit_use_same_title": bool(p7.chain_unit_use_same_title),
+        "phase7_chain_unit_use_explicit_transition": bool(p7.chain_unit_use_explicit_transition),
+        "phase7_chain_unit_use_same_carrier": bool(p7.chain_unit_use_same_carrier),
+        "phase7_chain_unit_use_shared_entity": bool(p7.chain_unit_use_shared_entity),
+        "phase7_chain_unit_max_unit_size": int(p7.chain_unit_max_unit_size),
         "phase7_candidate_top_m_effective": int(candidate_top_m_eff),
         "phase7_max_selected_atoms_effective": int(max_selected_atoms_eff),
         "phase7_max_context_tokens_effective": int(max_context_tokens_eff),
@@ -1958,14 +2646,19 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "latency_breakdown_ms": {
             "query_embed_ms": float(stage_ms.get("query_embedding", 0.0)),
             "semantic_lookup_chunk_ms": float(stage_ms.get("semantic_anchor_retrieval", 0.0)),
+            "source_balanced_union_ms": float(stage_ms.get("source_balanced_union", 0.0)),
+            "entity_title_retrieval_ms": float(stage_ms.get("entity_title_retrieval", 0.0)),
+            "anchor_neighborhood_ms": float(stage_ms.get("anchor_neighborhood", 0.0)),
             "proposal_subgraph_build_ms": float(stage_ms.get("local_graph_build", 0.0)),
             "phase1_ppr_ms": float(stage_ms.get("graph_flow", 0.0)),
+            "chain_unit_build_ms": float(stage_ms.get("chain_unit_build", 0.0)),
             "feature_extraction_ms": float(stage_ms.get("feature_extraction", 0.0)),
             "corridor_extraction_ms": float(stage_ms.get("corridor_extraction", 0.0)),
             "anchor_distance_bfs_ms": float(stage_ms.get("anchor_distance_bfs", 0.0)),
             "bq_feature_scoring_ms": float(stage_ms.get("bq_feature_scoring", 0.0)),
             "conditional_redundancy_ms": float(stage_ms.get("conditional_redundancy", 0.0)),
             "marginal_selection_ms": float(stage_ms.get("marginal_selection", 0.0)),
+            "chain_unit_selection_ms": float(stage_ms.get("chain_unit_selection", 0.0)),
             "render_ms": float(stage_ms.get("rendering", 0.0)),
             "retrieval_total_ms": float(stage_ms.get("total_retrieval", 0.0)),
         },
@@ -1980,11 +2673,23 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "answerability_gain_total": float(answerability_gain_total),
         "decay_gain_total": float(decay_gain_total),
         "corridor_gain_total": float(corridor_gain_total),
+        "bq_eff_gain_total": float(bq_eff_gain_total),
         "bridge_gain_total": float(bridge_gain_total),
         "redundancy_penalty_total": float(redundancy_penalty_total),
         "conditional_redundancy_penalty_total": float(conditional_redundancy_penalty_total),
         "final_objective_gain_total": float(objective_gain_total),
+        "selected_avg_A": float(selected_avg_a),
+        "selected_avg_Bq": float(selected_avg_bq),
+        "selected_avg_Bq_eff": float(selected_avg_bq_eff),
+        "selected_avg_R": float(selected_avg_r),
+        "low_A_high_Bq_selected_count": int(low_a_high_bq_selected_count),
         "phase7_corridor_diagnostics": dict(corridor_diag),
+        "phase7_source_balance_diagnostics": dict(source_balance_diag),
+        "candidate_chain_feasibility": dict(chain_feasibility_diag),
+        "chain_unit_diagnostics": dict(chain_unit_diag),
+        "chain_unit_gold_eval_only": dict(chain_unit_gold_eval_only),
+        "selected_pair_unit_rate": float(selected_pair_unit_rate),
+        "selected_explicit_transition_unit_rate": float(selected_explicit_transition_unit_rate),
         "selected_evidence_feature_breakdown": list(selected_feature_breakdown),
         "corridor_gold_diagnostics_eval_only": dict(corridor_gold_diag_eval_only),
         "corridor_gold_hit_eval_only": bool(int(corridor_gold_diag_eval_only.get("num_gold_candidates_on_corridor", 0) or 0) > 0),
@@ -2044,6 +2749,8 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
                 "anchor_reachability": float(a.anchor_reachability),
                 "carrier_id": str(a.carrier_id),
                 "flow_rank": int(a.flow_rank),
+                "source_tags": sorted(str(x) for x in set(a.source_tags or set())),
+                "proposal_source": str(a.proposal_source),
             }
             for a in atoms
         ],
@@ -2061,6 +2768,8 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
                 "is_corridor_node": bool(a.is_corridor_node),
                 "anchor_distance": float(a.anchor_distance),
                 "carrier_id": str(a.carrier_id),
+                "source_tags": sorted(str(x) for x in set(a.source_tags or set())),
+                "proposal_source": str(a.proposal_source),
             }
             for a in selected_ordered
         ],
