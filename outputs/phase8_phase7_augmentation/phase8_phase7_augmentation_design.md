@@ -52,6 +52,28 @@ Run a small probe before any full experiment:
 
 If the Phase8 tail does not add unique evidence or does not improve candidate recall, stop and redesign Phase8. If candidate recall improves but selected recall/F1 do not, the bottleneck is selection interaction.
 
+## Overnight Four-Dataset Sweep
+
+The overnight sweep expands the same hypothesis to four datasets:
+
+- `hotpotqa`
+- `2wikimultihopqa`
+- `musique`
+- `popqa`
+
+Default grid:
+
+- profiles: `legacy_512_10`, `balanced_384_8`
+- variants: `source_balanced_128`, `sb_plus_entity_refine_k5`
+- total runs: `4 datasets * 2 profiles * 2 variants = 16`
+
+The launcher uses six worker processes by default:
+
+- GPU 0: 2 workers
+- GPU 1: 4 workers
+
+This keeps the experiment focused on the single live question: whether Phase8 entity-refine adds useful evidence to Phase7 without becoming a Phase7 replacement.
+
 ## Success Criteria
 
 Continue to larger runs only if:

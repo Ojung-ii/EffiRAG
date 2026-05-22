@@ -18,7 +18,7 @@ PHASE8_AUG_BASE_TOP_M="${PHASE8_AUG_BASE_TOP_M:-128}"
 cd "${REPO_ROOT}"
 mkdir -p "${OUT_ROOT}/logs"
 
-if [[ "${DATASET}" != "hotpotqa" && "${DATASET}" != "2wikimultihopqa" ]]; then
+if [[ "${DATASET}" != "hotpotqa" && "${DATASET}" != "2wikimultihopqa" && "${DATASET}" != "musique" && "${DATASET}" != "popqa" ]]; then
   echo "[phase8-aug] unsupported DATASET=${DATASET}" >&2
   exit 1
 fi
