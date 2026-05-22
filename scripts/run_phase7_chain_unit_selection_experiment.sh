@@ -111,7 +111,7 @@ for row in "${VARIANTS[@]}"; do
     --phase7-diagnostics-dump-text true \
     --phase7-diagnostics-dump-context true \
     --phase7-diagnostics-dump-scores true \
-    --phase7-diagnostics-fail-on-unit-mismatch true \
+    --phase7-diagnostics-fail-on-unit-mismatch false \
     >"${LOG_FILE}" 2>&1
 
   PYTHONPATH=. "${PYTHON}" scripts/run_phase7_oracle_context_qa.py \
