@@ -659,6 +659,34 @@ class RagConfig(RetrievalConfig):
     phase8_seed_path_max_hops: int = 3
     phase8_seed_path_max_pairs: int = 10
     phase8_seed_total_candidate_cap: int = 160
+    # Phase8 chunk/carrier-first evidence-bound medoid proposal. This also
+    # replaces only Phase1 proposal when enabled.
+    phase8_chunk_medoid_enabled: bool = False
+    phase8_chunk_medoid_proposal_mode: str = "carrier_seed_bridge_refine"
+    phase8_chunk_universe_top_n: int = 2000
+    phase8_chunk_universe_min_n: int = 200
+    phase8_chunk_universe_unit: str = "carrier"
+    phase8_chunk_source_semantic: bool = True
+    phase8_chunk_source_source_balanced: bool = True
+    phase8_chunk_source_graph_flow: bool = True
+    phase8_chunk_source_title_entity_lookup: bool = True
+    phase8_chunk_medoid_k: int = 5
+    phase8_chunk_medoid_sample_size_per_k: int = 40
+    phase8_chunk_medoid_num_samples: int = 5
+    phase8_chunk_medoid_sampling: str = "query_weighted"
+    phase8_chunk_medoid_random_seed: int = 42
+    phase8_chunk_bridge_refine_enabled: bool = False
+    phase8_chunk_bridge_refine_hops: int = 1
+    phase8_chunk_bridge_max_entities_per_seed: int = 8
+    phase8_chunk_bridge_entity_degree_cap: int = 100
+    phase8_chunk_bridge_max_chunks_per_entity: int = 4
+    phase8_chunk_bridge_max_refine_candidates_per_seed: int = 64
+    phase8_chunk_bridge_refine_iterations: int = 1
+    phase8_chunk_seed_top_sentences_per_carrier: int = 3
+    phase8_chunk_seed_top_entities_per_seed: int = 8
+    phase8_chunk_seed_top_atoms_per_entity: int = 3
+    phase8_chunk_seed_top_carriers_per_entity: int = 2
+    phase8_chunk_seed_total_candidate_cap: int = 160
     phase7_variant: str = "full"
     phase7_diagnostics_enabled: bool = False
     phase7_diagnostics_max_examples_to_dump: int = 100
@@ -869,6 +897,12 @@ def apply_cli_overrides(config_dict, args_namespace):
         "phase8_entity_source_graph_flow",
         "phase8_entity_source_balanced",
         "phase8_refine_enabled",
+        "phase8_chunk_medoid_enabled",
+        "phase8_chunk_source_semantic",
+        "phase8_chunk_source_source_balanced",
+        "phase8_chunk_source_graph_flow",
+        "phase8_chunk_source_title_entity_lookup",
+        "phase8_chunk_bridge_refine_enabled",
         "generation_intervention_enabled",
         "raw_focus_scaffold_light_enabled",
         "answer_type_postprocess_enabled",
