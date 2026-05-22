@@ -633,6 +633,32 @@ class RagConfig(RetrievalConfig):
     phase7_chain_unit_use_same_carrier: bool = True
     phase7_chain_unit_use_shared_entity: bool = False
     phase7_chain_unit_max_unit_size: int = 2
+    # Phase8 PAMAE-inspired entity seeding. This replaces only the Phase1
+    # proposal when enabled; Phase7 selection/rendering/QA remain unchanged.
+    phase8_pamae_enabled: bool = False
+    phase8_pamae_proposal_mode: str = "entity_seed_refine"
+    phase8_entity_universe_top_n: int = 2000
+    phase8_entity_universe_min_n: int = 200
+    phase8_entity_degree_cap: int = 200
+    phase8_entity_source_semantic: bool = True
+    phase8_entity_source_title_lookup: bool = True
+    phase8_entity_source_graph_flow: bool = True
+    phase8_entity_source_balanced: bool = True
+    phase8_pamae_k: int = 5
+    phase8_pamae_sample_size_per_k: int = 40
+    phase8_pamae_num_samples: int = 5
+    phase8_pamae_sampling: str = "query_weighted"
+    phase8_pamae_random_seed: int = 42
+    phase8_refine_enabled: bool = True
+    phase8_refine_hops: int = 2
+    phase8_refine_max_candidates_per_seed: int = 128
+    phase8_refine_degree_cap: int = 100
+    phase8_refine_iterations: int = 1
+    phase8_seed_top_atoms_per_entity: int = 4
+    phase8_seed_top_carriers_per_entity: int = 2
+    phase8_seed_path_max_hops: int = 3
+    phase8_seed_path_max_pairs: int = 10
+    phase8_seed_total_candidate_cap: int = 160
     phase7_variant: str = "full"
     phase7_diagnostics_enabled: bool = False
     phase7_diagnostics_max_examples_to_dump: int = 100
@@ -837,6 +863,12 @@ def apply_cli_overrides(config_dict, args_namespace):
         "phase7_chain_unit_use_explicit_transition",
         "phase7_chain_unit_use_same_carrier",
         "phase7_chain_unit_use_shared_entity",
+        "phase8_pamae_enabled",
+        "phase8_entity_source_semantic",
+        "phase8_entity_source_title_lookup",
+        "phase8_entity_source_graph_flow",
+        "phase8_entity_source_balanced",
+        "phase8_refine_enabled",
         "generation_intervention_enabled",
         "raw_focus_scaffold_light_enabled",
         "answer_type_postprocess_enabled",
