@@ -687,6 +687,13 @@ class RagConfig(RetrievalConfig):
     phase8_chunk_seed_top_atoms_per_entity: int = 3
     phase8_chunk_seed_top_carriers_per_entity: int = 2
     phase8_chunk_seed_total_candidate_cap: int = 160
+    # Phase8 augmentation mode keeps the Phase7 source-balanced proposal as the
+    # high-recall backbone and adds Phase8 candidates before the existing
+    # Phase7 feature construction / A+Bq-R selection.
+    phase8_augmentation_enabled: bool = False
+    phase8_augmentation_mode: str = "source_balanced_plus_phase8"
+    phase8_augmentation_base_candidate_top_m: int = 128
+    phase8_augmentation_extra_candidate_cap: int = 32
     phase7_variant: str = "full"
     phase7_diagnostics_enabled: bool = False
     phase7_diagnostics_max_examples_to_dump: int = 100
@@ -903,6 +910,7 @@ def apply_cli_overrides(config_dict, args_namespace):
         "phase8_chunk_source_graph_flow",
         "phase8_chunk_source_title_entity_lookup",
         "phase8_chunk_bridge_refine_enabled",
+        "phase8_augmentation_enabled",
         "generation_intervention_enabled",
         "raw_focus_scaffold_light_enabled",
         "answer_type_postprocess_enabled",

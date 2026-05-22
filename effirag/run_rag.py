@@ -837,6 +837,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--phase8-chunk-seed-top-atoms-per-entity", type=int, default=None)
     parser.add_argument("--phase8-chunk-seed-top-carriers-per-entity", type=int, default=None)
     parser.add_argument("--phase8-chunk-seed-total-candidate-cap", type=int, default=None)
+    parser.add_argument("--phase8-augmentation-enabled", type=str, default=None)
+    parser.add_argument("--phase8-augmentation-mode", type=str, default=None)
+    parser.add_argument("--phase8-augmentation-base-candidate-top-m", type=int, default=None)
+    parser.add_argument("--phase8-augmentation-extra-candidate-cap", type=int, default=None)
     parser.add_argument(
         "--phase7-variant",
         type=str,
