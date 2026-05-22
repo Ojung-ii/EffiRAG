@@ -310,6 +310,18 @@ def main() -> int:
             if ("supporting_facts" in lowered or "gold" in lowered) and "eval_only" not in lowered:
                 errors.append(f"Phase8 chunk non-eval gold/support reference at line {line_no}")
 
+    phase8_chunk_runner = Path("scripts/run_phase8_chunk_medoid_experiment.sh")
+    if phase8_chunk_runner.exists():
+        runner_text = _read(phase8_chunk_runner)
+        if "source_balanced_128:" in runner_text:
+            errors.append("Phase8 chunk runner includes source_balanced_128 as an active variant.")
+        if "chunk_bridge_refine_k5:" in runner_text:
+            errors.append("Phase8 chunk runner includes chunk_bridge_refine_k5 as an active variant.")
+        if 'PHASE8_CHUNK_VARIANTS="${PHASE8_CHUNK_VARIANTS:-chunk_pamae_k5}"' not in runner_text:
+            errors.append("Phase8 chunk runner does not default to chunk_pamae_k5 only.")
+        if 'PHASE8_CHUNK_SOURCE_BALANCED="${PHASE8_CHUNK_SOURCE_BALANCED:-false}"' not in runner_text:
+            errors.append("Phase8 chunk runner does not default source-balanced universe source to false.")
+
     if reg_path.exists():
         reg_text = _read(reg_path)
         if "phase7_evidence_flow" not in reg_text:
