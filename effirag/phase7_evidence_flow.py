@@ -2363,6 +2363,22 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
     selected_explicit_transition_unit_rate = float(
         sum(1 for u in selected_units if u.unit_type == "explicit_transition_pair") / float(max(1, len(selected_units)))
     ) if selected_units else 0.0
+    selected_same_title_unit_rate = float(
+        sum(1 for u in selected_units if u.unit_type == "same_title_pair") / float(max(1, len(selected_units)))
+    ) if selected_units else 0.0
+    selected_same_carrier_unit_rate = float(
+        sum(1 for u in selected_units if u.unit_type == "same_carrier_pair") / float(max(1, len(selected_units)))
+    ) if selected_units else 0.0
+    selected_chain_units = [
+        {
+            "unit_id": str(unit.unit_id),
+            "unit_type": str(unit.unit_type),
+            "source_ids": list(unit.source_ids),
+            "token_count": int(unit.token_count),
+            "base_score": float(unit.base_score),
+        }
+        for unit in selected_units
+    ]
     source_gold_hit_rates_eval_only: Dict[str, float] = {}
     source_gold_hit_any_eval_only: Dict[str, bool] = {}
     for source_name in SOURCE_ORDER:
@@ -2580,8 +2596,11 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "gold_unit_partial": bool(chain_unit_gold_eval_only.get("gold_unit_partial", False)),
         "gold_unit_full": bool(chain_unit_gold_eval_only.get("gold_unit_full", False)),
         "gold_units_selected": int(chain_unit_gold_eval_only.get("gold_units_selected", 0) or 0),
+        "selected_chain_units": list(selected_chain_units),
         "selected_pair_unit_rate": float(selected_pair_unit_rate),
         "selected_explicit_transition_unit_rate": float(selected_explicit_transition_unit_rate),
+        "selected_same_title_unit_rate": float(selected_same_title_unit_rate),
+        "selected_same_carrier_unit_rate": float(selected_same_carrier_unit_rate),
         "corridor_anchor_nodes": list(corridor_anchor_rows),
         "corridor_seed_nodes": list(corridor_seed_rows),
         "selected_evidence_feature_breakdown": list(selected_feature_breakdown),
@@ -2709,8 +2728,11 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "candidate_chain_feasibility": dict(chain_feasibility_diag),
         "chain_unit_diagnostics": dict(chain_unit_diag),
         "chain_unit_gold_eval_only": dict(chain_unit_gold_eval_only),
+        "selected_chain_units": list(selected_chain_units),
         "selected_pair_unit_rate": float(selected_pair_unit_rate),
         "selected_explicit_transition_unit_rate": float(selected_explicit_transition_unit_rate),
+        "selected_same_title_unit_rate": float(selected_same_title_unit_rate),
+        "selected_same_carrier_unit_rate": float(selected_same_carrier_unit_rate),
         "selected_evidence_feature_breakdown": list(selected_feature_breakdown),
         "corridor_gold_diagnostics_eval_only": dict(corridor_gold_diag_eval_only),
         "corridor_gold_hit_eval_only": bool(int(corridor_gold_diag_eval_only.get("num_gold_candidates_on_corridor", 0) or 0) > 0),
