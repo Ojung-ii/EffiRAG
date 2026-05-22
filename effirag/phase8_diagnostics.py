@@ -260,6 +260,12 @@ def normalized_id_set(ids: Any) -> set[str]:
     return {normalize_evidence_id(str(x)) for x in ids if str(x or "")}
 
 
+def _id_list(value: Any) -> List[str]:
+    if isinstance(value, list):
+        return [str(x) for x in value if str(x or "")]
+    return []
+
+
 def atom_id_set(ids: Any) -> set[str]:
     if not isinstance(ids, list):
         return set()
@@ -280,6 +286,174 @@ def selected_atom_ids(row: Mapping[str, Any]) -> List[str]:
             return atoms
     ids = row.get("selected_evidence_ids")
     return [str(x) for x in ids] if isinstance(ids, list) else []
+
+
+def is_phase8_variant(variant: str) -> bool:
+    return str(variant or "").startswith("pamae_seed")
+
+
+def is_source_balanced_variant(variant: str) -> bool:
+    return str(variant or "") == "source_balanced_128"
+
+
+def f1_from_counts(matched: int, predicted: int, gold: int) -> Optional[float]:
+    if gold <= 0:
+        return None
+    if predicted <= 0:
+        return 0.0
+    precision = matched / predicted
+    recall = matched / gold
+    if precision + recall <= 0:
+        return 0.0
+    return float(2.0 * precision * recall / (precision + recall))
+
+
+def oracle_f1_from_recall(recall: Optional[float]) -> Optional[float]:
+    if recall is None:
+        return None
+    if recall <= 0:
+        return 0.0
+    return float(2.0 * recall / (1.0 + recall))
+
+
+def _gold_support_keys(query: Mapping[str, Any]) -> set[str]:
+    diag = query.get("phase7_diag")
+    if isinstance(diag, dict):
+        gold = support_keys_from_gold(diag.get("gold_supporting_facts", []))
+        if gold:
+            return gold
+    result = query.get("result")
+    if isinstance(result, dict):
+        rendered = result.get("rendered")
+        if isinstance(rendered, dict):
+            gold = support_keys_from_gold(rendered.get("gold_supporting_facts", []))
+            if gold:
+                return gold
+    return set()
+
+
+def _candidate_ids(query: Mapping[str, Any]) -> List[str]:
+    diag = query.get("phase7_diag")
+    if isinstance(diag, dict):
+        ids = _id_list(diag.get("phase2_candidate_ids"))
+        if ids:
+            return ids
+    p7 = query.get("phase7")
+    if isinstance(p7, dict):
+        ids = _id_list(p7.get("phase2_candidate_ids"))
+        if ids:
+            return ids
+    result = query.get("result")
+    if isinstance(result, dict):
+        retrieval = result.get("retrieval")
+        if isinstance(retrieval, dict):
+            ids = _id_list(retrieval.get("candidate_sentence_ids"))
+            if ids:
+                return ids
+    return []
+
+
+def _selected_ids(query: Mapping[str, Any]) -> List[str]:
+    diag = query.get("phase7_diag")
+    if isinstance(diag, dict):
+        ids = _id_list(diag.get("selected_evidence_ids"))
+        if ids:
+            return ids
+    p7 = query.get("phase7")
+    if isinstance(p7, dict):
+        ids = _id_list(p7.get("selected_atom_ids"))
+        if ids:
+            return ids
+    result = query.get("result")
+    if isinstance(result, dict):
+        ids = _id_list(result.get("retrieval_selected_sentence_ids"))
+        if ids:
+            return ids
+    return []
+
+
+def _rendered_ids(query: Mapping[str, Any]) -> List[str]:
+    diag = query.get("phase7_diag")
+    if isinstance(diag, dict):
+        ids = _id_list(diag.get("rendered_evidence_ids"))
+        if ids:
+            return ids
+    result = query.get("result")
+    if isinstance(result, dict):
+        ids = _id_list(result.get("rendered_sentence_ids"))
+        if ids:
+            return ids
+        rendered = result.get("rendered")
+        if isinstance(rendered, dict):
+            ids = _id_list(rendered.get("sentence_ids"))
+            if ids:
+                return ids
+    return []
+
+
+def _normalized_overlap(gold: set[str], ids: List[str]) -> Dict[str, Any]:
+    norm_ids = normalized_id_set(ids)
+    if not gold:
+        return {
+            "partial": None,
+            "full": None,
+            "recall": None,
+            "matched": 0,
+            "gold_count": 0,
+            "predicted_count": len(norm_ids),
+            "null_reason": "MISSING_GOLD_SUPPORT",
+        }
+    matched = len(gold & norm_ids)
+    recall = matched / len(gold)
+    return {
+        "partial": matched > 0,
+        "full": matched == len(gold),
+        "recall": float(recall),
+        "matched": matched,
+        "gold_count": len(gold),
+        "predicted_count": len(norm_ids),
+        "null_reason": None,
+    }
+
+
+def normalized_query_diagnostics(query: Mapping[str, Any]) -> Dict[str, Any]:
+    gold = _gold_support_keys(query)
+    candidate = _normalized_overlap(gold, _candidate_ids(query))
+    selected = _normalized_overlap(gold, _selected_ids(query))
+    rendered = _normalized_overlap(gold, _rendered_ids(query))
+    selected_f1 = f1_from_counts(
+        int(selected["matched"]),
+        int(selected["predicted_count"]),
+        int(selected["gold_count"]),
+    )
+    candidate_oracle = oracle_f1_from_recall(candidate["recall"])
+    p7 = query.get("phase7")
+    chain = candidate_chain(p7 if isinstance(p7, dict) else {})
+    chain_feasible = chain.get("chain_unit_oracle_feasible")
+    if chain_feasible is None and isinstance(p7, dict):
+        chain_feasible = p7.get("chain_unit_oracle_feasible")
+    return {
+        "query_id": str(query.get("query_id", "")),
+        "normalized_candidate_gold_partial": candidate["partial"],
+        "normalized_candidate_gold_full": candidate["full"],
+        "normalized_candidate_gold_recall": candidate["recall"],
+        "normalized_selected_gold_partial": selected["partial"],
+        "normalized_selected_gold_full": selected["full"],
+        "normalized_selected_gold_recall": selected["recall"],
+        "normalized_rendered_gold_partial": rendered["partial"],
+        "normalized_rendered_gold_full": rendered["full"],
+        "normalized_rendered_gold_recall": rendered["recall"],
+        "candidate_oracle_F1": candidate_oracle,
+        "selected_context_F1": selected_f1,
+        "chain_unit_oracle_feasible": bool(chain_feasible) if chain_feasible is not None else None,
+        "candidate_null_reason": candidate["null_reason"],
+        "selected_null_reason": selected["null_reason"],
+        "rendered_null_reason": rendered["null_reason"],
+        "gold_support_count": candidate["gold_count"],
+        "candidate_id_count": candidate["predicted_count"],
+        "selected_id_count": selected["predicted_count"],
+        "rendered_id_count": rendered["predicted_count"],
+    }
 
 
 def source_tag_counter(selected_ids: Iterable[str], evidence_tags: Mapping[str, Any]) -> Counter:
@@ -325,11 +499,29 @@ def load_run(root: Path, run_dir: Path) -> Dict[str, Any]:
         name: (run_dir / name).exists()
         for name in TRACE_FILES
     }
+    summary = read_json(run_dir / "rag_summary.json")
+    expected = safe_int(summary.get("num_queries", summary.get("count", summary.get("samples", 100))), 100)
+    actual = len(queries)
+    if not any(files.values()):
+        status = "MISSING"
+    elif not files.get("rag_summary.json") and actual == 0:
+        status = "MISSING"
+    elif actual == 0:
+        status = "MISSING"
+    elif actual < min(expected, 100):
+        status = "PARTIAL"
+    elif files.get("rag_summary.json") and safe_int(summary.get("num_queries", summary.get("count", summary.get("samples", actual))), actual) != actual:
+        status = "SUMMARY_MISMATCH"
+    else:
+        status = "COMPLETE"
     return {
         **run_parts(root, run_dir),
         "run_dir": str(run_dir),
         "files": files,
-        "summary": read_json(run_dir / "rag_summary.json"),
+        "summary": summary,
+        "expected_num_queries": expected,
+        "actual_num_queries": actual,
+        "status": status,
         "queries": queries,
     }
 
@@ -374,6 +566,58 @@ def metric_from_result(query: Mapping[str, Any], key: str) -> float:
         "sf_f1": "supporting_fact_f1",
     }
     return safe_float(metrics.get(aliases.get(key, key), 0.0), 0.0)
+
+
+def failure_label_repaired(variant: str, query: Mapping[str, Any]) -> str:
+    diag = normalized_query_diagnostics(query)
+    candidate_recall = safe_float(diag.get("normalized_candidate_gold_recall"), 0.0)
+    selected_recall = safe_float(diag.get("normalized_selected_gold_recall"), 0.0)
+    rendered_recall = safe_float(diag.get("normalized_rendered_gold_recall"), 0.0)
+    f1 = metric_from_result(query, "f1")
+    sf_recall = metric_from_result(query, "sf_recall")
+    p7 = query.get("phase7")
+    p7row = p7 if isinstance(p7, dict) else {}
+    if is_source_balanced_variant(variant):
+        if candidate_recall <= 0.0:
+            return "PHASE1_NOT_FOUND"
+        if selected_recall + 1e-9 < candidate_recall:
+            return "FINAL_SELECTION_FAILED"
+        if rendered_recall < 1.0 and sf_recall < 1.0:
+            return "SELECTED_NOT_SUFFICIENT"
+        if rendered_recall >= 1.0 and f1 < 0.5:
+            return "QA_PROMPT_FAILED_WITH_GOLD_CONTEXT"
+        if rendered_recall > 0.0 and f1 < 0.5:
+            return "QA_PROMPT_FAILED_WITH_SUFFICIENT_CONTEXT"
+        return "OTHER"
+
+    if is_phase8_variant(variant):
+        universe = entity_universe(query)
+        best = seed_best(query)
+        refine = seed_refinement(query)
+        proposal = evidence_proposal(query)
+        if safe_float(universe.get("num_entities", 0.0), 0.0) <= 0.0:
+            return "UQ_ENTITY_MISS"
+        before = float(bool(refine.get("before_seed_evidence_gold_hit_eval_only", False)))
+        after = float(bool(refine.get("after_seed_evidence_gold_hit_eval_only", False)))
+        changed = safe_float(refine.get("num_changed_seeds", 0.0), 0.0) > 0.0
+        if changed and after < before:
+            return "REFINEMENT_DRIFT"
+        if not bool(best.get("seed_gold_hit_eval_only", False)) and candidate_recall <= 0.10:
+            return "SEED_SELECTION_MISS"
+        if safe_float(proposal.get("num_final_evidence_candidates", 0.0), 0.0) > 0.0 and candidate_recall <= 0.10:
+            return "SEED_TO_EVIDENCE_MISS"
+        feasible = diag.get("chain_unit_oracle_feasible")
+        if feasible is False and candidate_recall > 0.0:
+            return "CANDIDATE_CHAIN_INFEASIBLE"
+        if selected_recall + 1e-9 < candidate_recall:
+            return "FINAL_SELECTION_FAILED"
+        if rendered_recall < 1.0 and sf_recall < 1.0:
+            return "SELECTED_NOT_SUFFICIENT"
+        if rendered_recall > 0.0 and f1 < 0.5:
+            return "QA_PROMPT_FAILED"
+        return "OTHER"
+
+    return "OTHER"
 
 
 def evidence_proposal(query: Mapping[str, Any]) -> Dict[str, Any]:

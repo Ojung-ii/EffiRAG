@@ -8,7 +8,7 @@ from typing import Any, Dict, List
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from effirag.phase8_diagnostics import group_runs, iter_queries, load_runs, md_table, safe_float, stats, write_json, write_md
+from effirag.phase8_diagnostics import group_runs, iter_queries, is_phase8_variant, load_runs, md_table, safe_float, stats, write_json, write_md
 
 
 STAGES = [
@@ -41,6 +41,7 @@ def _summarize_group(dataset: str, profile: str, variant: str, group: List[Dict[
         "profile": profile,
         "variant": variant,
         "num_queries": len(queries),
+        "status": ",".join(sorted({str(r.get("status", "MISSING")) for r in group})),
     }
     retrieval_vals = [_stage_value(q, "total_retrieval_ms") for q in queries]
     retrieval_mean = stats(retrieval_vals)["mean"]
@@ -53,8 +54,8 @@ def _summarize_group(dataset: str, profile: str, variant: str, group: List[Dict[
         if stage not in {"total_retrieval_ms", "total_ms"}:
             row[f"{stage}_share_of_retrieval"] = st["mean"] / retrieval_mean if retrieval_mean > 0 else 0.0
     pamae_stages = ["entity_universe_ms", "sampling_ms", "kmedoids_ms", "seed_selection_ms", "refinement_ms", "evidence_proposal_ms"]
-    row["largest_phase8_stage"] = max(pamae_stages, key=lambda s: row.get(f"{s}_mean", 0.0))
-    row["largest_phase8_stage_ms"] = row.get(f"{row['largest_phase8_stage']}_mean", 0.0)
+    row["largest_phase8_stage"] = max(pamae_stages, key=lambda s: row.get(f"{s}_mean", 0.0)) if is_phase8_variant(variant) else "N/A"
+    row["largest_phase8_stage_ms"] = row.get(f"{row['largest_phase8_stage']}_mean", 0.0) if is_phase8_variant(variant) else 0.0
     row["interpretation"] = _interpret(row)
     return row
 
@@ -82,6 +83,7 @@ def main() -> int:
     for (dataset, profile, variant), group in sorted(group_runs(runs).items()):
         rows.append(_summarize_group(dataset, profile, variant, group))
     write_json(root / "phase8_timing_bottleneck.json", {"runs": rows})
+    write_json(root / "phase8_timing_bottleneck_repaired.json", {"runs": rows})
 
     keys = ["dataset", "profile", "variant", "num_queries"]
     for stage in STAGES:
@@ -91,6 +93,7 @@ def main() -> int:
         "dataset",
         "profile",
         "variant",
+        "status",
         "num_queries",
         "entity_universe_ms_mean",
         "sampling_ms_mean",
@@ -137,7 +140,42 @@ def main() -> int:
             ]
         )
     write_md(root / "phase8_timing_bottleneck_report.md", lines)
+    repaired_lines = [
+        "# Phase8 Timing Bottleneck Report Repaired",
+        "",
+        "Means, p50, p95, and max are reported in the JSON for every stage. This markdown table includes mean timings and the largest Phase8-specific stage.",
+        "",
+        md_table(rows, compact_keys),
+        "",
+        "## Stage Shares",
+        "",
+    ]
+    share_keys = ["dataset", "profile", "variant", "num_queries"]
+    for stage in STAGES:
+        if stage not in {"total_retrieval_ms", "total_ms"}:
+            share_keys.append(f"{stage}_share_of_retrieval")
+    repaired_lines.append(md_table(rows, share_keys))
+    repaired_lines.extend(["", "## Explicit Answers", ""])
+    for row in rows:
+        if not is_phase8_variant(str(row.get("variant", ""))):
+            continue
+        label = f"{row['dataset']}/{row['profile']}/{row['variant']}"
+        sampling_kmedoids = row["sampling_ms_mean"] + row["kmedoids_ms_mean"]
+        repaired_lines.extend(
+            [
+                f"### {label}",
+                "",
+                f"- Is entity_universe dominant? {row['largest_phase8_stage'] == 'entity_universe_ms'}",
+                f"- Is kmedoids too expensive? {sampling_kmedoids > 2500.0}",
+                f"- Is evidence_proposal too expensive? {row['evidence_proposal_ms_mean'] > 2000.0}",
+                f"- Does refinement add meaningful overhead? {row['refinement_ms_mean'] > 1000.0}",
+                f"- Optimize first if Phase8 is retained: {row['largest_phase8_stage']}",
+                "",
+            ]
+        )
+    write_md(root / "phase8_timing_bottleneck_report_repaired.md", repaired_lines)
     print(root / "phase8_timing_bottleneck_report.md")
+    print(root / "phase8_timing_bottleneck_report_repaired.md")
     return 0
 
 

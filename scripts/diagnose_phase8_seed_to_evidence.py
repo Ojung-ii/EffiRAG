@@ -10,14 +10,17 @@ from typing import Any, Dict, List
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from effirag.phase8_diagnostics import (
+    entity_universe,
     evidence_proposal,
     evidence_tags,
     group_runs,
+    is_phase8_variant,
     iter_queries,
     load_runs,
     md_table,
     mean,
     missing_files_for,
+    normalized_query_diagnostics,
     phase7_candidate_full,
     phase7_candidate_recall,
     phase7_chain_oracle,
@@ -78,6 +81,8 @@ def _case(query: Dict[str, Any], reason: str) -> Dict[str, Any]:
         "selected_pamae_source_rate": selected_rate,
         "selected_source_tag_distribution": dict(counter),
         "candidate_gold_recall": phase7_candidate_recall(query),
+        "normalized_candidate_gold_recall": normalized_query_diagnostics(query).get("normalized_candidate_gold_recall"),
+        "normalized_selected_gold_recall": normalized_query_diagnostics(query).get("normalized_selected_gold_recall"),
         "selected_gold_hit_eval_only": bool(p7.get("selected_gold_hit_eval_only", False)),
     }
 
@@ -90,6 +95,7 @@ def _summarize_group(dataset: str, profile: str, variant: str, runs: List[Dict[s
         "profile": profile,
         "variant": variant,
         "num_queries": len(queries),
+        "status": ",".join(sorted({str(r.get("status", "MISSING")) for r in runs})),
         "missing_files": {r["run_dir"]: missing_files_for(r) for r in runs},
     }
     for field in COUNT_FIELDS:
@@ -110,6 +116,13 @@ def _summarize_group(dataset: str, profile: str, variant: str, runs: List[Dict[s
     row["candidate_gold_recall_mean_eval_only"] = mean(
         max(safe_float(p.get("candidate_gold_recall_eval_only", 0.0), 0.0), phase7_candidate_recall(q))
         for p, q in zip(proposals, queries)
+    )
+    nds = [normalized_query_diagnostics(q) for q in queries]
+    row["candidate_gold_recall_eval_only"] = mean(
+        d["normalized_candidate_gold_recall"] for d in nds if d["normalized_candidate_gold_recall"] is not None
+    )
+    row["selected_gold_recall_eval_only"] = mean(
+        d["normalized_selected_gold_recall"] for d in nds if d["normalized_selected_gold_recall"] is not None
     )
     row["candidate_oracle_F1_mean_eval_only"] = mean(
         p.get("candidate_oracle_F1_eval_only", 0.0) for p in proposals
@@ -147,19 +160,31 @@ def _interpret(row: Dict[str, Any]) -> str:
 def _representative_cases(runs: List[Dict[str, Any]]) -> Dict[str, List[Dict[str, Any]]]:
     queries = [q for run in runs for q in run.get("queries", [])]
     cases = {
+        "u_q_contains_gold_but_seeds_miss": [],
+        "relevant_seeds_but_evidence_candidates_missing": [],
         "seeds_exist_but_low_final_candidates": [],
         "final_candidates_exist_but_selected_pamae_zero": [],
         "seed_evidence_hit_but_selected_gold_false": [],
         "pamae_candidates_exist_but_all_filtered": [],
+        "refinement_improves_seed_evidence_hit": [],
+        "refinement_causes_drift": [],
     }
     for q in queries:
         proposal = evidence_proposal(q)
         best = seed_best(q)
+        universe = entity_universe(q)
+        ref = q.get("seed", {}).get("refinement", {}) if isinstance(q.get("seed"), dict) else {}
+        if not isinstance(ref, dict):
+            ref = {}
         if not best and not proposal:
             continue
         final_n = safe_float(proposal.get("num_final_evidence_candidates", 0.0), 0.0)
         selected_rate, _ = _selected_pamae(q)
         p7 = q.get("phase7", {})
+        if bool(universe.get("gold_entity_hit_eval_only", False)) and not bool(best.get("seed_gold_hit_eval_only", False)) and len(cases["u_q_contains_gold_but_seeds_miss"]) < 10:
+            cases["u_q_contains_gold_but_seeds_miss"].append(_case(q, "u_q_contains_gold_but_seeds_miss"))
+        if safe_float(best.get("best_mean_relevance", 0.0), 0.0) >= 0.5 and final_n <= 2 and len(cases["relevant_seeds_but_evidence_candidates_missing"]) < 10:
+            cases["relevant_seeds_but_evidence_candidates_missing"].append(_case(q, "relevant_seeds_but_evidence_candidates_missing"))
         if best.get("best_seed_entity_ids") and final_n <= 2 and len(cases["seeds_exist_but_low_final_candidates"]) < 10:
             cases["seeds_exist_but_low_final_candidates"].append(_case(q, "seeds_exist_but_low_final_candidates"))
         if final_n > 0 and selected_rate <= 0.0 and len(cases["final_candidates_exist_but_selected_pamae_zero"]) < 10:
@@ -168,6 +193,13 @@ def _representative_cases(runs: List[Dict[str, Any]]) -> Dict[str, List[Dict[str
             cases["seed_evidence_hit_but_selected_gold_false"].append(_case(q, "seed_evidence_hit_but_selected_gold_false"))
         if final_n > 0 and (safe_float(p7.get("num_phase2_candidates", 0.0), 0.0) <= 0.0 or safe_float(p7.get("num_selected_atoms", 0.0), 0.0) <= 0.0) and len(cases["pamae_candidates_exist_but_all_filtered"]) < 10:
             cases["pamae_candidates_exist_but_all_filtered"].append(_case(q, "pamae_candidates_exist_but_all_filtered"))
+        before = float(bool(ref.get("before_seed_evidence_gold_hit_eval_only", False)))
+        after = float(bool(ref.get("after_seed_evidence_gold_hit_eval_only", False)))
+        changed = safe_float(ref.get("num_changed_seeds", 0.0), 0.0) > 0.0
+        if changed and after > before and len(cases["refinement_improves_seed_evidence_hit"]) < 10:
+            cases["refinement_improves_seed_evidence_hit"].append(_case(q, "refinement_improves_seed_evidence_hit"))
+        if changed and after < before and len(cases["refinement_causes_drift"]) < 10:
+            cases["refinement_causes_drift"].append(_case(q, "refinement_causes_drift"))
     return cases
 
 
@@ -182,6 +214,7 @@ def main() -> int:
         rows.append(_summarize_group(dataset, profile, variant, group))
     cases = _representative_cases(runs)
     write_json(root / "phase8_seed_to_evidence_mapping.json", {"runs": rows, "representative_cases": cases})
+    write_json(root / "phase8_seed_to_evidence_mapping_repaired.json", {"runs": rows, "representative_cases": cases})
 
     keys = [
         "dataset",
@@ -232,7 +265,33 @@ def main() -> int:
             lines.append("No cases found.")
         lines.append("")
     write_md(root / "phase8_seed_to_evidence_mapping_report.md", lines)
+    repaired_lines = [
+        "# Phase8 Seed-to-Evidence Mapping Report Repaired",
+        "",
+        "This repaired report uses normalized Phase7 candidate/selected ids for candidate and selected recall. Source-balanced rows are included for comparison, but Phase8-specific interpretations apply only to pamae variants.",
+        "",
+        md_table(rows, keys + ["candidate_gold_recall_eval_only", "selected_gold_recall_eval_only"]),
+        "",
+        "## Explicit Answers",
+        "",
+        "- Is seed-to-evidence mapping actually failing? For raw `pamae_seed_k5`, yes: normalized candidate recall is very low despite nonzero Phase8 candidate counts.",
+        "- Or was SEED_TO_EVIDENCE_MISS inflated by broken diagnostics? The original 100/100 attribution was inflated by broken Phase8 trace logging, but repaired recall still shows raw k5 is weak.",
+        "- Do Phase8 evidence candidates reach Phase7 selection? Yes; selected evidence carries Phase8 atom source tags in pamae variants.",
+        "- Does refinement improve seed-to-evidence mapping? On completed 2Wiki refine runs, candidate recall improves materially; Hotpot refine is partial/missing and should not be interpreted.",
+        "",
+        "## Representative Cases",
+        "",
+    ]
+    for name, items in cases.items():
+        repaired_lines.extend([f"### {name}", ""])
+        if items:
+            repaired_lines.append(md_table(items, ["query_id", "reason", "num_final_evidence_candidates", "selected_pamae_source_rate", "normalized_candidate_gold_recall", "normalized_selected_gold_recall", "question"]))
+        else:
+            repaired_lines.append("No cases found.")
+        repaired_lines.append("")
+    write_md(root / "phase8_seed_to_evidence_mapping_report_repaired.md", repaired_lines)
     print(root / "phase8_seed_to_evidence_mapping_report.md")
+    print(root / "phase8_seed_to_evidence_mapping_report_repaired.md")
     return 0
 
 
