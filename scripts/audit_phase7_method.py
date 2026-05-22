@@ -232,6 +232,48 @@ def main() -> int:
     else:
         warnings.append("Query-intent module not found: effirag/phase7_query_intent.py")
 
+    phase8_path = Path("effirag/phase8_pamae_entity_seeding.py")
+    if phase8_path.exists():
+        phase8_text = _read(phase8_path)
+        phase8_imports = _collect_import_leaves(phase8_path)
+        hit = sorted([x for x in phase8_imports if x in FORBIDDEN])
+        if hit:
+            errors.append(f"phase8_pamae_entity_seeding imports forbidden modules: {hit}")
+        required_phase8_functions = [
+            "build_query_entity_universe",
+            "sample_medoid_seed_sets",
+            "select_best_seed_set",
+            "refine_medoid_seeds",
+            "build_medoid_evidence_candidates",
+        ]
+        for fn_name in required_phase8_functions:
+            if f"def {fn_name}" not in phase8_text:
+                errors.append(f"Missing Phase8 function: {fn_name}")
+        forbidden_phase8_tokens = [
+            "query_type",
+            "hotpotqa",
+            "2wikimultihopqa",
+            "father",
+            "director",
+            "performer",
+            "residual_seed",
+            "residual packet",
+            "graph_transition",
+            "top1_correction",
+            "support_pinning",
+            "answer_support_pinning",
+            "candidate_recall_boost",
+        ]
+        for tok in forbidden_phase8_tokens:
+            if tok in phase8_text:
+                errors.append(f"Phase8 active path contains forbidden token: {tok}")
+        for line_no, line in enumerate(phase8_text.splitlines(), start=1):
+            lowered = line.lower()
+            if ("supporting_facts" in lowered or "gold" in lowered) and "eval_only" not in lowered:
+                errors.append(f"Phase8 non-eval gold/support reference at line {line_no}")
+    else:
+        warnings.append("Phase8 module not found: effirag/phase8_pamae_entity_seeding.py")
+
     if reg_path.exists():
         reg_text = _read(reg_path)
         if "phase7_evidence_flow" not in reg_text:
@@ -282,6 +324,9 @@ def main() -> int:
             "no_graph_transition_completion_active": "PASS" if not any("Graph-transition completion logic" in e for e in errors) else "FAIL",
             "no_rq_active_path": "PASS" if not any("Rq objective mode" in e for e in errors) else "FAIL",
             "no_relation_specific_retrieval_branch": "PASS" if not any("Relation-specific retrieval branch" in e or "Source-balanced builder contains forbidden token: father" in e or "Source-balanced builder contains forbidden token: director" in e or "Source-balanced builder contains forbidden token: performer" in e for e in errors) else "FAIL",
+            "phase8_no_query_type_controller": "PASS" if not any("Phase8 active path contains forbidden token: query_type" in e for e in errors) else "FAIL",
+            "phase8_no_dataset_specific_behavior": "PASS" if not any("Phase8 active path contains forbidden token: hotpotqa" in e or "Phase8 active path contains forbidden token: 2wikimultihopqa" in e for e in errors) else "FAIL",
+            "phase8_no_gold_use_in_proposal": "PASS" if not any("Phase8 non-eval gold/support reference" in e for e in errors) else "FAIL",
         },
     }
     print(json.dumps(payload, ensure_ascii=False, indent=2))

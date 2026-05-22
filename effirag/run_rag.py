@@ -787,6 +787,30 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--phase7-chain-unit-use-same-carrier", type=str, default=None)
     parser.add_argument("--phase7-chain-unit-use-shared-entity", type=str, default=None)
     parser.add_argument("--phase7-chain-unit-max-unit-size", type=int, default=None)
+    parser.add_argument("--phase8-pamae-enabled", type=str, default=None)
+    parser.add_argument("--phase8-pamae-proposal-mode", type=str, default=None)
+    parser.add_argument("--phase8-entity-universe-top-n", type=int, default=None)
+    parser.add_argument("--phase8-entity-universe-min-n", type=int, default=None)
+    parser.add_argument("--phase8-entity-degree-cap", type=int, default=None)
+    parser.add_argument("--phase8-entity-source-semantic", type=str, default=None)
+    parser.add_argument("--phase8-entity-source-title-lookup", type=str, default=None)
+    parser.add_argument("--phase8-entity-source-graph-flow", type=str, default=None)
+    parser.add_argument("--phase8-entity-source-balanced", type=str, default=None)
+    parser.add_argument("--phase8-pamae-k", type=int, default=None)
+    parser.add_argument("--phase8-pamae-sample-size-per-k", type=int, default=None)
+    parser.add_argument("--phase8-pamae-num-samples", type=int, default=None)
+    parser.add_argument("--phase8-pamae-sampling", type=str, default=None)
+    parser.add_argument("--phase8-pamae-random-seed", type=int, default=None)
+    parser.add_argument("--phase8-refine-enabled", type=str, default=None)
+    parser.add_argument("--phase8-refine-hops", type=int, default=None)
+    parser.add_argument("--phase8-refine-max-candidates-per-seed", type=int, default=None)
+    parser.add_argument("--phase8-refine-degree-cap", type=int, default=None)
+    parser.add_argument("--phase8-refine-iterations", type=int, default=None)
+    parser.add_argument("--phase8-seed-top-atoms-per-entity", type=int, default=None)
+    parser.add_argument("--phase8-seed-top-carriers-per-entity", type=int, default=None)
+    parser.add_argument("--phase8-seed-path-max-hops", type=int, default=None)
+    parser.add_argument("--phase8-seed-path-max-pairs", type=int, default=None)
+    parser.add_argument("--phase8-seed-total-candidate-cap", type=int, default=None)
     parser.add_argument(
         "--phase7-variant",
         type=str,
@@ -1667,6 +1691,17 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     append_phase7_runtime_stages(
                         output_dir=str(out_dir.resolve()),
                         query_id=str(sample.qid),
+                        generation_ms=float(generation_call_ms if generation is not None else 0.0),
+                        total_query_ms=float(efficiency.get("total_latency_ms", 0.0) or 0.0),
+                    )
+                except Exception:
+                    pass
+                try:
+                    from .phase8_logging import append_phase8_runtime_trace
+
+                    append_phase8_runtime_trace(
+                        output_dir=str(out_dir.resolve()),
+                        row=row,
                         generation_ms=float(generation_call_ms if generation is not None else 0.0),
                         total_query_ms=float(efficiency.get("total_latency_ms", 0.0) or 0.0),
                     )
