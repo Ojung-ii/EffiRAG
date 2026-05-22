@@ -517,3 +517,347 @@ def build_query_chunk_universe(query, graph_index, embeddings, config) -> list[C
     }
     _LAST_DIAGNOSTICS["chunk_universe"] = diag
     return out
+
+
+def _candidate_by_id(universe: Sequence[ChunkCandidate]) -> Dict[str, ChunkCandidate]:
+    return {str(c.chunk_id): c for c in list(universe or [])}
+
+
+def _candidate_distance(a: ChunkCandidate, b: ChunkCandidate) -> float:
+    if str(a.chunk_id) == str(b.chunk_id):
+        return 0.0
+    av = _normalize_vector(a.embedding)
+    bv = _normalize_vector(b.embedding)
+    if av is None or bv is None or av.shape != bv.shape:
+        return 1.0
+    return float(max(0.0, min(2.0, 1.0 - float(np.dot(av, bv)))))
+
+
+def _distance_matrix(candidates: Sequence[ChunkCandidate]) -> np.ndarray:
+    n = len(candidates)
+    dmat = np.zeros((n, n), dtype=np.float32)
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = _candidate_distance(candidates[i], candidates[j])
+            dmat[i, j] = d
+            dmat[j, i] = d
+    return dmat
+
+
+def _normalize_weights(values: Sequence[float]) -> Optional[np.ndarray]:
+    arr = np.asarray([max(0.0, float(v)) for v in list(values or [])], dtype=np.float64)
+    if arr.size <= 0:
+        return None
+    total = float(arr.sum())
+    if total <= 1.0e-12:
+        return None
+    return arr / total
+
+
+def _weighted_sample_indices(
+    candidates: Sequence[ChunkCandidate],
+    sample_size: int,
+    rng: np.random.Generator,
+    mode: str,
+) -> List[int]:
+    n = len(candidates)
+    if n <= 0:
+        return []
+    size = min(max(1, int(sample_size)), n)
+    weights = None
+    if str(mode or "query_weighted").strip().lower() == "query_weighted":
+        weights = _normalize_weights([0.001 + max(0.0, c.query_relevance) for c in candidates])
+    idx = rng.choice(np.arange(n), size=size, replace=False, p=weights)
+    return [int(i) for i in idx.tolist()]
+
+
+def _medoid_cost(dmat: np.ndarray, medoids: Sequence[int], weights: np.ndarray) -> float:
+    if dmat.size <= 0 or not medoids:
+        return 0.0
+    m = np.asarray(list(medoids), dtype=np.int64)
+    min_dist = np.min(dmat[:, m], axis=1)
+    return float(np.dot(min_dist, weights))
+
+
+def _greedy_initial_medoids(dmat: np.ndarray, weights: np.ndarray, relevances: np.ndarray, k: int) -> List[int]:
+    n = int(dmat.shape[0])
+    if n <= 0:
+        return []
+    kk = min(max(1, int(k)), n)
+    first = int(np.argmax(relevances + 0.05 * weights))
+    medoids = [first]
+    while len(medoids) < kk:
+        current = np.min(dmat[:, np.asarray(medoids, dtype=np.int64)], axis=1)
+        scores = current * (0.35 + 0.65 * np.clip(relevances, 0.0, 1.0))
+        for midx in medoids:
+            scores[midx] = -1.0
+        medoids.append(int(np.argmax(scores)))
+    return medoids
+
+
+def _pam_approx_medoids(sample: Sequence[ChunkCandidate], k: int) -> Tuple[List[int], Dict[str, float]]:
+    t0 = time.perf_counter()
+    n = len(sample)
+    if n <= 0:
+        return [], {"cost": 0.0, "iterations": 0, "kmedoids_ms": 0.0}
+    kk = min(max(1, int(k)), n)
+    dmat = _distance_matrix(sample)
+    weights = _normalize_weights([0.001 + max(0.0, c.query_relevance) for c in sample])
+    if weights is None:
+        weights = np.ones(n, dtype=np.float64) / float(n)
+    rel = np.asarray([_clip01(c.query_relevance) for c in sample], dtype=np.float64)
+    medoids = _greedy_initial_medoids(dmat=dmat, weights=weights, relevances=rel, k=kk)
+    current_cost = _medoid_cost(dmat, medoids, weights)
+    iterations = 0
+    for _ in range(8):
+        iterations += 1
+        best_cost = current_cost
+        best_swap: Optional[Tuple[int, int]] = None
+        medoid_set = set(medoids)
+        for pos, _old_idx in enumerate(list(medoids)):
+            for cand_idx in range(n):
+                if cand_idx in medoid_set:
+                    continue
+                trial = list(medoids)
+                trial[pos] = int(cand_idx)
+                trial_cost = _medoid_cost(dmat, trial, weights)
+                if trial_cost + 1.0e-9 < best_cost:
+                    best_cost = float(trial_cost)
+                    best_swap = (int(pos), int(cand_idx))
+        if best_swap is None:
+            break
+        medoids[best_swap[0]] = best_swap[1]
+        current_cost = float(best_cost)
+    medoids = sorted(set(int(x) for x in medoids), key=lambda i: (-float(rel[i]), str(sample[i].chunk_id)))
+    return medoids, {
+        "cost": float(current_cost),
+        "iterations": int(iterations),
+        "kmedoids_ms": float((time.perf_counter() - t0) * 1000.0),
+    }
+
+
+def _seed_set_diversity(seeds: Sequence[ChunkMedoidSeed], universe_by_id: Dict[str, ChunkCandidate]) -> float:
+    if len(seeds) < 2:
+        return 0.0
+    vals = []
+    for i in range(len(seeds)):
+        a = universe_by_id.get(str(seeds[i].chunk_id))
+        if a is None:
+            continue
+        for j in range(i + 1, len(seeds)):
+            b = universe_by_id.get(str(seeds[j].chunk_id))
+            if b is None:
+                continue
+            vals.append(min(1.0, _candidate_distance(a, b) / 2.0))
+    return float(_mean(vals))
+
+
+def _seed_set_components(
+    seeds: Sequence[ChunkMedoidSeed],
+    universe: Sequence[ChunkCandidate],
+) -> Dict[str, float]:
+    by_id = _candidate_by_id(universe)
+    seed_candidates = [by_id[str(seed.chunk_id)] for seed in list(seeds or []) if str(seed.chunk_id) in by_id]
+    if not seed_candidates:
+        return {
+            "score": 0.0,
+            "relevance": 0.0,
+            "coverage": 0.0,
+            "diversity": 0.0,
+            "redundancy": 0.0,
+            "token_cost": 0.0,
+        }
+    relevance = _clip01(_mean([c.query_relevance for c in seed_candidates]))
+    weights = _normalize_weights([0.001 + max(0.0, c.query_relevance) for c in universe])
+    if weights is None:
+        weights = np.ones(len(universe), dtype=np.float64) / float(max(1, len(universe)))
+    min_dist = []
+    for cand in universe:
+        min_dist.append(min((_candidate_distance(cand, seed) for seed in seed_candidates), default=1.0))
+    weighted_avg_dist = float(np.dot(np.asarray(min_dist, dtype=np.float64), weights)) if min_dist else 1.0
+    coverage = _clip01(1.0 - min(1.0, weighted_avg_dist / 2.0))
+    diversity = _seed_set_diversity(list(seeds or []), by_id)
+    pair_sim = []
+    for i in range(len(seed_candidates)):
+        for j in range(i + 1, len(seed_candidates)):
+            pair_sim.append(_clip01(1.0 - min(1.0, _candidate_distance(seed_candidates[i], seed_candidates[j]) / 2.0)))
+    redundancy = float(max(pair_sim) if pair_sim else 0.0)
+    token_cost = _clip01(_mean([min(1.0, float(c.token_count) / 700.0) for c in seed_candidates]))
+    score = float(relevance + coverage + diversity - redundancy - token_cost)
+    return {
+        "score": float(score),
+        "relevance": float(relevance),
+        "coverage": float(coverage),
+        "diversity": float(diversity),
+        "redundancy": float(redundancy),
+        "token_cost": float(token_cost),
+    }
+
+
+def sample_chunk_medoid_seed_sets(C_q, query_embedding, config) -> list[list[ChunkMedoidSeed]]:
+    t_sampling = time.perf_counter()
+    universe = list(C_q or [])
+    k = max(1, _safe_int(_cfg(config, "phase8_chunk_medoid_k", 5), 5))
+    per_k = max(1, _safe_int(_cfg(config, "phase8_chunk_medoid_sample_size_per_k", 40), 40))
+    sample_size = max(1, int(k * per_k))
+    num_samples = max(1, _safe_int(_cfg(config, "phase8_chunk_medoid_num_samples", 5), 5))
+    mode = str(_cfg(config, "phase8_chunk_medoid_sampling", "query_weighted") or "query_weighted").strip().lower()
+    seed = _stable_seed(config, query_embedding=query_embedding)
+    rng = np.random.default_rng(seed)
+    sampled_unique: Set[str] = set()
+    seed_sets: List[List[ChunkMedoidSeed]] = []
+    kmedoids_ms_total = 0.0
+    universe_by_id = _candidate_by_id(universe)
+
+    for sample_id in range(num_samples):
+        sample_indices = _weighted_sample_indices(universe, sample_size=sample_size, rng=rng, mode=mode)
+        sampled_unique.update(str(universe[i].chunk_id) for i in sample_indices)
+        sample = [universe[i] for i in sample_indices]
+        medoid_indices, medoid_diag = _pam_approx_medoids(sample, k=k)
+        kmedoids_ms_total += float(medoid_diag.get("kmedoids_ms", 0.0) or 0.0)
+        seeds: List[ChunkMedoidSeed] = []
+        for rank, idx in enumerate(medoid_indices):
+            cand = sample[int(idx)]
+            token_pen = min(1.0, float(cand.token_count) / 700.0)
+            score = _clip01(0.85 * cand.query_relevance - 0.15 * token_pen)
+            seeds.append(
+                ChunkMedoidSeed(
+                    chunk_id=str(cand.chunk_id),
+                    score=float(score),
+                    sample_id=int(sample_id),
+                    refined_from=None,
+                    bridge_entities=list(cand.linked_entities),
+                    diagnostics={
+                        "sample_id": int(sample_id),
+                        "rank": int(rank),
+                        "title": str(cand.title or ""),
+                        "query_relevance": float(cand.query_relevance),
+                        "token_count": int(cand.token_count),
+                        "source_tags": sorted(str(x) for x in set(cand.source_tags or set())),
+                        "kmedoids_cost": float(medoid_diag.get("cost", 0.0)),
+                    },
+                )
+            )
+        seed_sets.append(seeds)
+
+    seed_rows = []
+    for sample_id, seeds in enumerate(seed_sets):
+        comp = _seed_set_components(seeds, universe=universe)
+        seed_rows.append(
+            {
+                "stage": "chunk_seed_set_candidate",
+                "sample_id": int(sample_id),
+                "seed_chunk_ids": [str(s.chunk_id) for s in seeds],
+                "seed_titles": [
+                    str((universe_by_id.get(str(s.chunk_id)) or ChunkCandidate(str(s.chunk_id), None, "", None, None, 0.0, 0, [], set())).title or "")
+                    for s in seeds
+                ],
+                "seed_mean_relevance": float(comp.get("relevance", 0.0)),
+                "seed_coverage": float(comp.get("coverage", 0.0)),
+                "seed_diversity": float(comp.get("diversity", 0.0)),
+                "seed_token_cost": float(comp.get("token_cost", 0.0)),
+                "seed_gold_hit_eval_only": False,
+            }
+        )
+    _LAST_DIAGNOSTICS["chunk_medoid_sampling"] = {
+        "stage": "chunk_medoid_sampling",
+        "k": int(k),
+        "sample_size": int(min(sample_size, len(universe))),
+        "num_samples": int(num_samples),
+        "sampling_mode": str(mode),
+        "sample_seed": int(seed),
+        "num_unique_sampled_chunks": int(len(sampled_unique)),
+        "sampling_ms": float((time.perf_counter() - t_sampling) * 1000.0),
+        "kmedoids_ms": float(kmedoids_ms_total),
+        "best_seed_score": 0.0,
+        "best_seed_relevance": 0.0,
+        "best_seed_coverage": 0.0,
+        "best_seed_diversity": 0.0,
+        "best_seed_token_cost": 0.0,
+        "seed_gold_hit_eval_only": False,
+    }
+    _LAST_DIAGNOSTICS["chunk_seed_set_candidates"] = seed_rows
+    return seed_sets
+
+
+def select_best_chunk_medoid_seed_set(seed_sets, C_q, query_embedding, config) -> list[ChunkMedoidSeed]:
+    del query_embedding
+    del config
+    t0 = time.perf_counter()
+    universe = list(C_q or [])
+    candidate_sets = [list(s or []) for s in list(seed_sets or []) if list(s or [])]
+    if not candidate_sets:
+        _LAST_DIAGNOSTICS["chunk_seed_selection"] = {
+            "stage": "chunk_seed_selection",
+            "best_sample_id": -1,
+            "best_seed_chunk_ids": [],
+            "best_seed_titles": [],
+            "best_seed_score": 0.0,
+            "best_seed_relevance": 0.0,
+            "best_seed_coverage": 0.0,
+            "best_seed_diversity": 0.0,
+            "best_seed_redundancy": 0.0,
+            "best_seed_token_cost": 0.0,
+            "seed_gold_hit_eval_only": False,
+            "chunk_seed_selection_ms": float((time.perf_counter() - t0) * 1000.0),
+        }
+        return []
+    by_id = _candidate_by_id(universe)
+    scored: List[Tuple[float, int, List[ChunkMedoidSeed], Dict[str, float]]] = []
+    for idx, seeds in enumerate(candidate_sets):
+        comp = _seed_set_components(seeds, universe=universe)
+        scored.append((float(comp.get("score", 0.0)), int(idx), seeds, comp))
+    scored.sort(key=lambda row: (float(row[0]), -int(row[1])), reverse=True)
+    _score, best_idx, best, comp = scored[0]
+    best_out: List[ChunkMedoidSeed] = []
+    for seed in best:
+        diag = dict(seed.diagnostics or {})
+        diag.update(
+            {
+                "best_seed_set": True,
+                "best_seed_score": float(comp.get("score", 0.0)),
+                "best_seed_relevance": float(comp.get("relevance", 0.0)),
+                "best_seed_coverage": float(comp.get("coverage", 0.0)),
+                "best_seed_diversity": float(comp.get("diversity", 0.0)),
+                "best_seed_redundancy": float(comp.get("redundancy", 0.0)),
+                "best_seed_token_cost": float(comp.get("token_cost", 0.0)),
+            }
+        )
+        best_out.append(
+            ChunkMedoidSeed(
+                chunk_id=str(seed.chunk_id),
+                score=float(seed.score),
+                sample_id=int(seed.sample_id),
+                refined_from=seed.refined_from,
+                bridge_entities=list(seed.bridge_entities or []),
+                diagnostics=diag,
+            )
+        )
+    _LAST_DIAGNOSTICS["chunk_seed_selection"] = {
+        "stage": "chunk_seed_selection",
+        "best_sample_id": int(best_idx),
+        "best_seed_chunk_ids": [str(s.chunk_id) for s in best_out],
+        "best_seed_titles": [str(by_id[str(s.chunk_id)].title or "") for s in best_out if str(s.chunk_id) in by_id],
+        "best_seed_score": float(comp.get("score", 0.0)),
+        "best_seed_relevance": float(comp.get("relevance", 0.0)),
+        "best_seed_coverage": float(comp.get("coverage", 0.0)),
+        "best_seed_diversity": float(comp.get("diversity", 0.0)),
+        "best_seed_redundancy": float(comp.get("redundancy", 0.0)),
+        "best_seed_token_cost": float(comp.get("token_cost", 0.0)),
+        "seed_gold_hit_eval_only": False,
+        "chunk_seed_selection_ms": float((time.perf_counter() - t0) * 1000.0),
+    }
+    sampling_diag = dict(_LAST_DIAGNOSTICS.get("chunk_medoid_sampling", {}) or {})
+    if sampling_diag:
+        sampling_diag.update(
+            {
+                "best_seed_score": float(comp.get("score", 0.0)),
+                "best_seed_relevance": float(comp.get("relevance", 0.0)),
+                "best_seed_coverage": float(comp.get("coverage", 0.0)),
+                "best_seed_diversity": float(comp.get("diversity", 0.0)),
+                "best_seed_token_cost": float(comp.get("token_cost", 0.0)),
+                "seed_gold_hit_eval_only": False,
+            }
+        )
+        _LAST_DIAGNOSTICS["chunk_medoid_sampling"] = sampling_diag
+    return best_out
