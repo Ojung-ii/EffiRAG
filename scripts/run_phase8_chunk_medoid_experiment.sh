@@ -7,6 +7,7 @@ DATASET="${DATASET:-hotpotqa}"
 PROFILE="${PROFILE:-legacy_512_10}"
 LIMIT="${LIMIT:-100}"
 OUT_ROOT="${OUT_ROOT:-outputs/phase8_chunk_medoid}"
+RETRIEVAL_ONLY="${RETRIEVAL_ONLY:-false}"
 # Optional comma-separated subset:
 #   PHASE8_CHUNK_VARIANTS=chunk_pamae_k5,chunk_bridge_refine_k5
 PHASE8_CHUNK_VARIANTS="${PHASE8_CHUNK_VARIANTS:-}"
@@ -65,6 +66,7 @@ for row in "${VARIANTS[@]}"; do
     --output-dir "${RUN_DIR}" \
     --timestamp-output false \
     --method phase7_evidence_flow \
+    --retrieval-only "${RETRIEVAL_ONLY}" \
     --phase7-enable-phase2-refinement false \
     --phase7-objective-mode a_plus_bq_minus_r \
     --phase7-lambda-bridge 1.0 \
