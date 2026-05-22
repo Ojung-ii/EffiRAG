@@ -24,6 +24,14 @@
 
 ## Representative Cases
 
+### u_q_contains_gold_but_seeds_miss
+
+No cases found.
+
+### relevant_seeds_but_evidence_candidates_missing
+
+No cases found.
+
 ### seeds_exist_but_low_final_candidates
 
 No cases found.
@@ -37,6 +45,14 @@ No cases found.
 No cases found.
 
 ### pamae_candidates_exist_but_all_filtered
+
+No cases found.
+
+### refinement_improves_seed_evidence_hit
+
+No cases found.
+
+### refinement_causes_drift
 
 No cases found.
 
