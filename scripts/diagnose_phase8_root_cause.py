@@ -3,8 +3,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 from typing import Any, Dict, List
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from effirag.phase8_diagnostics import md_table, safe_float, write_json, write_md
 

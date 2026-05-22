@@ -2,9 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from collections import Counter
 from pathlib import Path
 from typing import Any, Dict, List
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from effirag.phase8_diagnostics import (
     evidence_proposal,
