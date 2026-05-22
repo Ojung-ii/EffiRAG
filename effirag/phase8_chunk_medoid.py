@@ -861,3 +861,306 @@ def select_best_chunk_medoid_seed_set(seed_sets, C_q, query_embedding, config) -
         )
         _LAST_DIAGNOSTICS["chunk_medoid_sampling"] = sampling_diag
     return best_out
+
+
+def _candidate_for_chunk(
+    chunk_id: str,
+    universe_by_id: Dict[str, ChunkCandidate],
+    graph: nx.Graph,
+    semantic: Dict[str, Any],
+    config: Any,
+    query_embedding: Any,
+    source: str,
+) -> Optional[ChunkCandidate]:
+    cid = str(chunk_id or "")
+    if cid in universe_by_id:
+        base = universe_by_id[cid]
+        tags = set(base.source_tags or set())
+        tags.add(str(source))
+        return ChunkCandidate(
+            chunk_id=str(base.chunk_id),
+            title=base.title,
+            text=str(base.text),
+            carrier_id=base.carrier_id,
+            embedding_id=base.embedding_id,
+            query_relevance=float(base.query_relevance),
+            token_count=int(base.token_count),
+            linked_entities=list(base.linked_entities),
+            source_tags=tags,
+            embedding=base.embedding,
+        )
+    if not cid or cid not in graph or _node_type(graph, cid) not in {"chunk", "passage", "document", "sentence"}:
+        return None
+    embedding_id, vec = _best_chunk_embedding(cid, graph, semantic, config)
+    qrel = 0.0
+    qvec = _normalize_vector(query_embedding)
+    if qvec is not None and vec is not None:
+        qrel = _clip01((_cosine(qvec, vec) + 1.0) / 2.0)
+    text = _node_text(graph, cid)
+    carrier_id = str(cid) if _node_type(graph, cid) in {"chunk", "passage", "document"} else (_carrier_for_sentence(graph, cid) or "")
+    return ChunkCandidate(
+        chunk_id=str(cid),
+        title=_node_title(graph, cid),
+        text=str(text),
+        carrier_id=str(carrier_id or "") or None,
+        embedding_id=embedding_id,
+        query_relevance=float(qrel),
+        token_count=int(_token_count(text)),
+        linked_entities=list(_linked_entities(graph, cid)),
+        source_tags={str(source)},
+        embedding=vec,
+    )
+
+
+def _assigned_chunks_by_seed(
+    seeds: Sequence[ChunkMedoidSeed],
+    universe: Sequence[ChunkCandidate],
+) -> Dict[str, Set[str]]:
+    by_id = _candidate_by_id(universe)
+    seed_cands = [by_id[str(seed.chunk_id)] for seed in list(seeds or []) if str(seed.chunk_id) in by_id]
+    out: Dict[str, Set[str]] = {str(seed.chunk_id): set() for seed in list(seeds or [])}
+    if not seed_cands:
+        return out
+    for cand in list(universe or []):
+        best_seed = min(seed_cands, key=lambda seed: (_candidate_distance(cand, seed), str(seed.chunk_id)))
+        out.setdefault(str(best_seed.chunk_id), set()).add(str(cand.chunk_id))
+    return out
+
+
+def _entity_degree(graph: nx.Graph, entity_id: str) -> int:
+    if str(entity_id) not in graph:
+        return 0
+    return int(graph.degree(str(entity_id)))
+
+
+def _filtered_bridge_entities(
+    graph: nx.Graph,
+    entities: Sequence[str],
+    max_entities: int,
+    degree_cap: int,
+) -> List[str]:
+    rows = []
+    for entity in list(entities or []):
+        eid = str(entity or "")
+        if not eid or eid not in graph or _node_type(graph, eid) != "entity":
+            continue
+        degree = _entity_degree(graph, eid)
+        if degree > max(1, int(degree_cap)):
+            continue
+        rows.append((degree, eid))
+    rows.sort(key=lambda x: (int(x[0]), str(x[1])))
+    return [eid for _degree, eid in rows[: max(1, int(max_entities))]]
+
+
+def _bridge_connectivity(candidate: ChunkCandidate, bridge_entities: Sequence[str]) -> float:
+    bridges = set(str(x) for x in list(bridge_entities or []) if str(x))
+    if not bridges:
+        return 0.0
+    linked = set(str(x) for x in list(candidate.linked_entities or []) if str(x))
+    return _clip01(float(len(linked.intersection(bridges))) / float(max(1, len(bridges))))
+
+
+def _chunk_graph_connectivity(
+    graph: nx.Graph,
+    chunk_id: str,
+    other_chunk_ids: Sequence[str],
+    max_hops: int,
+) -> float:
+    cid = str(chunk_id or "")
+    if not cid or cid not in graph:
+        return 0.0
+    vals = []
+    cutoff = max(1, int(max_hops))
+    for other in list(other_chunk_ids or [])[:32]:
+        oid = str(other or "")
+        if not oid or oid not in graph or oid == cid:
+            continue
+        try:
+            dist = nx.shortest_path_length(graph, cid, oid)
+        except Exception:
+            continue
+        if int(dist) <= cutoff:
+            vals.append(1.0 / (1.0 + float(dist)))
+    return _clip01(max(vals) if vals else 0.0)
+
+
+def _redundancy_to_other_chunks(
+    candidate: ChunkCandidate,
+    other_seed_ids: Sequence[str],
+    candidates_by_id: Dict[str, ChunkCandidate],
+) -> float:
+    vals = []
+    for sid in list(other_seed_ids or []):
+        other = candidates_by_id.get(str(sid))
+        if other is None:
+            continue
+        dist = _candidate_distance(candidate, other)
+        vals.append(_clip01(1.0 - min(1.0, dist / 2.0)))
+    return float(max(vals) if vals else 0.0)
+
+
+def _hub_entity_penalty(graph: nx.Graph, candidate: ChunkCandidate, degree_cap: int) -> float:
+    degrees = [
+        min(1.0, float(_entity_degree(graph, eid)) / float(max(1, int(degree_cap))))
+        for eid in list(candidate.linked_entities or [])
+        if str(eid) in graph and _node_type(graph, str(eid)) == "entity"
+    ]
+    return _clip01(_mean(degrees))
+
+
+def refine_chunk_medoids_via_bridge_entities(
+    best_seed_set,
+    C_q,
+    graph_index,
+    query_embedding,
+    config,
+) -> list[ChunkMedoidSeed]:
+    t0 = time.perf_counter()
+    enabled = _cfg_bool(config, "phase8_chunk_bridge_refine_enabled", False)
+    before = list(best_seed_set or [])
+    if not before:
+        _LAST_DIAGNOSTICS["chunk_bridge_refinement"] = {
+            "stage": "chunk_bridge_refinement",
+            "enabled": bool(enabled),
+            "num_refined_seeds": 0,
+            "num_changed_seeds": 0,
+            "avg_bridge_entities_per_seed": 0.0,
+            "avg_refine_candidate_count": 0.0,
+            "before_seed_gold_hit_eval_only": False,
+            "after_seed_gold_hit_eval_only": False,
+            "before_candidate_gold_recall_eval_only": 0.0,
+            "after_candidate_gold_recall_eval_only": 0.0,
+            "bridge_refinement_ms": float((time.perf_counter() - t0) * 1000.0),
+        }
+        return []
+    if not enabled:
+        _LAST_DIAGNOSTICS["chunk_bridge_refinement"] = {
+            "stage": "chunk_bridge_refinement",
+            "enabled": False,
+            "num_refined_seeds": int(len(before)),
+            "num_changed_seeds": 0,
+            "avg_bridge_entities_per_seed": float(_mean([len(list(s.bridge_entities or [])) for s in before])),
+            "avg_refine_candidate_count": 0.0,
+            "before_seed_gold_hit_eval_only": False,
+            "after_seed_gold_hit_eval_only": False,
+            "before_candidate_gold_recall_eval_only": 0.0,
+            "after_candidate_gold_recall_eval_only": 0.0,
+            "bridge_refinement_ms": float((time.perf_counter() - t0) * 1000.0),
+        }
+        return before
+
+    graph = _as_graph(graph_index)
+    semantic = _semantic_state(graph_index, graph_index if isinstance(graph_index, dict) else {})
+    universe = list(C_q or [])
+    universe_by_id = _candidate_by_id(universe)
+    assigned = _assigned_chunks_by_seed(before, universe)
+    max_entities = max(1, _safe_int(_cfg(config, "phase8_chunk_bridge_max_entities_per_seed", 8), 8))
+    degree_cap = max(1, _safe_int(_cfg(config, "phase8_chunk_bridge_entity_degree_cap", 100), 100))
+    chunks_per_entity = max(1, _safe_int(_cfg(config, "phase8_chunk_bridge_max_chunks_per_entity", 4), 4))
+    max_candidates = max(1, _safe_int(_cfg(config, "phase8_chunk_bridge_max_refine_candidates_per_seed", 64), 64))
+    hops = max(1, _safe_int(_cfg(config, "phase8_chunk_bridge_refine_hops", 1), 1))
+    candidates_seen: Dict[str, ChunkCandidate] = dict(universe_by_id)
+    refined: List[ChunkMedoidSeed] = []
+    bridge_counts: List[int] = []
+    candidate_counts: List[int] = []
+    changed = 0
+
+    for seed in before:
+        seed_id = str(seed.chunk_id)
+        seed_cand = universe_by_id.get(seed_id)
+        raw_bridge_entities = list(seed.bridge_entities or [])
+        if seed_cand is not None:
+            raw_bridge_entities.extend(list(seed_cand.linked_entities or []))
+        bridge_entities = _filtered_bridge_entities(
+            graph,
+            raw_bridge_entities,
+            max_entities=max_entities,
+            degree_cap=degree_cap,
+        )
+        bridge_counts.append(int(len(bridge_entities)))
+        raw_candidate_ids = set(assigned.get(seed_id, set()))
+        raw_candidate_ids.add(seed_id)
+        raw_candidate_ids.update(_chunks_from_entities(graph, bridge_entities, limit_per_entity=chunks_per_entity))
+        candidate_rows: List[ChunkCandidate] = []
+        for cid in sorted(raw_candidate_ids):
+            cand = _candidate_for_chunk(
+                cid,
+                universe_by_id=universe_by_id,
+                graph=graph,
+                semantic=semantic,
+                config=config,
+                query_embedding=query_embedding,
+                source="bridge_refine",
+            )
+            if cand is None:
+                continue
+            candidates_seen[str(cand.chunk_id)] = cand
+            candidate_rows.append(cand)
+        candidate_rows.sort(
+            key=lambda c: (
+                float(c.query_relevance),
+                float(_bridge_connectivity(c, bridge_entities)),
+                -float(c.token_count),
+                str(c.chunk_id),
+            ),
+            reverse=True,
+        )
+        candidate_rows = candidate_rows[:max_candidates]
+        candidate_counts.append(int(len(candidate_rows)))
+        other_seed_ids = [str(s.chunk_id) for s in before if str(s.chunk_id) != seed_id]
+        best_cand = candidates_seen.get(seed_id)
+        best_score = -1.0e9
+        for cand in candidate_rows:
+            bridge_conn = _bridge_connectivity(cand, bridge_entities)
+            medoid_conn = _chunk_graph_connectivity(graph, str(cand.chunk_id), other_seed_ids, max_hops=hops + 2)
+            redundancy = _redundancy_to_other_chunks(cand, other_seed_ids, candidates_seen)
+            novelty = _clip01(1.0 - redundancy)
+            token_pen = min(1.0, float(cand.token_count) / 700.0)
+            hub_pen = _hub_entity_penalty(graph, cand, degree_cap=degree_cap)
+            score = float(cand.query_relevance + bridge_conn + medoid_conn + novelty - redundancy - token_pen - hub_pen)
+            current_id = str(best_cand.chunk_id if best_cand is not None else "")
+            if score > best_score or (abs(score - best_score) <= 1.0e-12 and str(cand.chunk_id) < current_id):
+                best_score = score
+                best_cand = cand
+        if best_cand is None:
+            refined.append(seed)
+            continue
+        if str(best_cand.chunk_id) != seed_id:
+            changed += 1
+        diag = dict(seed.diagnostics or {})
+        diag.update(
+            {
+                "refined": True,
+                "refined_from": str(seed_id),
+                "refine_candidate_count": int(len(candidate_rows)),
+                "bridge_entity_count": int(len(bridge_entities)),
+                "refine_score": float(best_score),
+                "query_relevance": float(best_cand.query_relevance),
+                "token_count": int(best_cand.token_count),
+            }
+        )
+        refined.append(
+            ChunkMedoidSeed(
+                chunk_id=str(best_cand.chunk_id),
+                score=float(best_score),
+                sample_id=int(seed.sample_id),
+                refined_from=(str(seed_id) if str(best_cand.chunk_id) != seed_id else None),
+                bridge_entities=list(_filtered_bridge_entities(graph, list(best_cand.linked_entities or bridge_entities), max_entities, degree_cap)),
+                diagnostics=diag,
+            )
+        )
+
+    _LAST_DIAGNOSTICS["chunk_bridge_refinement"] = {
+        "stage": "chunk_bridge_refinement",
+        "enabled": True,
+        "num_refined_seeds": int(len(refined)),
+        "num_changed_seeds": int(changed),
+        "avg_bridge_entities_per_seed": float(_mean(bridge_counts)),
+        "avg_refine_candidate_count": float(_mean(candidate_counts)),
+        "before_seed_gold_hit_eval_only": False,
+        "after_seed_gold_hit_eval_only": False,
+        "before_candidate_gold_recall_eval_only": 0.0,
+        "after_candidate_gold_recall_eval_only": 0.0,
+        "bridge_refinement_ms": float((time.perf_counter() - t0) * 1000.0),
+    }
+    return refined
