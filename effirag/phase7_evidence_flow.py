@@ -401,7 +401,9 @@ def _build_local_graph(
     if not node_set:
         return graph.subgraph([]).copy(), {"local_nodes": 0, "local_edges": 0}
 
-    local_graph = graph.subgraph(list(node_set)).copy()
+    # A read-only subgraph view is enough for Phase7 feature extraction and
+    # avoids copying thousands of nodes/edges for every Phase8 proposal.
+    local_graph = graph.subgraph(list(node_set))
     return local_graph, {
         "local_nodes": int(local_graph.number_of_nodes()),
         "local_edges": int(local_graph.number_of_edges()),

@@ -61,10 +61,29 @@ class ChunkMedoidProposalResult:
 
 
 _LAST_DIAGNOSTICS: Dict[str, Any] = {}
+_GRAPH_CACHE: Dict[int, Dict[str, Any]] = {}
 
 
 def get_last_phase8_chunk_diagnostics() -> Dict[str, Any]:
     return dict(_LAST_DIAGNOSTICS)
+
+
+def _graph_cache(graph: nx.Graph) -> Dict[str, Any]:
+    key = id(graph)
+    cache = _GRAPH_CACHE.get(key)
+    if cache is None:
+        cache = {
+            "sentences_for_carrier": {},
+            "carrier_for_sentence": {},
+            "linked_entities": {},
+            "chunks_from_entity": {},
+            "title_sentences": {},
+            "entity_sentence_neighbors": {},
+            "entity_carrier_neighbors": {},
+            "node_text": {},
+        }
+        _GRAPH_CACHE[key] = cache
+    return cache
 
 
 def _stable_seed(config: Any, query_embedding: Any = None) -> int:
@@ -114,9 +133,13 @@ def _node_title(graph: nx.Graph, node: str) -> Optional[str]:
 def _node_text(graph: nx.Graph, node: str) -> str:
     if str(node) not in graph:
         return ""
+    cache = _graph_cache(graph)["node_text"]
+    if str(node) in cache:
+        return str(cache[str(node)])
     data = graph.nodes[str(node)]
     text = str(data.get("text", "") or data.get("content", "") or data.get("name", "") or "")
     if text:
+        cache[str(node)] = text
         return text
     if _node_type(graph, str(node)) in {"chunk", "passage", "document"}:
         parts = []
@@ -124,7 +147,10 @@ def _node_text(graph: nx.Graph, node: str) -> str:
             stext = str(graph.nodes[sent].get("text", "") or "")
             if stext:
                 parts.append(stext)
-        return " ".join(parts)
+        text = " ".join(parts)
+        cache[str(node)] = text
+        return text
+    cache[str(node)] = ""
     return ""
 
 
@@ -147,13 +173,17 @@ def _sentences_for_carrier(graph: nx.Graph, node: str, limit: int) -> List[str]:
     ntype = _node_type(graph, str(node))
     if ntype == "sentence":
         return [str(node)]
-    out = [
-        str(n)
-        for n in graph.neighbors(str(node))
-        if _node_type(graph, str(n)) == "sentence"
-    ]
-    out.sort(key=lambda n: _sentence_sort_key(graph, n))
-    return out[: max(1, int(limit))]
+    cache = _graph_cache(graph)["sentences_for_carrier"]
+    sid = str(node)
+    if sid not in cache:
+        out = [
+            str(n)
+            for n in graph.neighbors(sid)
+            if _node_type(graph, str(n)) == "sentence"
+        ]
+        out.sort(key=lambda n: _sentence_sort_key(graph, n))
+        cache[sid] = out
+    return list(cache.get(sid, []))[: max(1, int(limit))]
 
 
 def _carrier_for_sentence(graph: nx.Graph, node: str) -> Optional[str]:
@@ -161,37 +191,43 @@ def _carrier_for_sentence(graph: nx.Graph, node: str) -> Optional[str]:
         return None
     if _node_type(graph, str(node)) in {"chunk", "passage", "document"}:
         return str(node)
-    carriers = [
-        str(n)
-        for n in graph.neighbors(str(node))
-        if _node_type(graph, str(n)) in {"chunk", "passage", "document"}
-    ]
-    carriers.sort(key=lambda n: (_safe_int(graph.nodes[n].get("chunk_idx", 0), 0), str(n)))
-    return carriers[0] if carriers else None
+    cache = _graph_cache(graph)["carrier_for_sentence"]
+    sid = str(node)
+    if sid not in cache:
+        carriers = [
+            str(n)
+            for n in graph.neighbors(sid)
+            if _node_type(graph, str(n)) in {"chunk", "passage", "document"}
+        ]
+        carriers.sort(key=lambda n: (_safe_int(graph.nodes[n].get("chunk_idx", 0), 0), str(n)))
+        cache[sid] = carriers[0] if carriers else None
+    return cache.get(sid)
 
 
 def _linked_entities(graph: nx.Graph, node: str, limit: int = 32) -> List[str]:
     if str(node) not in graph:
         return []
+    cache = _graph_cache(graph)["linked_entities"]
+    sid = str(node)
+    if sid in cache:
+        return list(cache[sid])[: max(1, int(limit))]
     out: Set[str] = set()
-    frontier = [str(node)]
-    if _node_type(graph, str(node)) in {"chunk", "passage", "document"}:
-        frontier.extend(_sentences_for_carrier(graph, str(node), limit=12))
+    frontier = [sid]
+    if _node_type(graph, sid) in {"chunk", "passage", "document"}:
+        frontier.extend(_sentences_for_carrier(graph, sid, limit=12))
     for src in frontier:
         if src not in graph:
             continue
         for nbr in graph.neighbors(src):
             if _node_type(graph, str(nbr)) == "entity":
                 out.add(str(nbr))
-            if len(out) >= max(1, int(limit)):
-                break
-        if len(out) >= max(1, int(limit)):
-            break
-    return sorted(out)
+    rows = sorted(out)
+    cache[sid] = rows
+    return rows[: max(1, int(limit))]
 
 
 def _chunk_embedding(chunk_id: str, semantic: Dict[str, Any]) -> Tuple[Optional[str], Optional[np.ndarray]]:
-    chunk_id_to_idx = dict(semantic.get("chunk_id_to_idx", {}) or {})
+    chunk_id_to_idx = semantic.get("chunk_id_to_idx", {}) or {}
     embeddings = semantic.get("chunk_embeddings")
     if embeddings is None:
         return None, None
@@ -315,20 +351,24 @@ def _add_candidate(
 def _chunks_from_entities(graph: nx.Graph, entities: Iterable[str], limit_per_entity: int = 8) -> List[str]:
     out: List[str] = []
     seen = set()
+    cache = _graph_cache(graph)["chunks_from_entity"]
     for entity in list(entities or []):
         eid = str(entity or "")
         if not eid or eid not in graph:
             continue
-        local = []
-        for nbr in graph.neighbors(eid):
-            ntype = _node_type(graph, str(nbr))
-            if ntype in {"chunk", "passage", "document"}:
-                local.append(str(nbr))
-            elif ntype == "sentence":
-                carrier = _carrier_for_sentence(graph, str(nbr))
-                local.append(str(carrier or nbr))
-        local = [cid for cid in local if cid in graph]
-        local.sort(key=lambda cid: (_safe_int(graph.nodes[cid].get("chunk_idx", 0), 0), str(cid)))
+        if eid not in cache:
+            local = []
+            for nbr in graph.neighbors(eid):
+                ntype = _node_type(graph, str(nbr))
+                if ntype in {"chunk", "passage", "document"}:
+                    local.append(str(nbr))
+                elif ntype == "sentence":
+                    carrier = _carrier_for_sentence(graph, str(nbr))
+                    local.append(str(carrier or nbr))
+            local = [cid for cid in local if cid in graph]
+            local.sort(key=lambda cid: (_safe_int(graph.nodes[cid].get("chunk_idx", 0), 0), str(cid)))
+            cache[eid] = local
+        local = list(cache.get(eid, []))
         for cid in local[: max(1, int(limit_per_entity))]:
             if cid not in seen:
                 seen.add(cid)
@@ -535,13 +575,35 @@ def _candidate_distance(a: ChunkCandidate, b: ChunkCandidate) -> float:
 
 def _distance_matrix(candidates: Sequence[ChunkCandidate]) -> np.ndarray:
     n = len(candidates)
+    if n <= 0:
+        return np.zeros((0, 0), dtype=np.float32)
+    vectors = [_normalize_vector(getattr(c, "embedding", None)) for c in list(candidates or [])]
+    if all(v is not None for v in vectors):
+        shapes = {tuple(v.shape) for v in vectors if v is not None}
+        if len(shapes) == 1:
+            mat = np.vstack([v.astype(np.float32, copy=False) for v in vectors])
+            sim = np.clip(np.matmul(mat, mat.T), -1.0, 1.0)
+            dmat = (1.0 - sim).astype(np.float32, copy=False)
+            np.fill_diagonal(dmat, 0.0)
+            return dmat
     dmat = np.zeros((n, n), dtype=np.float32)
     for i in range(n):
+        ai = candidates[i]
         for j in range(i + 1, n):
-            d = _candidate_distance(candidates[i], candidates[j])
+            d = _candidate_distance(ai, candidates[j])
             dmat[i, j] = d
             dmat[j, i] = d
     return dmat
+
+
+def _candidate_matrix(candidates: Sequence[ChunkCandidate]) -> Optional[np.ndarray]:
+    vectors = [_normalize_vector(getattr(c, "embedding", None)) for c in list(candidates or [])]
+    if not vectors or not all(v is not None for v in vectors):
+        return None
+    shapes = {tuple(v.shape) for v in vectors if v is not None}
+    if len(shapes) != 1:
+        return None
+    return np.vstack([v.astype(np.float32, copy=False) for v in vectors])
 
 
 def _normalize_weights(values: Sequence[float]) -> Optional[np.ndarray]:
@@ -671,10 +733,17 @@ def _seed_set_components(
     weights = _normalize_weights([0.001 + max(0.0, c.query_relevance) for c in universe])
     if weights is None:
         weights = np.ones(len(universe), dtype=np.float64) / float(max(1, len(universe)))
-    min_dist = []
-    for cand in universe:
-        min_dist.append(min((_candidate_distance(cand, seed) for seed in seed_candidates), default=1.0))
-    weighted_avg_dist = float(np.dot(np.asarray(min_dist, dtype=np.float64), weights)) if min_dist else 1.0
+    universe_mat = _candidate_matrix(universe)
+    seed_mat = _candidate_matrix(seed_candidates)
+    if universe_mat is not None and seed_mat is not None and universe_mat.shape[1] == seed_mat.shape[1]:
+        max_sim = np.max(np.clip(np.matmul(universe_mat, seed_mat.T), -1.0, 1.0), axis=1)
+        min_dist_arr = 1.0 - max_sim
+        weighted_avg_dist = float(np.dot(min_dist_arr.astype(np.float64, copy=False), weights))
+    else:
+        min_dist = []
+        for cand in universe:
+            min_dist.append(min((_candidate_distance(cand, seed) for seed in seed_candidates), default=1.0))
+        weighted_avg_dist = float(np.dot(np.asarray(min_dist, dtype=np.float64), weights)) if min_dist else 1.0
     coverage = _clip01(1.0 - min(1.0, weighted_avg_dist / 2.0))
     diversity = _seed_set_diversity(list(seeds or []), by_id)
     pair_sim = []
@@ -1170,49 +1239,60 @@ def _sentences_for_title(graph: nx.Graph, title: str, limit: int) -> List[str]:
     key = str(title or "").strip().lower()
     if not key:
         return []
-    rows = [
-        str(n)
-        for n in graph.nodes
-        if _node_type(graph, str(n)) == "sentence"
-        and str(graph.nodes[n].get("title", "") or "").strip().lower() == key
-    ]
-    rows.sort(key=lambda n: _sentence_sort_key(graph, n))
-    return rows[: max(1, int(limit))]
+    cache = _graph_cache(graph)["title_sentences"]
+    if key not in cache:
+        rows = [
+            str(n)
+            for n in graph.nodes
+            if _node_type(graph, str(n)) == "sentence"
+            and str(graph.nodes[n].get("title", "") or "").strip().lower() == key
+        ]
+        rows.sort(key=lambda n: _sentence_sort_key(graph, n))
+        cache[key] = rows
+    return list(cache.get(key, []))[: max(1, int(limit))]
 
 
 def _sentence_neighbors_for_entity(graph: nx.Graph, entity_id: str, limit: int) -> List[str]:
     if str(entity_id) not in graph:
         return []
-    out = [
-        str(n)
-        for n in graph.neighbors(str(entity_id))
-        if _node_type(graph, str(n)) == "sentence"
-    ]
-    out.sort(key=lambda n: _sentence_sort_key(graph, n))
-    return out[: max(1, int(limit))]
+    cache = _graph_cache(graph)["entity_sentence_neighbors"]
+    eid = str(entity_id)
+    if eid not in cache:
+        out = [
+            str(n)
+            for n in graph.neighbors(eid)
+            if _node_type(graph, str(n)) == "sentence"
+        ]
+        out.sort(key=lambda n: _sentence_sort_key(graph, n))
+        cache[eid] = out
+    return list(cache.get(eid, []))[: max(1, int(limit))]
 
 
 def _carrier_neighbors_for_entity(graph: nx.Graph, entity_id: str, limit: int) -> List[str]:
     if str(entity_id) not in graph:
         return []
-    out = [
-        str(n)
-        for n in graph.neighbors(str(entity_id))
-        if _node_type(graph, str(n)) in {"chunk", "passage", "document"}
-    ]
-    for sent in _sentence_neighbors_for_entity(graph, str(entity_id), limit=max(1, int(limit)) * 2):
-        carrier = _carrier_for_sentence(graph, sent)
-        if carrier:
-            out.append(str(carrier))
-    seen = set()
-    uniq = []
-    for cid in out:
-        if cid in seen:
-            continue
-        seen.add(cid)
-        uniq.append(cid)
-    uniq.sort(key=lambda n: (_safe_int(graph.nodes[n].get("chunk_idx", 0), 0), str(n)))
-    return uniq[: max(1, int(limit))]
+    cache = _graph_cache(graph)["entity_carrier_neighbors"]
+    eid = str(entity_id)
+    if eid not in cache:
+        out = [
+            str(n)
+            for n in graph.neighbors(eid)
+            if _node_type(graph, str(n)) in {"chunk", "passage", "document"}
+        ]
+        for sent in _sentence_neighbors_for_entity(graph, eid, limit=max(1, int(limit)) * 2):
+            carrier = _carrier_for_sentence(graph, sent)
+            if carrier:
+                out.append(str(carrier))
+        seen = set()
+        uniq = []
+        for cid in out:
+            if cid in seen:
+                continue
+            seen.add(cid)
+            uniq.append(cid)
+        uniq.sort(key=lambda n: (_safe_int(graph.nodes[n].get("chunk_idx", 0), 0), str(n)))
+        cache[eid] = uniq
+    return list(cache.get(eid, []))[: max(1, int(limit))]
 
 
 def _path_sentence_evidence(graph: nx.Graph, path: Sequence[str]) -> List[str]:
