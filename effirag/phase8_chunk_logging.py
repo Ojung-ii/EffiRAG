@@ -67,6 +67,39 @@ def _source_distribution(items) -> Dict[str, int]:
     return out
 
 
+def _run_metadata(output_dir: Path, row: Dict[str, Any]) -> Dict[str, str]:
+    parts = list(output_dir.parts)
+    dataset = str(row.get("dataset", "") or "")
+    timestamp = str(row.get("run_timestamp", "") or "")
+    run_id = str(output_dir.name or timestamp or "")
+    profile = ""
+    variant = ""
+    if len(parts) >= 4:
+        # Preferred layout:
+        #   <root>/<dataset>/<profile>/<variant>/<run_id>
+        if dataset and parts[-4] == dataset:
+            profile = str(parts[-3])
+            variant = str(parts[-2])
+            run_id = str(parts[-1])
+        # Legacy layout:
+        #   <root>/<profile>/<variant>/<dataset>
+        elif dataset and parts[-1] == dataset:
+            profile = str(parts[-3])
+            variant = str(parts[-2])
+            run_id = timestamp or str(parts[-1])
+    if not dataset and len(parts) >= 4:
+        dataset = str(parts[-4])
+    if not run_id:
+        run_id = timestamp or "unknown"
+    return {
+        "run_id": str(run_id),
+        "timestamp": str(timestamp),
+        "dataset": str(dataset),
+        "profile": str(profile),
+        "variant": str(variant),
+    }
+
+
 def append_phase8_chunk_runtime_trace(
     output_dir: str,
     row: Dict[str, Any],
@@ -81,6 +114,7 @@ def append_phase8_chunk_runtime_trace(
     latency = _latency_ms(row)
     qid = str(row.get("sample_id", row.get("qid", "")) or "")
     question = str(row.get("question", "") or "")
+    meta = _run_metadata(out_dir, row)
 
     universe_diag = _first_dict(phase8, "chunk_universe")
     sampling_diag = _first_dict(phase8, "chunk_medoid_sampling")
@@ -94,6 +128,7 @@ def append_phase8_chunk_runtime_trace(
     selected_count = max(1, len(selected_atoms))
 
     query_trace = {
+        **meta,
         "query_id": qid,
         "question": question,
         "phase8_chunk_medoid_enabled": bool(enabled),
@@ -134,11 +169,15 @@ def append_phase8_chunk_runtime_trace(
     _append_jsonl(out_dir / "phase8_chunk_query_trace.jsonl", query_trace)
 
     timing = {
+        **meta,
         "query_id": qid,
+        "query_embed_ms": _safe_float(stage.get("query_embedding", latency.get("query_embed_ms", 0.0)), 0.0),
         "chunk_universe_ms": _safe_float(universe_diag.get("chunk_universe_ms", 0.0), 0.0),
         "chunk_sampling_ms": _safe_float(sampling_diag.get("sampling_ms", 0.0), 0.0),
         "chunk_kmedoids_ms": _safe_float(sampling_diag.get("kmedoids_ms", 0.0), 0.0),
         "chunk_seed_selection_ms": _safe_float(seed_diag.get("chunk_seed_selection_ms", 0.0), 0.0),
+        "chunk_medoid_proposal_ms": _safe_float(stage.get("phase8_chunk_medoid_proposal", latency.get("phase8_chunk_medoid_proposal_ms", 0.0)), 0.0),
+        "local_graph_build_ms": _safe_float(stage.get("phase8_local_graph_build", latency.get("phase8_local_graph_build_ms", 0.0)), 0.0),
         "bridge_refinement_ms": _safe_float(refine_diag.get("bridge_refinement_ms", 0.0), 0.0),
         "evidence_proposal_ms": _safe_float(evidence_diag.get("evidence_proposal_ms", 0.0), 0.0),
         "feature_construction_ms": _safe_float(stage.get("feature_extraction", latency.get("feature_extraction_ms", 0.0)), 0.0),
@@ -153,6 +192,7 @@ def append_phase8_chunk_runtime_trace(
     _append_jsonl(
         out_dir / "phase8_chunk_seed_trace.jsonl",
         {
+            **meta,
             "query_id": qid,
             "phase8_chunk_medoid_enabled": bool(enabled),
             "chunk_seed_set_candidates": list(phase8.get("chunk_seed_set_candidates", []) or []),
@@ -163,6 +203,7 @@ def append_phase8_chunk_runtime_trace(
     _append_jsonl(
         out_dir / "phase8_chunk_evidence_trace.jsonl",
         {
+            **meta,
             "query_id": qid,
             "phase8_chunk_medoid_enabled": bool(enabled),
             "chunk_medoid_evidence_proposal": evidence_diag,

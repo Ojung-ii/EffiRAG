@@ -8,9 +8,11 @@ PROFILE="${PROFILE:-legacy_512_10}"
 LIMIT="${LIMIT:-100}"
 OUT_ROOT="${OUT_ROOT:-outputs/phase8_chunk_medoid}"
 RETRIEVAL_ONLY="${RETRIEVAL_ONLY:-false}"
+RUN_ID="${RUN_ID:-$(date -u +%Y%m%dT%H%M%S_%N)}"
 # Optional comma-separated subset:
-#   PHASE8_CHUNK_VARIANTS=chunk_pamae_k5,chunk_bridge_refine_k5
-PHASE8_CHUNK_VARIANTS="${PHASE8_CHUNK_VARIANTS:-}"
+#   PHASE8_CHUNK_VARIANTS=chunk_pamae_k5
+PHASE8_CHUNK_VARIANTS="${PHASE8_CHUNK_VARIANTS:-chunk_pamae_k5}"
+PHASE8_CHUNK_SOURCE_BALANCED="${PHASE8_CHUNK_SOURCE_BALANCED:-false}"
 
 cd "${REPO_ROOT}"
 mkdir -p "${OUT_ROOT}/logs"
@@ -42,11 +44,10 @@ if [[ ! -f "${CFG}" ]]; then
 fi
 
 VARIANTS=(
-  "source_balanced_128:false:false:true:128"
   "chunk_pamae_k5:true:false:false:160"
-  "chunk_bridge_refine_k5:true:true:false:160"
 )
 
+MATCHED_VARIANTS=0
 for row in "${VARIANTS[@]}"; do
   IFS=":" read -r VARIANT CHUNK_ENABLED BRIDGE_REFINE_ENABLED SB_ENABLED TOP_M <<<"${row}"
   if [[ -n "${PHASE8_CHUNK_VARIANTS}" ]]; then
@@ -54,11 +55,12 @@ for row in "${VARIANTS[@]}"; do
       continue
     fi
   fi
-  RUN_DIR="${OUT_ROOT}/${PROFILE}/${VARIANT}/${DATASET}"
-  LOG_FILE="${OUT_ROOT}/logs/${PROFILE}__${VARIANT}__${DATASET}.log"
+  MATCHED_VARIANTS=$((MATCHED_VARIANTS + 1))
+  RUN_DIR="${OUT_ROOT}/${DATASET}/${PROFILE}/${VARIANT}/${RUN_ID}"
+  LOG_FILE="${OUT_ROOT}/logs/${DATASET}__${PROFILE}__${VARIANT}__${RUN_ID}.log"
   mkdir -p "${RUN_DIR}"
 
-  echo "[phase8-chunk] dataset=${DATASET} profile=${PROFILE} variant=${VARIANT} limit=${LIMIT}"
+  echo "[phase8-chunk] dataset=${DATASET} profile=${PROFILE} variant=${VARIANT} limit=${LIMIT} run_id=${RUN_ID}"
   PYTHONPATH=. "${PYTHON}" -m effirag.run_rag \
     --config "${CFG}" \
     --dataset "${DATASET}" \
@@ -102,7 +104,7 @@ for row in "${VARIANTS[@]}"; do
     --phase8-chunk-universe-min-n 200 \
     --phase8-chunk-universe-unit carrier \
     --phase8-chunk-source-semantic true \
-    --phase8-chunk-source-source-balanced true \
+    --phase8-chunk-source-source-balanced "${PHASE8_CHUNK_SOURCE_BALANCED}" \
     --phase8-chunk-source-graph-flow true \
     --phase8-chunk-source-title-entity-lookup true \
     --phase8-chunk-medoid-k 5 \
@@ -124,5 +126,10 @@ for row in "${VARIANTS[@]}"; do
     --phase8-chunk-seed-total-candidate-cap 160 \
     >"${LOG_FILE}" 2>&1
 done
+
+if [[ "${MATCHED_VARIANTS}" -eq 0 ]]; then
+  echo "[phase8-chunk] no runnable Phase8-only variants matched PHASE8_CHUNK_VARIANTS=${PHASE8_CHUNK_VARIANTS}" >&2
+  exit 1
+fi
 
 echo "[phase8-chunk] done dataset=${DATASET} profile=${PROFILE}"
