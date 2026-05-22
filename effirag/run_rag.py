@@ -811,6 +811,32 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--phase8-seed-path-max-hops", type=int, default=None)
     parser.add_argument("--phase8-seed-path-max-pairs", type=int, default=None)
     parser.add_argument("--phase8-seed-total-candidate-cap", type=int, default=None)
+    parser.add_argument("--phase8-chunk-medoid-enabled", type=str, default=None)
+    parser.add_argument("--phase8-chunk-medoid-proposal-mode", type=str, default=None)
+    parser.add_argument("--phase8-chunk-universe-top-n", type=int, default=None)
+    parser.add_argument("--phase8-chunk-universe-min-n", type=int, default=None)
+    parser.add_argument("--phase8-chunk-universe-unit", type=str, default=None)
+    parser.add_argument("--phase8-chunk-source-semantic", type=str, default=None)
+    parser.add_argument("--phase8-chunk-source-source-balanced", type=str, default=None)
+    parser.add_argument("--phase8-chunk-source-graph-flow", type=str, default=None)
+    parser.add_argument("--phase8-chunk-source-title-entity-lookup", type=str, default=None)
+    parser.add_argument("--phase8-chunk-medoid-k", type=int, default=None)
+    parser.add_argument("--phase8-chunk-medoid-sample-size-per-k", type=int, default=None)
+    parser.add_argument("--phase8-chunk-medoid-num-samples", type=int, default=None)
+    parser.add_argument("--phase8-chunk-medoid-sampling", type=str, default=None)
+    parser.add_argument("--phase8-chunk-medoid-random-seed", type=int, default=None)
+    parser.add_argument("--phase8-chunk-bridge-refine-enabled", type=str, default=None)
+    parser.add_argument("--phase8-chunk-bridge-refine-hops", type=int, default=None)
+    parser.add_argument("--phase8-chunk-bridge-max-entities-per-seed", type=int, default=None)
+    parser.add_argument("--phase8-chunk-bridge-entity-degree-cap", type=int, default=None)
+    parser.add_argument("--phase8-chunk-bridge-max-chunks-per-entity", type=int, default=None)
+    parser.add_argument("--phase8-chunk-bridge-max-refine-candidates-per-seed", type=int, default=None)
+    parser.add_argument("--phase8-chunk-bridge-refine-iterations", type=int, default=None)
+    parser.add_argument("--phase8-chunk-seed-top-sentences-per-carrier", type=int, default=None)
+    parser.add_argument("--phase8-chunk-seed-top-entities-per-seed", type=int, default=None)
+    parser.add_argument("--phase8-chunk-seed-top-atoms-per-entity", type=int, default=None)
+    parser.add_argument("--phase8-chunk-seed-top-carriers-per-entity", type=int, default=None)
+    parser.add_argument("--phase8-chunk-seed-total-candidate-cap", type=int, default=None)
     parser.add_argument(
         "--phase7-variant",
         type=str,
@@ -1700,6 +1726,17 @@ def execute_rag_experiment(cfg, show_progress: bool = True, precomputed_retrieva
                     from .phase8_logging import append_phase8_runtime_trace
 
                     append_phase8_runtime_trace(
+                        output_dir=str(out_dir.resolve()),
+                        row=row,
+                        generation_ms=float(generation_call_ms if generation is not None else 0.0),
+                        total_query_ms=float(efficiency.get("total_latency_ms", 0.0) or 0.0),
+                    )
+                except Exception:
+                    pass
+                try:
+                    from .phase8_chunk_logging import append_phase8_chunk_runtime_trace
+
+                    append_phase8_chunk_runtime_trace(
                         output_dir=str(out_dir.resolve()),
                         row=row,
                         generation_ms=float(generation_call_ms if generation is not None else 0.0),

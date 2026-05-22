@@ -1164,3 +1164,241 @@ def refine_chunk_medoids_via_bridge_entities(
         "bridge_refinement_ms": float((time.perf_counter() - t0) * 1000.0),
     }
     return refined
+
+
+def _sentences_for_title(graph: nx.Graph, title: str, limit: int) -> List[str]:
+    key = str(title or "").strip().lower()
+    if not key:
+        return []
+    rows = [
+        str(n)
+        for n in graph.nodes
+        if _node_type(graph, str(n)) == "sentence"
+        and str(graph.nodes[n].get("title", "") or "").strip().lower() == key
+    ]
+    rows.sort(key=lambda n: _sentence_sort_key(graph, n))
+    return rows[: max(1, int(limit))]
+
+
+def _sentence_neighbors_for_entity(graph: nx.Graph, entity_id: str, limit: int) -> List[str]:
+    if str(entity_id) not in graph:
+        return []
+    out = [
+        str(n)
+        for n in graph.neighbors(str(entity_id))
+        if _node_type(graph, str(n)) == "sentence"
+    ]
+    out.sort(key=lambda n: _sentence_sort_key(graph, n))
+    return out[: max(1, int(limit))]
+
+
+def _carrier_neighbors_for_entity(graph: nx.Graph, entity_id: str, limit: int) -> List[str]:
+    if str(entity_id) not in graph:
+        return []
+    out = [
+        str(n)
+        for n in graph.neighbors(str(entity_id))
+        if _node_type(graph, str(n)) in {"chunk", "passage", "document"}
+    ]
+    for sent in _sentence_neighbors_for_entity(graph, str(entity_id), limit=max(1, int(limit)) * 2):
+        carrier = _carrier_for_sentence(graph, sent)
+        if carrier:
+            out.append(str(carrier))
+    seen = set()
+    uniq = []
+    for cid in out:
+        if cid in seen:
+            continue
+        seen.add(cid)
+        uniq.append(cid)
+    uniq.sort(key=lambda n: (_safe_int(graph.nodes[n].get("chunk_idx", 0), 0), str(n)))
+    return uniq[: max(1, int(limit))]
+
+
+def _path_sentence_evidence(graph: nx.Graph, path: Sequence[str]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for node in list(path or []):
+        sid = str(node)
+        if sid not in graph:
+            continue
+        if _node_type(graph, sid) == "sentence":
+            if sid not in seen:
+                seen.add(sid)
+                out.append(sid)
+            continue
+        for sent in _sentences_for_carrier(graph, sid, limit=2):
+            if sent not in seen:
+                seen.add(sent)
+                out.append(sent)
+    out.sort(key=lambda n: _sentence_sort_key(graph, n))
+    return out
+
+
+def _shortest_path_sentences(
+    graph: nx.Graph,
+    pairs: Sequence[Tuple[str, str]],
+    max_hops: int,
+    max_pairs: int,
+) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    count = 0
+    for src, dst in list(pairs or []):
+        if count >= max(0, int(max_pairs)):
+            break
+        if str(src) not in graph or str(dst) not in graph or str(src) == str(dst):
+            continue
+        try:
+            path = nx.shortest_path(graph, str(src), str(dst))
+        except Exception:
+            continue
+        hops = max(0, len(path) - 1)
+        if hops > max(1, int(max_hops)):
+            continue
+        count += 1
+        for sent in _path_sentence_evidence(graph, path):
+            if sent not in seen:
+                seen.add(sent)
+                out.append(sent)
+    return out
+
+
+def _add_evidence_candidate(
+    graph: nx.Graph,
+    out: List[str],
+    tags: Dict[str, Set[str]],
+    node: str,
+    tag: str,
+    cap: int,
+) -> bool:
+    sid = str(node or "")
+    if not sid or sid not in graph or _node_type(graph, sid) != "sentence":
+        return False
+    tags.setdefault(sid, set()).add(str(tag))
+    tags.setdefault(sid, set()).add("phase8_chunk_medoid")
+    if sid not in out and len(out) < max(1, int(cap)):
+        out.append(sid)
+        return True
+    return False
+
+
+def build_chunk_medoid_evidence_candidates(refined_chunk_seeds, graph_index, config) -> list[str]:
+    t0 = time.perf_counter()
+    graph = _as_graph(graph_index)
+    seeds = [s for s in list(refined_chunk_seeds or []) if str(getattr(s, "chunk_id", "")) in graph]
+    cap = max(1, _safe_int(_cfg(config, "phase8_chunk_seed_total_candidate_cap", 160), 160))
+    top_sentences = max(1, _safe_int(_cfg(config, "phase8_chunk_seed_top_sentences_per_carrier", 3), 3))
+    top_entities = max(1, _safe_int(_cfg(config, "phase8_chunk_seed_top_entities_per_seed", 8), 8))
+    top_atoms = max(1, _safe_int(_cfg(config, "phase8_chunk_seed_top_atoms_per_entity", 3), 3))
+    top_carriers = max(0, _safe_int(_cfg(config, "phase8_chunk_seed_top_carriers_per_entity", 2), 2))
+    out: List[str] = []
+    source_tags: Dict[str, Set[str]] = {}
+    counts = {
+        "num_seed_sentence_atoms": 0,
+        "num_bridge_entity_atoms": 0,
+        "num_bridge_entity_carriers": 0,
+        "num_same_title_atoms": 0,
+        "num_same_carrier_atoms": 0,
+        "num_seed_seed_bridge_atoms": 0,
+    }
+
+    seed_sentence_nodes: List[str] = []
+    for seed in seeds:
+        seed_id = str(seed.chunk_id)
+        carrier = seed_id if _node_type(graph, seed_id) in {"chunk", "passage", "document"} else (_carrier_for_sentence(graph, seed_id) or seed_id)
+        for sent in _sentences_for_carrier(graph, carrier, limit=top_sentences):
+            seed_sentence_nodes.append(sent)
+            if _add_evidence_candidate(graph, out, source_tags, sent, "phase8_chunk_seed_sentence", cap):
+                counts["num_seed_sentence_atoms"] += 1
+
+        bridge_entities = _filtered_bridge_entities(
+            graph,
+            list(seed.bridge_entities or []) + _linked_entities(graph, seed_id),
+            max_entities=top_entities,
+            degree_cap=max(1, _safe_int(_cfg(config, "phase8_chunk_bridge_entity_degree_cap", 100), 100)),
+        )
+        for entity_id in bridge_entities:
+            for sent in _sentence_neighbors_for_entity(graph, entity_id, limit=top_atoms):
+                if _add_evidence_candidate(graph, out, source_tags, sent, "phase8_chunk_bridge_entity_atom", cap):
+                    counts["num_bridge_entity_atoms"] += 1
+            for carrier_id in _carrier_neighbors_for_entity(graph, entity_id, limit=top_carriers):
+                for sent in _sentences_for_carrier(graph, carrier_id, limit=top_atoms):
+                    if _add_evidence_candidate(graph, out, source_tags, sent, "phase8_chunk_bridge_entity_carrier", cap):
+                        counts["num_bridge_entity_carriers"] += 1
+
+        for sent in list(seed_sentence_nodes)[-top_sentences:]:
+            title = str(_node_title(graph, sent) or "")
+            for same_title in _sentences_for_title(graph, title, limit=top_atoms):
+                if _add_evidence_candidate(graph, out, source_tags, same_title, "phase8_chunk_same_title", cap):
+                    counts["num_same_title_atoms"] += 1
+            same_carrier = _carrier_for_sentence(graph, sent)
+            if same_carrier:
+                for same_sent in _sentences_for_carrier(graph, same_carrier, limit=top_atoms):
+                    if _add_evidence_candidate(graph, out, source_tags, same_sent, "phase8_chunk_same_carrier", cap):
+                        counts["num_same_carrier_atoms"] += 1
+        if len(out) >= cap:
+            break
+
+    seed_ids = [str(seed.chunk_id) for seed in seeds]
+    seed_pairs = []
+    for i, src in enumerate(seed_ids):
+        for dst in seed_ids[i + 1 :]:
+            seed_pairs.append((src, dst))
+    for sent in _shortest_path_sentences(graph, seed_pairs, max_hops=3, max_pairs=10):
+        if _add_evidence_candidate(graph, out, source_tags, sent, "phase8_chunk_seed_seed_bridge", cap):
+            counts["num_seed_seed_bridge_atoms"] += 1
+
+    diag = {
+        "stage": "chunk_medoid_evidence_proposal",
+        **counts,
+        "num_final_evidence_candidates": int(len(out)),
+        "candidate_gold_partial_eval_only": False,
+        "candidate_gold_full_eval_only": False,
+        "candidate_gold_recall_eval_only": 0.0,
+        "candidate_oracle_F1_eval_only": 0.0,
+        "evidence_proposal_ms": float((time.perf_counter() - t0) * 1000.0),
+    }
+    _LAST_DIAGNOSTICS["chunk_medoid_evidence_proposal"] = diag
+    _LAST_DIAGNOSTICS["evidence_source_tags"] = {
+        str(cid): sorted(str(t) for t in set(source_tags.get(str(cid), set()) or set()))
+        for cid in out
+    }
+    return out
+
+
+def run_phase8_chunk_medoid_proposal(
+    query: str,
+    graph_index: Any,
+    embeddings: Any,
+    config: Any,
+    query_embedding: Any = None,
+) -> ChunkMedoidProposalResult:
+    payload = dict(embeddings or {}) if isinstance(embeddings, dict) else {}
+    if query_embedding is not None and "query_embedding" not in payload:
+        payload["query_embedding"] = query_embedding
+    _LAST_DIAGNOSTICS.clear()
+    universe = build_query_chunk_universe(query, graph_index=graph_index, embeddings=payload, config=config)
+    initial = sample_chunk_medoid_seed_sets(universe, query_embedding=payload.get("query_embedding"), config=config)
+    best = select_best_chunk_medoid_seed_set(initial, C_q=universe, query_embedding=payload.get("query_embedding"), config=config)
+    refined = refine_chunk_medoids_via_bridge_entities(
+        best,
+        C_q=universe,
+        graph_index=graph_index,
+        query_embedding=payload.get("query_embedding"),
+        config=config,
+    )
+    evidence = build_chunk_medoid_evidence_candidates(
+        refined_chunk_seeds=refined,
+        graph_index=graph_index,
+        config=config,
+    )
+    diagnostics = get_last_phase8_chunk_diagnostics()
+    return ChunkMedoidProposalResult(
+        chunk_universe=list(universe),
+        initial_medoid_sets=list(initial),
+        best_medoid_set=list(best),
+        refined_medoid_set=list(refined),
+        evidence_candidate_ids=list(evidence),
+        diagnostics=dict(diagnostics),
+    )

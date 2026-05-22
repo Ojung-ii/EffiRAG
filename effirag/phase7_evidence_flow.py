@@ -17,6 +17,7 @@ from .metrics import supporting_fact_match_details
 from .phase7_config import Phase7Config, phase7_config_from_cfg
 from .phase7_logging import get_phase7_logger
 from .phase7_source_balanced import SOURCE_ORDER, disabled_source_balance_diagnostics, source_balanced_union
+from .phase8_chunk_medoid import ChunkMedoidProposalResult, run_phase8_chunk_medoid_proposal
 from .phase8_pamae_entity_seeding import PamaeProposalResult, run_phase8_pamae_proposal
 from .registry import register_method
 from .types import RetrievalResult
@@ -678,6 +679,8 @@ def _candidate_atoms_from_phase8_evidence(
     flow_scores: Dict[str, float],
     anchor_nodes: List[str],
     candidate_top_m: int,
+    proposal_tag: str = "phase8_pamae_seed",
+    proposal_source: str = "phase8_pamae_seed",
 ) -> Tuple[List[Phase7EvidenceAtom], Dict[str, Any]]:
     query_tokens = set(content_tokens(question))
     anchor_tokens = set(_entity_token(a) for a in anchor_nodes)
@@ -737,7 +740,7 @@ def _candidate_atoms_from_phase8_evidence(
             relation_term_coverage = 0.0
 
         tags = set(str(x) for x in list(evidence_source_tags.get(str(node), []) or []) if str(x))
-        tags.add("phase8_pamae_seed")
+        tags.add(str(proposal_tag))
         atoms.append(
             Phase7EvidenceAtom(
                 atom_id=str(node),
@@ -761,7 +764,7 @@ def _candidate_atoms_from_phase8_evidence(
                 carrier_id=str(carrier_id),
                 flow_rank=int(flow_rank.get(node, 0)),
                 source_tags=tags,
-                proposal_source="phase8_pamae_seed",
+                proposal_source=str(proposal_source),
             )
         )
 
@@ -1898,12 +1901,16 @@ def _select_from_rows_with_budget(
 @register_method("phase7_evidence_flow")
 def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
     p7 = phase7_config_from_cfg(cfg)
-    phase8_enabled = bool(getattr(cfg, "phase8_pamae_enabled", False))
+    phase8_pamae_enabled = bool(getattr(cfg, "phase8_pamae_enabled", False))
+    phase8_chunk_enabled = bool(getattr(cfg, "phase8_chunk_medoid_enabled", False))
+    phase8_enabled = bool(phase8_pamae_enabled or phase8_chunk_enabled)
     candidate_top_m_eff = max(
         1,
         int(
-            getattr(cfg, "phase8_seed_total_candidate_cap", 160)
-            if phase8_enabled
+            getattr(cfg, "phase8_chunk_seed_total_candidate_cap", 160)
+            if phase8_chunk_enabled
+            else getattr(cfg, "phase8_seed_total_candidate_cap", 160)
+            if phase8_pamae_enabled
             else (p7.source_balanced_candidate_top_m if bool(p7.source_balanced_proposal_enabled) else p7.candidate_top_m)
         ),
     )
@@ -1921,6 +1928,7 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
     stage_ms: Dict[str, float] = {}
     stage_rows: List[Dict[str, Any]] = []
     phase8_result: Optional[PamaeProposalResult] = None
+    phase8_chunk_result: Optional[ChunkMedoidProposalResult] = None
     t_total = time.perf_counter()
 
     def _stage_begin() -> float:
@@ -2017,7 +2025,83 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         num_edges=int(local_graph.number_of_edges()),
     )
 
-    if phase8_enabled:
+    if phase8_chunk_enabled:
+        t0 = _stage_begin()
+        phase8_chunk_result = run_phase8_chunk_medoid_proposal(
+            query=str(getattr(sample, "question", "") or ""),
+            graph_index=state,
+            embeddings={
+                "query_embedding": qvec,
+                "semantic_chunks": list(sem_chunks),
+                "semantic_entities": list(sem_entities),
+                "anchor_nodes": list(anchor_nodes),
+                "flow_scores": dict(flow),
+            },
+            config=cfg,
+            query_embedding=qvec,
+        )
+        refined_chunk_ids = [str(seed.chunk_id) for seed in list(phase8_chunk_result.refined_medoid_set or [])]
+        bridge_entity_ids = sorted(
+            {
+                str(entity_id)
+                for seed in list(phase8_chunk_result.refined_medoid_set or [])
+                for entity_id in list(seed.bridge_entities or [])
+                if str(entity_id) in graph
+            }
+        )
+        phase8_candidate_ids = [str(cid) for cid in list(phase8_chunk_result.evidence_candidate_ids or []) if str(cid) in graph]
+        _stage_end(
+            "phase8_chunk_medoid_proposal",
+            t0,
+            num_nodes=int(len(phase8_chunk_result.chunk_universe)),
+            num_edges=0,
+            num_candidates_in=int(len(phase8_chunk_result.chunk_universe)),
+            num_candidates_out=int(len(phase8_candidate_ids)),
+        )
+
+        t0 = _stage_begin()
+        local_graph, local_diag = _build_local_graph(
+            graph=graph,
+            anchor_nodes=anchor_nodes,
+            semantic_chunk_nodes=list(dict.fromkeys(refined_chunk_ids + phase8_candidate_ids)),
+            semantic_entity_nodes=bridge_entity_ids,
+        )
+        _stage_end(
+            "phase8_local_graph_build",
+            t0,
+            num_nodes=int(local_diag.get("local_nodes", 0)),
+            num_edges=int(local_diag.get("local_edges", 0)),
+        )
+
+        t0 = _stage_begin()
+        flow = _flow_scores(local_graph, seed_nodes=(anchor_nodes + bridge_entity_ids + refined_chunk_ids + phase8_candidate_ids), p7=p7)
+        _stage_end(
+            "phase8_graph_flow",
+            t0,
+            num_nodes=int(local_graph.number_of_nodes()),
+            num_edges=int(local_graph.number_of_edges()),
+        )
+        sem_chunks = [sid for sid in refined_chunk_ids if sid in graph]
+        sem_entities = [sid for sid in bridge_entity_ids if sid in graph]
+        sem_chunk_scores = {
+            str(seed.chunk_id): float(seed.score)
+            for seed in list(phase8_chunk_result.refined_medoid_set or [])
+            if str(seed.chunk_id) in graph
+        }
+        phase1_seed_rows = [
+            {
+                "node_id": str(seed.chunk_id),
+                "source_id": str(seed.chunk_id),
+                "node_type": str((graph.nodes[str(seed.chunk_id)].get("node_type", "") if str(seed.chunk_id) in graph else "") or "chunk"),
+                "carrier_id": str(seed.chunk_id),
+                "title": str((graph.nodes[str(seed.chunk_id)].get("title", "") if str(seed.chunk_id) in graph else "") or ""),
+                "text": str((graph.nodes[str(seed.chunk_id)].get("text", "") if str(seed.chunk_id) in graph else "") or str(seed.chunk_id)),
+                "score": float(seed.score),
+            }
+            for seed in list(phase8_chunk_result.refined_medoid_set or [])
+        ]
+
+    elif phase8_pamae_enabled:
         t0 = _stage_begin()
         phase8_result = run_phase8_pamae_proposal(
             query=str(getattr(sample, "question", "") or ""),
@@ -2096,7 +2180,26 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "entity": int(local_node_type_counts.get("entity", 0)),
     }
     num_candidate_atoms_before_truncation = int(candidate_source_breakdown["sentence"])
-    if phase8_enabled and phase8_result is not None:
+    if phase8_chunk_enabled and phase8_chunk_result is not None:
+        phase8_tags = dict((phase8_chunk_result.diagnostics or {}).get("evidence_source_tags", {}) or {})
+        atoms, aux = _candidate_atoms_from_phase8_evidence(
+            question=str(getattr(sample, "question", "") or ""),
+            local_graph=local_graph,
+            evidence_candidate_ids=list(phase8_chunk_result.evidence_candidate_ids or []),
+            evidence_source_tags=phase8_tags,
+            flow_scores=flow,
+            anchor_nodes=anchor_nodes,
+            candidate_top_m=int(candidate_top_m_eff),
+            proposal_tag="phase8_chunk_medoid",
+            proposal_source="phase8_chunk_medoid",
+        )
+        aux["source_balance"] = {
+            **dict(aux.get("source_balance", {}) or {}),
+            "enabled": False,
+            "phase8_chunk_medoid_enabled": True,
+            "num_phase8_chunk_evidence_candidates": int(len(phase8_chunk_result.evidence_candidate_ids or [])),
+        }
+    elif phase8_pamae_enabled and phase8_result is not None:
         phase8_tags = dict((phase8_result.diagnostics or {}).get("evidence_source_tags", {}) or {})
         atoms, aux = _candidate_atoms_from_phase8_evidence(
             question=str(getattr(sample, "question", "") or ""),
@@ -2724,9 +2827,12 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "phase7_source_quota_entity_title": int(p7.source_quota_entity_title),
         "phase7_source_quota_graph_flow": int(p7.source_quota_graph_flow),
         "phase7_source_quota_anchor_neighborhood": int(p7.source_quota_anchor_neighborhood),
-        "phase8_pamae_enabled": bool(phase8_enabled),
+        "phase8_pamae_enabled": bool(phase8_pamae_enabled),
         "phase8_pamae_proposal_mode": str(getattr(cfg, "phase8_pamae_proposal_mode", "entity_seed_refine") or "entity_seed_refine"),
         "phase8_diagnostics": dict((phase8_result.diagnostics if phase8_result is not None else {}) or {}),
+        "phase8_chunk_medoid_enabled": bool(phase8_chunk_enabled),
+        "phase8_chunk_medoid_proposal_mode": str(getattr(cfg, "phase8_chunk_medoid_proposal_mode", "carrier_seed_bridge_refine") or "carrier_seed_bridge_refine"),
+        "phase8_chunk_diagnostics": dict((phase8_chunk_result.diagnostics if phase8_chunk_result is not None else {}) or {}),
         "phase7_chain_unit_enabled": bool(p7.chain_unit_enabled),
         "phase7_chain_unit_max_pair_units": int(p7.chain_unit_max_pair_units),
         "phase7_chain_unit_use_same_title": bool(p7.chain_unit_use_same_title),
@@ -2814,6 +2920,7 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
             "local_graph_build": float(stage_ms.get("local_graph_build", 0.0)),
             "graph_flow": float(stage_ms.get("graph_flow", 0.0)),
             "phase8_pamae_proposal": float(stage_ms.get("phase8_pamae_proposal", 0.0)),
+            "phase8_chunk_medoid_proposal": float(stage_ms.get("phase8_chunk_medoid_proposal", 0.0)),
             "phase8_local_graph_build": float(stage_ms.get("phase8_local_graph_build", 0.0)),
             "phase8_graph_flow": float(stage_ms.get("phase8_graph_flow", 0.0)),
             "source_balanced_union": float(stage_ms.get("source_balanced_union", 0.0)),
@@ -2871,13 +2978,20 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
         "phase7_source_quota_entity_title": int(p7.source_quota_entity_title),
         "phase7_source_quota_graph_flow": int(p7.source_quota_graph_flow),
         "phase7_source_quota_anchor_neighborhood": int(p7.source_quota_anchor_neighborhood),
-        "phase8_pamae_enabled": bool(phase8_enabled),
+        "phase8_pamae_enabled": bool(phase8_pamae_enabled),
         "phase8_pamae_proposal_mode": str(getattr(cfg, "phase8_pamae_proposal_mode", "entity_seed_refine") or "entity_seed_refine"),
         "phase8_diagnostics": dict((phase8_result.diagnostics if phase8_result is not None else {}) or {}),
         "phase8_query_trace_path": str(Path(out_dir) / "phase8_query_trace.jsonl"),
         "phase8_stage_timing_path": str(Path(out_dir) / "phase8_stage_timing.jsonl"),
         "phase8_seed_trace_path": str(Path(out_dir) / "phase8_seed_trace.jsonl"),
         "phase8_evidence_trace_path": str(Path(out_dir) / "phase8_evidence_trace.jsonl"),
+        "phase8_chunk_medoid_enabled": bool(phase8_chunk_enabled),
+        "phase8_chunk_medoid_proposal_mode": str(getattr(cfg, "phase8_chunk_medoid_proposal_mode", "carrier_seed_bridge_refine") or "carrier_seed_bridge_refine"),
+        "phase8_chunk_diagnostics": dict((phase8_chunk_result.diagnostics if phase8_chunk_result is not None else {}) or {}),
+        "phase8_chunk_query_trace_path": str(Path(out_dir) / "phase8_chunk_query_trace.jsonl"),
+        "phase8_chunk_stage_timing_path": str(Path(out_dir) / "phase8_chunk_stage_timing.jsonl"),
+        "phase8_chunk_seed_trace_path": str(Path(out_dir) / "phase8_chunk_seed_trace.jsonl"),
+        "phase8_chunk_evidence_trace_path": str(Path(out_dir) / "phase8_chunk_evidence_trace.jsonl"),
         "phase7_chain_unit_enabled": bool(p7.chain_unit_enabled),
         "phase7_chain_unit_max_pair_units": int(p7.chain_unit_max_pair_units),
         "phase7_chain_unit_use_same_title": bool(p7.chain_unit_use_same_title),
@@ -2897,6 +3011,7 @@ def run_phase7_evidence_flow(sample: Any, cfg: Any) -> RetrievalResult:
             "query_embed_ms": float(stage_ms.get("query_embedding", 0.0)),
             "semantic_lookup_chunk_ms": float(stage_ms.get("semantic_anchor_retrieval", 0.0)),
             "phase8_pamae_proposal_ms": float(stage_ms.get("phase8_pamae_proposal", 0.0)),
+            "phase8_chunk_medoid_proposal_ms": float(stage_ms.get("phase8_chunk_medoid_proposal", 0.0)),
             "phase8_local_graph_build_ms": float(stage_ms.get("phase8_local_graph_build", 0.0)),
             "phase8_graph_flow_ms": float(stage_ms.get("phase8_graph_flow", 0.0)),
             "source_balanced_union_ms": float(stage_ms.get("source_balanced_union", 0.0)),

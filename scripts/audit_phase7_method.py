@@ -274,6 +274,42 @@ def main() -> int:
     else:
         warnings.append("Phase8 module not found: effirag/phase8_pamae_entity_seeding.py")
 
+    phase8_chunk_path = Path("effirag/phase8_chunk_medoid.py")
+    if phase8_chunk_path.exists():
+        phase8_chunk_text = _read(phase8_chunk_path)
+        phase8_chunk_imports = _collect_import_leaves(phase8_chunk_path)
+        hit = sorted([x for x in phase8_chunk_imports if x in FORBIDDEN])
+        if hit:
+            errors.append(f"phase8_chunk_medoid imports forbidden modules: {hit}")
+        required_phase8_chunk_functions = [
+            "build_query_chunk_universe",
+            "sample_chunk_medoid_seed_sets",
+            "refine_chunk_medoids_via_bridge_entities",
+            "build_chunk_medoid_evidence_candidates",
+        ]
+        for fn_name in required_phase8_chunk_functions:
+            if f"def {fn_name}" not in phase8_chunk_text:
+                errors.append(f"Missing Phase8 chunk function: {fn_name}")
+        forbidden_phase8_chunk_tokens = [
+            "query_type",
+            "hotpotqa",
+            "2wikimultihopqa",
+            "father",
+            "director",
+            "performer",
+            "support_pinning",
+            "answer_support_pinning",
+            "top1_correction",
+            "candidate_recall_boost",
+        ]
+        for tok in forbidden_phase8_chunk_tokens:
+            if tok in phase8_chunk_text:
+                errors.append(f"Phase8 chunk active path contains forbidden token: {tok}")
+        for line_no, line in enumerate(phase8_chunk_text.splitlines(), start=1):
+            lowered = line.lower()
+            if ("supporting_facts" in lowered or "gold" in lowered) and "eval_only" not in lowered:
+                errors.append(f"Phase8 chunk non-eval gold/support reference at line {line_no}")
+
     if reg_path.exists():
         reg_text = _read(reg_path)
         if "phase7_evidence_flow" not in reg_text:
