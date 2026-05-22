@@ -46,6 +46,14 @@ SOURCE_BALANCED_CATEGORIES = [
     "N/A_PHASE8_STAGE",
 ]
 
+PHASE8_EXCLUSIVE_CATEGORIES = {
+    "UQ_ENTITY_MISS",
+    "SEED_SELECTION_MISS",
+    "REFINEMENT_DRIFT",
+    "SEED_TO_EVIDENCE_MISS",
+    "CANDIDATE_CHAIN_INFEASIBLE",
+}
+
 
 def _row_for_query(dataset: str, profile: str, variant: str, query: Dict[str, Any]) -> Dict[str, Any]:
     label = failure_label_repaired(variant, query)
@@ -82,7 +90,7 @@ def main() -> int:
         for query in queries:
             row = _row_for_query(dataset, profile, variant, query)
             category = row["category"]
-            if is_source_balanced_variant(variant) and category in PHASE8_CATEGORIES[:-1]:
+            if is_source_balanced_variant(variant) and category in PHASE8_EXCLUSIVE_CATEGORIES:
                 category = "N/A_PHASE8_STAGE"
                 row["category"] = category
             counter[category] += 1
