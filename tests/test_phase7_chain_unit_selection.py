@@ -43,6 +43,7 @@ def test_chain_unit_builder_uses_strict_pair_types_only():
     assert "C::0||D::0" not in pair_ids
     assert diag["num_single_units"] == 4
     assert diag["num_explicit_transition_units"] == 1
+    assert diag["unit_preview"][0]["unit_type"] == "explicit_transition_pair"
 
 
 def test_chain_feasibility_requires_connected_gold_chain():

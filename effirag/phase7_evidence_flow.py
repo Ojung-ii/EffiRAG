@@ -1206,6 +1206,26 @@ def _unit_type_priority(unit_type: str) -> int:
     }.get(str(unit_type), 9)
 
 
+def _chain_unit_preview(units: List[Phase7ChainUnit], limit: int = 8) -> List[Dict[str, Any]]:
+    rows: List[Dict[str, Any]] = []
+    for unit in list(units or []):
+        if len(unit.atoms) <= 1:
+            continue
+        rows.append(
+            {
+                "unit_id": str(unit.unit_id),
+                "unit_type": str(unit.unit_type),
+                "source_ids": list(unit.source_ids),
+                "titles": [str(atom.title or "") for atom in unit.atoms],
+                "token_count": int(unit.token_count),
+                "base_score": float(unit.base_score),
+            }
+        )
+        if len(rows) >= int(limit):
+            break
+    return rows
+
+
 def _build_chain_units(atoms: List[Phase7EvidenceAtom], p7: Phase7Config) -> Tuple[List[Phase7ChainUnit], Dict[str, Any]]:
     t0 = time.perf_counter()
     units: List[Phase7ChainUnit] = []
@@ -1280,6 +1300,7 @@ def _build_chain_units(atoms: List[Phase7EvidenceAtom], p7: Phase7Config) -> Tup
         "num_same_carrier_units": int(sum(1 for u in pair_units if u.unit_type == "same_carrier_pair")),
         "num_selected_units": 0,
         "num_selected_atoms": 0,
+        "unit_preview": _chain_unit_preview(units),
         "chain_unit_ms": float((time.perf_counter() - t0) * 1000.0),
     }
     return units, diag
