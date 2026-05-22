@@ -504,3 +504,325 @@ def build_query_entity_universe(query, graph_index, embeddings, config) -> list[
     }
     _LAST_DIAGNOSTICS["entity_universe"] = diag
     return out
+
+
+def _stable_seed(config: Any, query_embedding: Any = None) -> int:
+    base = _safe_int(_cfg(config, "phase8_pamae_random_seed", 42), 42)
+    query_key = str(_cfg(config, "_phase8_query_key", "") or "")
+    if not query_key and query_embedding is not None:
+        vec = _normalize_vector(query_embedding)
+        if vec is not None:
+            query_key = ",".join(f"{float(x):.4f}" for x in vec[: min(16, vec.size)])
+    digest = hashlib.sha1(f"{base}:{query_key}".encode("utf-8")).hexdigest()[:8]
+    return int((base + int(digest, 16)) % (2**32 - 1))
+
+
+def _candidate_by_id(universe: Sequence[EntityCandidate]) -> Dict[str, EntityCandidate]:
+    return {str(c.entity_id): c for c in list(universe or [])}
+
+
+def _candidate_distance(a: EntityCandidate, b: EntityCandidate) -> float:
+    if str(a.entity_id) == str(b.entity_id):
+        return 0.0
+    av = _normalize_vector(a.embedding)
+    bv = _normalize_vector(b.embedding)
+    if av is None or bv is None or av.shape != bv.shape:
+        return 1.0
+    return float(max(0.0, min(2.0, 1.0 - float(np.dot(av, bv)))))
+
+
+def _distance_matrix(candidates: Sequence[EntityCandidate]) -> np.ndarray:
+    n = len(candidates)
+    dmat = np.zeros((n, n), dtype=np.float32)
+    for i in range(n):
+        for j in range(i + 1, n):
+            d = _candidate_distance(candidates[i], candidates[j])
+            dmat[i, j] = d
+            dmat[j, i] = d
+    return dmat
+
+
+def _normalize_weights(values: Sequence[float]) -> Optional[np.ndarray]:
+    arr = np.asarray([max(0.0, float(v)) for v in values], dtype=np.float64)
+    if arr.size <= 0:
+        return None
+    total = float(arr.sum())
+    if total <= 1.0e-12:
+        return None
+    return arr / total
+
+
+def _weighted_sample_indices(
+    candidates: Sequence[EntityCandidate],
+    sample_size: int,
+    rng: np.random.Generator,
+    mode: str,
+) -> List[int]:
+    n = len(candidates)
+    if n <= 0:
+        return []
+    size = min(max(1, int(sample_size)), n)
+    weights = None
+    if str(mode or "query_weighted").strip().lower() == "query_weighted":
+        weights = _normalize_weights([0.001 + max(0.0, c.query_relevance) for c in candidates])
+    idx = rng.choice(np.arange(n), size=size, replace=False, p=weights)
+    return [int(i) for i in idx.tolist()]
+
+
+def _medoid_cost(dmat: np.ndarray, medoids: Sequence[int], weights: np.ndarray) -> float:
+    if dmat.size <= 0 or not medoids:
+        return 0.0
+    m = np.asarray(list(medoids), dtype=np.int64)
+    min_dist = np.min(dmat[:, m], axis=1)
+    return float(np.dot(min_dist, weights))
+
+
+def _greedy_initial_medoids(dmat: np.ndarray, weights: np.ndarray, relevances: np.ndarray, k: int) -> List[int]:
+    n = int(dmat.shape[0])
+    if n <= 0:
+        return []
+    kk = min(max(1, int(k)), n)
+    first = int(np.argmax(relevances + 0.05 * weights))
+    medoids = [first]
+    while len(medoids) < kk:
+        current = np.min(dmat[:, np.asarray(medoids, dtype=np.int64)], axis=1)
+        scores = current * (0.35 + 0.65 * np.clip(relevances, 0.0, 1.0))
+        for midx in medoids:
+            scores[midx] = -1.0
+        medoids.append(int(np.argmax(scores)))
+    return medoids
+
+
+def _pam_approx_medoids(sample: Sequence[EntityCandidate], k: int) -> Tuple[List[int], Dict[str, float]]:
+    t0 = time.perf_counter()
+    n = len(sample)
+    if n <= 0:
+        return [], {"cost": 0.0, "iterations": 0, "kmedoids_ms": 0.0}
+    kk = min(max(1, int(k)), n)
+    dmat = _distance_matrix(sample)
+    weights = _normalize_weights([0.001 + max(0.0, c.query_relevance) for c in sample])
+    if weights is None:
+        weights = np.ones(n, dtype=np.float64) / float(n)
+    rel = np.asarray([_clip01(c.query_relevance) for c in sample], dtype=np.float64)
+    medoids = _greedy_initial_medoids(dmat=dmat, weights=weights, relevances=rel, k=kk)
+    current_cost = _medoid_cost(dmat, medoids, weights)
+    iterations = 0
+    for _ in range(8):
+        iterations += 1
+        best_cost = current_cost
+        best_swap: Optional[Tuple[int, int]] = None
+        medoid_set = set(medoids)
+        for pos, old_idx in enumerate(list(medoids)):
+            for cand_idx in range(n):
+                if cand_idx in medoid_set:
+                    continue
+                trial = list(medoids)
+                trial[pos] = int(cand_idx)
+                trial_cost = _medoid_cost(dmat, trial, weights)
+                if trial_cost + 1.0e-9 < best_cost:
+                    best_cost = float(trial_cost)
+                    best_swap = (int(pos), int(cand_idx))
+        if best_swap is None:
+            break
+        medoids[best_swap[0]] = best_swap[1]
+        current_cost = float(best_cost)
+    medoids = sorted(set(int(x) for x in medoids), key=lambda i: (-float(rel[i]), str(sample[i].entity_id)))
+    return medoids, {
+        "cost": float(current_cost),
+        "iterations": int(iterations),
+        "kmedoids_ms": float((time.perf_counter() - t0) * 1000.0),
+    }
+
+
+def _seed_set_diversity(seeds: Sequence[MedoidSeed], universe_by_id: Dict[str, EntityCandidate]) -> float:
+    if len(seeds) < 2:
+        return 0.0
+    vals = []
+    for i in range(len(seeds)):
+        a = universe_by_id.get(str(seeds[i].entity_id))
+        if a is None:
+            continue
+        for j in range(i + 1, len(seeds)):
+            b = universe_by_id.get(str(seeds[j].entity_id))
+            if b is None:
+                continue
+            vals.append(min(1.0, _candidate_distance(a, b) / 2.0))
+    return float(_mean(vals))
+
+
+def sample_medoid_seed_sets(U_q, query_embedding, config) -> list[list[MedoidSeed]]:
+    t_sampling = time.perf_counter()
+    universe = list(U_q or [])
+    k = max(1, _safe_int(_cfg(config, "phase8_pamae_k", 5), 5))
+    per_k = max(1, _safe_int(_cfg(config, "phase8_pamae_sample_size_per_k", 40), 40))
+    sample_size = max(1, int(k * per_k))
+    num_samples = max(1, _safe_int(_cfg(config, "phase8_pamae_num_samples", 5), 5))
+    mode = str(_cfg(config, "phase8_pamae_sampling", "query_weighted") or "query_weighted").strip().lower()
+    seed = _stable_seed(config, query_embedding=query_embedding)
+    rng = np.random.default_rng(seed)
+    sampled_unique: Set[str] = set()
+    seed_sets: List[List[MedoidSeed]] = []
+    kmedoids_ms_total = 0.0
+    universe_by_id = _candidate_by_id(universe)
+
+    for sample_id in range(num_samples):
+        sample_indices = _weighted_sample_indices(universe, sample_size=sample_size, rng=rng, mode=mode)
+        sampled_unique.update(str(universe[i].entity_id) for i in sample_indices)
+        sample = [universe[i] for i in sample_indices]
+        medoid_indices, medoid_diag = _pam_approx_medoids(sample, k=k)
+        kmedoids_ms_total += float(medoid_diag.get("kmedoids_ms", 0.0) or 0.0)
+        seeds: List[MedoidSeed] = []
+        for rank, idx in enumerate(medoid_indices):
+            cand = sample[int(idx)]
+            degree_pen = min(1.0, float(cand.degree) / float(max(1, _safe_int(_cfg(config, "phase8_entity_degree_cap", 200), 200))))
+            score = _clip01(0.75 * cand.query_relevance + 0.25 * cand.graph_score - 0.10 * degree_pen)
+            seeds.append(
+                MedoidSeed(
+                    entity_id=str(cand.entity_id),
+                    score=float(score),
+                    source_sample_id=int(sample_id),
+                    refined_from=None,
+                    diagnostics={
+                        "sample_id": int(sample_id),
+                        "rank": int(rank),
+                        "name": str(cand.name),
+                        "query_relevance": float(cand.query_relevance),
+                        "graph_score": float(cand.graph_score),
+                        "degree": int(cand.degree),
+                        "source_tags": sorted(str(x) for x in set(cand.source_tags or set())),
+                        "kmedoids_cost": float(medoid_diag.get("cost", 0.0)),
+                    },
+                )
+            )
+        seed_sets.append(seeds)
+
+    seed_rows = []
+    for sample_id, seeds in enumerate(seed_sets):
+        seed_rows.append(
+            {
+                "stage": "seed_set_candidate",
+                "sample_id": int(sample_id),
+                "seed_entity_ids": [str(s.entity_id) for s in seeds],
+                "seed_names": [str((universe_by_id.get(str(s.entity_id)) or EntityCandidate(str(s.entity_id), str(s.entity_id), None, None, 0.0, 0.0, 0, set())).name) for s in seeds],
+                "seed_mean_relevance": float(_mean([(universe_by_id.get(str(s.entity_id)).query_relevance if universe_by_id.get(str(s.entity_id)) else 0.0) for s in seeds])),
+                "seed_diversity": float(_seed_set_diversity(seeds, universe_by_id)),
+                "seed_avg_degree": float(_mean([(universe_by_id.get(str(s.entity_id)).degree if universe_by_id.get(str(s.entity_id)) else 0) for s in seeds])),
+                "seed_gold_hit_eval_only": False,
+            }
+        )
+    _LAST_DIAGNOSTICS["pamae_sampling"] = {
+        "stage": "pamae_sampling",
+        "k": int(k),
+        "sample_size": int(min(sample_size, len(universe))),
+        "num_samples": int(num_samples),
+        "sampling_mode": str(mode),
+        "sample_seed": int(seed),
+        "num_unique_sampled_entities": int(len(sampled_unique)),
+        "sampling_ms": float((time.perf_counter() - t_sampling) * 1000.0),
+        "kmedoids_ms": float(kmedoids_ms_total),
+    }
+    _LAST_DIAGNOSTICS["seed_set_candidates"] = seed_rows
+    return seed_sets
+
+
+def _seed_set_components(
+    seeds: Sequence[MedoidSeed],
+    universe: Sequence[EntityCandidate],
+    config: Any,
+) -> Dict[str, float]:
+    by_id = _candidate_by_id(universe)
+    seed_candidates = [by_id[str(s.entity_id)] for s in list(seeds or []) if str(s.entity_id) in by_id]
+    if not seed_candidates:
+        return {
+            "score": 0.0,
+            "mean_relevance": 0.0,
+            "coverage": 0.0,
+            "diversity": 0.0,
+            "hub_penalty": 0.0,
+        }
+    mean_relevance = _clip01(_mean([c.query_relevance for c in seed_candidates]))
+    weights = _normalize_weights([0.001 + max(0.0, c.query_relevance) for c in universe])
+    if weights is None:
+        weights = np.ones(len(universe), dtype=np.float64) / float(max(1, len(universe)))
+    min_dist = []
+    for cand in universe:
+        min_dist.append(min((_candidate_distance(cand, seed) for seed in seed_candidates), default=1.0))
+    weighted_avg_dist = float(np.dot(np.asarray(min_dist, dtype=np.float64), weights)) if min_dist else 1.0
+    coverage = _clip01(1.0 - min(1.0, weighted_avg_dist / 2.0))
+    diversity = _seed_set_diversity(list(seeds or []), by_id)
+    degree_cap = max(1, _safe_int(_cfg(config, "phase8_entity_degree_cap", 200), 200))
+    hub_penalty = _clip01(_mean([min(1.0, float(c.degree) / float(degree_cap)) for c in seed_candidates]))
+    score = float(mean_relevance + coverage + diversity - hub_penalty)
+    return {
+        "score": float(score),
+        "mean_relevance": float(mean_relevance),
+        "coverage": float(coverage),
+        "diversity": float(diversity),
+        "hub_penalty": float(hub_penalty),
+    }
+
+
+def select_best_seed_set(seed_sets, U_q, query_embedding, config) -> list[MedoidSeed]:
+    t0 = time.perf_counter()
+    universe = list(U_q or [])
+    candidate_sets = [list(s or []) for s in list(seed_sets or []) if list(s or [])]
+    if not candidate_sets:
+        _LAST_DIAGNOSTICS["best_seed_selection"] = {
+            "stage": "best_seed_selection",
+            "best_sample_id": -1,
+            "best_seed_entity_ids": [],
+            "best_seed_names": [],
+            "best_seed_score": 0.0,
+            "best_mean_relevance": 0.0,
+            "best_coverage": 0.0,
+            "best_diversity": 0.0,
+            "best_hub_penalty": 0.0,
+            "seed_gold_hit_eval_only": False,
+            "seed_evidence_gold_hit_eval_only": False,
+            "seed_selection_ms": float((time.perf_counter() - t0) * 1000.0),
+        }
+        return []
+    by_id = _candidate_by_id(universe)
+    scored: List[Tuple[float, int, List[MedoidSeed], Dict[str, float]]] = []
+    for idx, seeds in enumerate(candidate_sets):
+        comp = _seed_set_components(seeds, universe=universe, config=config)
+        scored.append((float(comp.get("score", 0.0)), int(idx), seeds, comp))
+    scored.sort(key=lambda row: (float(row[0]), -int(row[1])), reverse=True)
+    _score, best_idx, best, comp = scored[0]
+    best_out: List[MedoidSeed] = []
+    for seed in best:
+        diag = dict(seed.diagnostics or {})
+        diag.update(
+            {
+                "best_seed_set": True,
+                "best_seed_score": float(comp.get("score", 0.0)),
+                "best_mean_relevance": float(comp.get("mean_relevance", 0.0)),
+                "best_coverage": float(comp.get("coverage", 0.0)),
+                "best_diversity": float(comp.get("diversity", 0.0)),
+                "best_hub_penalty": float(comp.get("hub_penalty", 0.0)),
+            }
+        )
+        best_out.append(
+            MedoidSeed(
+                entity_id=str(seed.entity_id),
+                score=float(seed.score),
+                source_sample_id=int(seed.source_sample_id),
+                refined_from=seed.refined_from,
+                diagnostics=diag,
+            )
+        )
+    _LAST_DIAGNOSTICS["best_seed_selection"] = {
+        "stage": "best_seed_selection",
+        "best_sample_id": int(best_idx),
+        "best_seed_entity_ids": [str(s.entity_id) for s in best_out],
+        "best_seed_names": [str(by_id[str(s.entity_id)].name) for s in best_out if str(s.entity_id) in by_id],
+        "best_seed_score": float(comp.get("score", 0.0)),
+        "best_mean_relevance": float(comp.get("mean_relevance", 0.0)),
+        "best_coverage": float(comp.get("coverage", 0.0)),
+        "best_diversity": float(comp.get("diversity", 0.0)),
+        "best_hub_penalty": float(comp.get("hub_penalty", 0.0)),
+        "seed_gold_hit_eval_only": False,
+        "seed_evidence_gold_hit_eval_only": False,
+        "seed_selection_ms": float((time.perf_counter() - t0) * 1000.0),
+    }
+    return best_out
