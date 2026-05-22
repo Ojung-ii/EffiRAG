@@ -1,0 +1,314 @@
+{
+  "overall_verdict": {
+    "current_pamae_seed_k5_implementation": "reject as mainline",
+    "pamae_inspired_idea": "inconclusive",
+    "most_likely_root_cause": "implementation/integration failure in seed-to-evidence mapping, compounded by diagnostic logging mismatch for candidate oracle metrics",
+    "next_required_fix": "repair diagnostics first, then repair seed-to-evidence mapping; only then consider source-balanced plus PAMAE augmentation"
+  },
+  "runs": [
+    {
+      "dataset": "2wikimultihopqa",
+      "profile": "balanced_384_8",
+      "variant": "pamae_seed_k5",
+      "num_queries": 100,
+      "partial_run": false,
+      "u_q_miss": true,
+      "seed_selection_miss": true,
+      "refinement_drift": false,
+      "seed_to_evidence_miss": true,
+      "diagnostic_id_normalization_broken": true,
+      "phase8_replaced_source_balanced": true,
+      "generated_candidates_not_selected": false,
+      "largest_time_bottleneck": "entity_universe_ms",
+      "recommendation": "Fix seed-to-evidence mapping before any more full experiments"
+    },
+    {
+      "dataset": "2wikimultihopqa",
+      "profile": "balanced_384_8",
+      "variant": "pamae_seed_k5_refine",
+      "num_queries": 100,
+      "partial_run": false,
+      "u_q_miss": true,
+      "seed_selection_miss": true,
+      "refinement_drift": false,
+      "seed_to_evidence_miss": false,
+      "diagnostic_id_normalization_broken": true,
+      "phase8_replaced_source_balanced": true,
+      "generated_candidates_not_selected": false,
+      "largest_time_bottleneck": "evidence_proposal_ms",
+      "recommendation": "Fix U_q construction and gold-entity diagnostics"
+    },
+    {
+      "dataset": "2wikimultihopqa",
+      "profile": "balanced_384_8",
+      "variant": "source_balanced_128",
+      "num_queries": 100,
+      "partial_run": false,
+      "u_q_miss": false,
+      "seed_selection_miss": false,
+      "refinement_drift": false,
+      "seed_to_evidence_miss": false,
+      "diagnostic_id_normalization_broken": true,
+      "phase8_replaced_source_balanced": false,
+      "generated_candidates_not_selected": false,
+      "largest_time_bottleneck": "entity_universe_ms",
+      "recommendation": "Fix diagnostic id normalization"
+    },
+    {
+      "dataset": "2wikimultihopqa",
+      "profile": "legacy_512_10",
+      "variant": "pamae_seed_k5",
+      "num_queries": 100,
+      "partial_run": false,
+      "u_q_miss": true,
+      "seed_selection_miss": true,
+      "refinement_drift": false,
+      "seed_to_evidence_miss": true,
+      "diagnostic_id_normalization_broken": true,
+      "phase8_replaced_source_balanced": true,
+      "generated_candidates_not_selected": false,
+      "largest_time_bottleneck": "entity_universe_ms",
+      "recommendation": "Fix seed-to-evidence mapping before any more full experiments"
+    },
+    {
+      "dataset": "2wikimultihopqa",
+      "profile": "legacy_512_10",
+      "variant": "pamae_seed_k5_refine",
+      "num_queries": 100,
+      "partial_run": false,
+      "u_q_miss": true,
+      "seed_selection_miss": true,
+      "refinement_drift": false,
+      "seed_to_evidence_miss": false,
+      "diagnostic_id_normalization_broken": true,
+      "phase8_replaced_source_balanced": true,
+      "generated_candidates_not_selected": false,
+      "largest_time_bottleneck": "evidence_proposal_ms",
+      "recommendation": "Fix U_q construction and gold-entity diagnostics"
+    },
+    {
+      "dataset": "2wikimultihopqa",
+      "profile": "legacy_512_10",
+      "variant": "source_balanced_128",
+      "num_queries": 100,
+      "partial_run": false,
+      "u_q_miss": false,
+      "seed_selection_miss": false,
+      "refinement_drift": false,
+      "seed_to_evidence_miss": false,
+      "diagnostic_id_normalization_broken": true,
+      "phase8_replaced_source_balanced": false,
+      "generated_candidates_not_selected": false,
+      "largest_time_bottleneck": "entity_universe_ms",
+      "recommendation": "Fix diagnostic id normalization"
+    },
+    {
+      "dataset": "hotpotqa",
+      "profile": "balanced_384_8",
+      "variant": "pamae_seed_k5",
+      "num_queries": 100,
+      "partial_run": false,
+      "u_q_miss": true,
+      "seed_selection_miss": true,
+      "refinement_drift": false,
+      "seed_to_evidence_miss": true,
+      "diagnostic_id_normalization_broken": true,
+      "phase8_replaced_source_balanced": true,
+      "generated_candidates_not_selected": false,
+      "largest_time_bottleneck": "entity_universe_ms",
+      "recommendation": "Fix seed-to-evidence mapping before any more full experiments"
+    },
+    {
+      "dataset": "hotpotqa",
+      "profile": "balanced_384_8",
+      "variant": "pamae_seed_k5_refine",
+      "num_queries": 0,
+      "partial_run": true,
+      "u_q_miss": false,
+      "seed_selection_miss": false,
+      "refinement_drift": false,
+      "seed_to_evidence_miss": false,
+      "diagnostic_id_normalization_broken": false,
+      "phase8_replaced_source_balanced": true,
+      "generated_candidates_not_selected": false,
+      "largest_time_bottleneck": "entity_universe_ms",
+      "recommendation": "Partial run; do not interpret as evidence"
+    },
+    {
+      "dataset": "hotpotqa",
+      "profile": "balanced_384_8",
+      "variant": "source_balanced_128",
+      "num_queries": 100,
+      "partial_run": false,
+      "u_q_miss": false,
+      "seed_selection_miss": false,
+      "refinement_drift": false,
+      "seed_to_evidence_miss": false,
+      "diagnostic_id_normalization_broken": true,
+      "phase8_replaced_source_balanced": false,
+      "generated_candidates_not_selected": false,
+      "largest_time_bottleneck": "entity_universe_ms",
+      "recommendation": "Fix diagnostic id normalization"
+    },
+    {
+      "dataset": "hotpotqa",
+      "profile": "legacy_512_10",
+      "variant": "pamae_seed_k5",
+      "num_queries": 100,
+      "partial_run": false,
+      "u_q_miss": true,
+      "seed_selection_miss": true,
+      "refinement_drift": false,
+      "seed_to_evidence_miss": true,
+      "diagnostic_id_normalization_broken": true,
+      "phase8_replaced_source_balanced": true,
+      "generated_candidates_not_selected": false,
+      "largest_time_bottleneck": "entity_universe_ms",
+      "recommendation": "Fix seed-to-evidence mapping before any more full experiments"
+    },
+    {
+      "dataset": "hotpotqa",
+      "profile": "legacy_512_10",
+      "variant": "pamae_seed_k5_refine",
+      "num_queries": 1,
+      "partial_run": true,
+      "u_q_miss": false,
+      "seed_selection_miss": false,
+      "refinement_drift": false,
+      "seed_to_evidence_miss": false,
+      "diagnostic_id_normalization_broken": false,
+      "phase8_replaced_source_balanced": true,
+      "generated_candidates_not_selected": false,
+      "largest_time_bottleneck": "evidence_proposal_ms",
+      "recommendation": "Partial run; do not interpret as evidence"
+    },
+    {
+      "dataset": "hotpotqa",
+      "profile": "legacy_512_10",
+      "variant": "source_balanced_128",
+      "num_queries": 100,
+      "partial_run": false,
+      "u_q_miss": false,
+      "seed_selection_miss": false,
+      "refinement_drift": false,
+      "seed_to_evidence_miss": false,
+      "diagnostic_id_normalization_broken": true,
+      "phase8_replaced_source_balanced": false,
+      "generated_candidates_not_selected": false,
+      "largest_time_bottleneck": "entity_universe_ms",
+      "recommendation": "Fix diagnostic id normalization"
+    }
+  ],
+  "decision_table": [
+    {
+      "Condition": "2wikimultihopqa/balanced_384_8 Phase8 candidates miss gold evidence",
+      "Evidence": "Final evidence candidates exist, but candidate_gold_recall remains near zero.",
+      "Recommended action": "Fix seed-to-evidence mapping; inspect entity-id to sentence/carrier joins."
+    },
+    {
+      "Condition": "2wikimultihopqa/balanced_384_8 U_q gold hit near zero",
+      "Evidence": "Large entity universe with zero eval-only gold entity hit.",
+      "Recommended action": "Check U_q construction and gold-entity diagnostic mapping."
+    },
+    {
+      "Condition": "2wikimultihopqa/balanced_384_8 runtime bottleneck",
+      "Evidence": "Largest Phase8 stage is entity_universe_ms.",
+      "Recommended action": "Optimize entity_universe_ms after correctness is repaired."
+    },
+    {
+      "Condition": "2wikimultihopqa/balanced_384_8 U_q gold hit near zero",
+      "Evidence": "Large entity universe with zero eval-only gold entity hit.",
+      "Recommended action": "Check U_q construction and gold-entity diagnostic mapping."
+    },
+    {
+      "Condition": "2wikimultihopqa/balanced_384_8 runtime bottleneck",
+      "Evidence": "Largest Phase8 stage is evidence_proposal_ms.",
+      "Recommended action": "Optimize evidence_proposal_ms after correctness is repaired."
+    },
+    {
+      "Condition": "2wikimultihopqa/balanced_384_8 source-balanced oracle appears zero in phase8 trace",
+      "Evidence": "Phase7 candidate recall is nonzero but phase8_query_trace logs zero.",
+      "Recommended action": "Fix diagnostic id normalization/logging; do not treat source-balanced oracle as zero."
+    },
+    {
+      "Condition": "2wikimultihopqa/legacy_512_10 Phase8 candidates miss gold evidence",
+      "Evidence": "Final evidence candidates exist, but candidate_gold_recall remains near zero.",
+      "Recommended action": "Fix seed-to-evidence mapping; inspect entity-id to sentence/carrier joins."
+    },
+    {
+      "Condition": "2wikimultihopqa/legacy_512_10 U_q gold hit near zero",
+      "Evidence": "Large entity universe with zero eval-only gold entity hit.",
+      "Recommended action": "Check U_q construction and gold-entity diagnostic mapping."
+    },
+    {
+      "Condition": "2wikimultihopqa/legacy_512_10 runtime bottleneck",
+      "Evidence": "Largest Phase8 stage is entity_universe_ms.",
+      "Recommended action": "Optimize entity_universe_ms after correctness is repaired."
+    },
+    {
+      "Condition": "2wikimultihopqa/legacy_512_10 U_q gold hit near zero",
+      "Evidence": "Large entity universe with zero eval-only gold entity hit.",
+      "Recommended action": "Check U_q construction and gold-entity diagnostic mapping."
+    },
+    {
+      "Condition": "2wikimultihopqa/legacy_512_10 runtime bottleneck",
+      "Evidence": "Largest Phase8 stage is evidence_proposal_ms.",
+      "Recommended action": "Optimize evidence_proposal_ms after correctness is repaired."
+    },
+    {
+      "Condition": "2wikimultihopqa/legacy_512_10 source-balanced oracle appears zero in phase8 trace",
+      "Evidence": "Phase7 candidate recall is nonzero but phase8_query_trace logs zero.",
+      "Recommended action": "Fix diagnostic id normalization/logging; do not treat source-balanced oracle as zero."
+    },
+    {
+      "Condition": "hotpotqa/balanced_384_8 Phase8 candidates miss gold evidence",
+      "Evidence": "Final evidence candidates exist, but candidate_gold_recall remains near zero.",
+      "Recommended action": "Fix seed-to-evidence mapping; inspect entity-id to sentence/carrier joins."
+    },
+    {
+      "Condition": "hotpotqa/balanced_384_8 U_q gold hit near zero",
+      "Evidence": "Large entity universe with zero eval-only gold entity hit.",
+      "Recommended action": "Check U_q construction and gold-entity diagnostic mapping."
+    },
+    {
+      "Condition": "hotpotqa/balanced_384_8 runtime bottleneck",
+      "Evidence": "Largest Phase8 stage is entity_universe_ms.",
+      "Recommended action": "Optimize entity_universe_ms after correctness is repaired."
+    },
+    {
+      "Condition": "hotpotqa/balanced_384_8/pamae_seed_k5_refine partial run",
+      "Evidence": "Only 0 query rows are available.",
+      "Recommended action": "Do not use this run for method conclusions."
+    },
+    {
+      "Condition": "hotpotqa/balanced_384_8 source-balanced oracle appears zero in phase8 trace",
+      "Evidence": "Phase7 candidate recall is nonzero but phase8_query_trace logs zero.",
+      "Recommended action": "Fix diagnostic id normalization/logging; do not treat source-balanced oracle as zero."
+    },
+    {
+      "Condition": "hotpotqa/legacy_512_10 Phase8 candidates miss gold evidence",
+      "Evidence": "Final evidence candidates exist, but candidate_gold_recall remains near zero.",
+      "Recommended action": "Fix seed-to-evidence mapping; inspect entity-id to sentence/carrier joins."
+    },
+    {
+      "Condition": "hotpotqa/legacy_512_10 U_q gold hit near zero",
+      "Evidence": "Large entity universe with zero eval-only gold entity hit.",
+      "Recommended action": "Check U_q construction and gold-entity diagnostic mapping."
+    },
+    {
+      "Condition": "hotpotqa/legacy_512_10 runtime bottleneck",
+      "Evidence": "Largest Phase8 stage is entity_universe_ms.",
+      "Recommended action": "Optimize entity_universe_ms after correctness is repaired."
+    },
+    {
+      "Condition": "hotpotqa/legacy_512_10/pamae_seed_k5_refine partial run",
+      "Evidence": "Only 1 query rows are available.",
+      "Recommended action": "Do not use this run for method conclusions."
+    },
+    {
+      "Condition": "hotpotqa/legacy_512_10 source-balanced oracle appears zero in phase8 trace",
+      "Evidence": "Phase7 candidate recall is nonzero but phase8_query_trace logs zero.",
+      "Recommended action": "Fix diagnostic id normalization/logging; do not treat source-balanced oracle as zero."
+    }
+  ]
+}

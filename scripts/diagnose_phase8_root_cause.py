@@ -36,6 +36,16 @@ def _answer_bool(value: bool) -> str:
 def _verdict_for(key: tuple[str, str, str], entity: Dict[str, Any], seed: Dict[str, Any], evidence: Dict[str, Any], timing: Dict[str, Any], idnorm: Dict[str, Any]) -> Dict[str, Any]:
     dataset, profile, variant = key
     is_pamae = variant.startswith("pamae")
+    num_queries = int(
+        max(
+            safe_float(entity.get("num_queries", 0.0), 0.0),
+            safe_float(seed.get("num_queries", 0.0), 0.0),
+            safe_float(evidence.get("num_queries", 0.0), 0.0),
+            safe_float(timing.get("num_queries", 0.0), 0.0),
+            safe_float(idnorm.get("num_queries", 0.0), 0.0),
+        )
+    )
+    partial_run = num_queries < 10
     uq_miss = is_pamae and safe_float(entity.get("gold_entity_hit_rate_eval_only", 0.0), 0.0) <= 0.01
     seed_miss = is_pamae and safe_float(seed.get("seed_gold_hit_rate_eval_only", 0.0), 0.0) <= 0.01
     evidence_miss = is_pamae and safe_float(evidence.get("num_final_evidence_candidates_mean", 0.0), 0.0) > 0.0 and safe_float(evidence.get("candidate_gold_recall_mean_eval_only", 0.0), 0.0) <= 0.10
@@ -45,7 +55,14 @@ def _verdict_for(key: tuple[str, str, str], entity: Dict[str, Any], seed: Dict[s
     replacement = is_pamae and "pamae" in variant and safe_float(evidence.get("selected_pamae_source_rate", 0.0), 0.0) >= 0.0
     largest_stage = str(timing.get("largest_phase8_stage", ""))
     recommendation = "Stop Phase8 and keep Phase7 source-balanced"
-    if diag_broken and not is_pamae:
+    if partial_run:
+        recommendation = "Partial run; do not interpret as evidence"
+        uq_miss = False
+        seed_miss = False
+        evidence_miss = False
+        selection_miss = False
+        refinement_drift = False
+    elif diag_broken and not is_pamae:
         recommendation = "Fix diagnostic id normalization"
     elif evidence_miss:
         recommendation = "Fix seed-to-evidence mapping before any more full experiments"
@@ -59,6 +76,8 @@ def _verdict_for(key: tuple[str, str, str], entity: Dict[str, Any], seed: Dict[s
         "dataset": dataset,
         "profile": profile,
         "variant": variant,
+        "num_queries": num_queries,
+        "partial_run": partial_run,
         "u_q_miss": uq_miss,
         "seed_selection_miss": seed_miss,
         "refinement_drift": refinement_drift,
@@ -98,6 +117,15 @@ def main() -> int:
 
     decision_table = []
     for v in verdicts:
+        if v.get("partial_run"):
+            decision_table.append(
+                {
+                    "Condition": f"{v['dataset']}/{v['profile']}/{v['variant']} partial run",
+                    "Evidence": f"Only {v['num_queries']} query rows are available.",
+                    "Recommended action": "Do not use this run for method conclusions.",
+                }
+            )
+            continue
         if v["variant"] == "source_balanced_128":
             if v["diagnostic_id_normalization_broken"]:
                 decision_table.append(
@@ -146,6 +174,8 @@ def main() -> int:
         "dataset",
         "profile",
         "variant",
+        "num_queries",
+        "partial_run",
         "u_q_miss",
         "seed_selection_miss",
         "refinement_drift",

@@ -1,0 +1,288 @@
+{
+  "runs": [
+    {
+      "dataset": "2wikimultihopqa",
+      "profile": "balanced_384_8",
+      "variant": "pamae_seed_k5",
+      "num_queries": 100,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/balanced_384_8/pamae_seed_k5/2wikimultihopqa": []
+      },
+      "entity_universe_size_mean": 2000.0,
+      "entity_universe_size_p50": 2000.0,
+      "entity_universe_size_p95": 2000.0,
+      "avg_query_relevance_mean": 0.7376302264009417,
+      "max_query_relevance_mean": 0.9941030672192573,
+      "avg_entity_degree_mean": 11.308465000000002,
+      "num_high_degree_filtered_mean": 394.7,
+      "num_gold_entities_in_universe_eval_only_mean": 0.0,
+      "num_semantic_entities_mean": 2000.0,
+      "num_title_lookup_entities_mean": 6.68,
+      "num_graph_flow_entities_mean": 1829.47,
+      "num_source_balanced_entities_mean": 1219.96,
+      "gold_entity_hit_rate_eval_only": 0.0,
+      "interpretation": "U_q is broad but eval-only gold entity hit is near zero; U_q construction or gold-entity diagnostic mapping is a primary suspect."
+    },
+    {
+      "dataset": "2wikimultihopqa",
+      "profile": "balanced_384_8",
+      "variant": "pamae_seed_k5_refine",
+      "num_queries": 100,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/balanced_384_8/pamae_seed_k5_refine/2wikimultihopqa": []
+      },
+      "entity_universe_size_mean": 2000.0,
+      "entity_universe_size_p50": 2000.0,
+      "entity_universe_size_p95": 2000.0,
+      "avg_query_relevance_mean": 0.7376302264009417,
+      "max_query_relevance_mean": 0.9941030672192573,
+      "avg_entity_degree_mean": 11.308465000000002,
+      "num_high_degree_filtered_mean": 394.7,
+      "num_gold_entities_in_universe_eval_only_mean": 0.0,
+      "num_semantic_entities_mean": 2000.0,
+      "num_title_lookup_entities_mean": 6.68,
+      "num_graph_flow_entities_mean": 1829.47,
+      "num_source_balanced_entities_mean": 1219.96,
+      "gold_entity_hit_rate_eval_only": 0.0,
+      "interpretation": "U_q is broad but eval-only gold entity hit is near zero; U_q construction or gold-entity diagnostic mapping is a primary suspect."
+    },
+    {
+      "dataset": "2wikimultihopqa",
+      "profile": "balanced_384_8",
+      "variant": "source_balanced_128",
+      "num_queries": 100,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/balanced_384_8/source_balanced_128/2wikimultihopqa": []
+      },
+      "entity_universe_size_mean": 0.0,
+      "entity_universe_size_p50": 0.0,
+      "entity_universe_size_p95": 0.0,
+      "avg_query_relevance_mean": 0.0,
+      "max_query_relevance_mean": 0.0,
+      "avg_entity_degree_mean": 0.0,
+      "num_high_degree_filtered_mean": 0.0,
+      "num_gold_entities_in_universe_eval_only_mean": 0.0,
+      "num_semantic_entities_mean": 0.0,
+      "num_title_lookup_entities_mean": 0.0,
+      "num_graph_flow_entities_mean": 0.0,
+      "num_source_balanced_entities_mean": 0.0,
+      "gold_entity_hit_rate_eval_only": 0.0,
+      "interpretation": "Phase8 disabled baseline; U_q is not expected."
+    },
+    {
+      "dataset": "2wikimultihopqa",
+      "profile": "legacy_512_10",
+      "variant": "pamae_seed_k5",
+      "num_queries": 100,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/legacy_512_10/pamae_seed_k5/2wikimultihopqa": []
+      },
+      "entity_universe_size_mean": 2000.0,
+      "entity_universe_size_p50": 2000.0,
+      "entity_universe_size_p95": 2000.0,
+      "avg_query_relevance_mean": 0.7376302264009417,
+      "max_query_relevance_mean": 0.9941030672192573,
+      "avg_entity_degree_mean": 11.308465000000002,
+      "num_high_degree_filtered_mean": 394.7,
+      "num_gold_entities_in_universe_eval_only_mean": 0.0,
+      "num_semantic_entities_mean": 2000.0,
+      "num_title_lookup_entities_mean": 6.68,
+      "num_graph_flow_entities_mean": 1829.47,
+      "num_source_balanced_entities_mean": 1219.96,
+      "gold_entity_hit_rate_eval_only": 0.0,
+      "interpretation": "U_q is broad but eval-only gold entity hit is near zero; U_q construction or gold-entity diagnostic mapping is a primary suspect."
+    },
+    {
+      "dataset": "2wikimultihopqa",
+      "profile": "legacy_512_10",
+      "variant": "pamae_seed_k5_refine",
+      "num_queries": 100,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/legacy_512_10/pamae_seed_k5_refine/2wikimultihopqa": []
+      },
+      "entity_universe_size_mean": 2000.0,
+      "entity_universe_size_p50": 2000.0,
+      "entity_universe_size_p95": 2000.0,
+      "avg_query_relevance_mean": 0.7376302264009417,
+      "max_query_relevance_mean": 0.9941030672192573,
+      "avg_entity_degree_mean": 11.308465000000002,
+      "num_high_degree_filtered_mean": 394.7,
+      "num_gold_entities_in_universe_eval_only_mean": 0.0,
+      "num_semantic_entities_mean": 2000.0,
+      "num_title_lookup_entities_mean": 6.68,
+      "num_graph_flow_entities_mean": 1829.47,
+      "num_source_balanced_entities_mean": 1219.96,
+      "gold_entity_hit_rate_eval_only": 0.0,
+      "interpretation": "U_q is broad but eval-only gold entity hit is near zero; U_q construction or gold-entity diagnostic mapping is a primary suspect."
+    },
+    {
+      "dataset": "2wikimultihopqa",
+      "profile": "legacy_512_10",
+      "variant": "source_balanced_128",
+      "num_queries": 100,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/legacy_512_10/source_balanced_128/2wikimultihopqa": []
+      },
+      "entity_universe_size_mean": 0.0,
+      "entity_universe_size_p50": 0.0,
+      "entity_universe_size_p95": 0.0,
+      "avg_query_relevance_mean": 0.0,
+      "max_query_relevance_mean": 0.0,
+      "avg_entity_degree_mean": 0.0,
+      "num_high_degree_filtered_mean": 0.0,
+      "num_gold_entities_in_universe_eval_only_mean": 0.0,
+      "num_semantic_entities_mean": 0.0,
+      "num_title_lookup_entities_mean": 0.0,
+      "num_graph_flow_entities_mean": 0.0,
+      "num_source_balanced_entities_mean": 0.0,
+      "gold_entity_hit_rate_eval_only": 0.0,
+      "interpretation": "Phase8 disabled baseline; U_q is not expected."
+    },
+    {
+      "dataset": "hotpotqa",
+      "profile": "balanced_384_8",
+      "variant": "pamae_seed_k5",
+      "num_queries": 100,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/balanced_384_8/pamae_seed_k5/hotpotqa": []
+      },
+      "entity_universe_size_mean": 2000.0,
+      "entity_universe_size_p50": 2000.0,
+      "entity_universe_size_p95": 2000.0,
+      "avg_query_relevance_mean": 0.7302718769366666,
+      "max_query_relevance_mean": 1.0,
+      "avg_entity_degree_mean": 12.595025,
+      "num_high_degree_filtered_mean": 616.69,
+      "num_gold_entities_in_universe_eval_only_mean": 0.0,
+      "num_semantic_entities_mean": 2000.0,
+      "num_title_lookup_entities_mean": 9.72,
+      "num_graph_flow_entities_mean": 1730.45,
+      "num_source_balanced_entities_mean": 1306.25,
+      "gold_entity_hit_rate_eval_only": 0.0,
+      "interpretation": "U_q is broad but eval-only gold entity hit is near zero; U_q construction or gold-entity diagnostic mapping is a primary suspect."
+    },
+    {
+      "dataset": "hotpotqa",
+      "profile": "balanced_384_8",
+      "variant": "pamae_seed_k5_refine",
+      "num_queries": 0,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/balanced_384_8/pamae_seed_k5_refine/hotpotqa": [
+          "rag_summary.json",
+          "phase8_query_trace.jsonl",
+          "phase8_seed_trace.jsonl",
+          "phase8_evidence_trace.jsonl",
+          "phase8_stage_timing.jsonl"
+        ]
+      },
+      "entity_universe_size_mean": 0.0,
+      "entity_universe_size_p50": 0.0,
+      "entity_universe_size_p95": 0.0,
+      "avg_query_relevance_mean": 0.0,
+      "max_query_relevance_mean": 0.0,
+      "avg_entity_degree_mean": 0.0,
+      "num_high_degree_filtered_mean": 0.0,
+      "num_gold_entities_in_universe_eval_only_mean": 0.0,
+      "num_semantic_entities_mean": 0.0,
+      "num_title_lookup_entities_mean": 0.0,
+      "num_graph_flow_entities_mean": 0.0,
+      "num_source_balanced_entities_mean": 0.0,
+      "gold_entity_hit_rate_eval_only": 0.0,
+      "interpretation": "U_q was not built or was not logged."
+    },
+    {
+      "dataset": "hotpotqa",
+      "profile": "balanced_384_8",
+      "variant": "source_balanced_128",
+      "num_queries": 100,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/balanced_384_8/source_balanced_128/hotpotqa": []
+      },
+      "entity_universe_size_mean": 0.0,
+      "entity_universe_size_p50": 0.0,
+      "entity_universe_size_p95": 0.0,
+      "avg_query_relevance_mean": 0.0,
+      "max_query_relevance_mean": 0.0,
+      "avg_entity_degree_mean": 0.0,
+      "num_high_degree_filtered_mean": 0.0,
+      "num_gold_entities_in_universe_eval_only_mean": 0.0,
+      "num_semantic_entities_mean": 0.0,
+      "num_title_lookup_entities_mean": 0.0,
+      "num_graph_flow_entities_mean": 0.0,
+      "num_source_balanced_entities_mean": 0.0,
+      "gold_entity_hit_rate_eval_only": 0.0,
+      "interpretation": "Phase8 disabled baseline; U_q is not expected."
+    },
+    {
+      "dataset": "hotpotqa",
+      "profile": "legacy_512_10",
+      "variant": "pamae_seed_k5",
+      "num_queries": 100,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/legacy_512_10/pamae_seed_k5/hotpotqa": []
+      },
+      "entity_universe_size_mean": 2000.0,
+      "entity_universe_size_p50": 2000.0,
+      "entity_universe_size_p95": 2000.0,
+      "avg_query_relevance_mean": 0.7302718769366666,
+      "max_query_relevance_mean": 1.0,
+      "avg_entity_degree_mean": 12.595025,
+      "num_high_degree_filtered_mean": 616.69,
+      "num_gold_entities_in_universe_eval_only_mean": 0.0,
+      "num_semantic_entities_mean": 2000.0,
+      "num_title_lookup_entities_mean": 9.72,
+      "num_graph_flow_entities_mean": 1730.45,
+      "num_source_balanced_entities_mean": 1306.25,
+      "gold_entity_hit_rate_eval_only": 0.0,
+      "interpretation": "U_q is broad but eval-only gold entity hit is near zero; U_q construction or gold-entity diagnostic mapping is a primary suspect."
+    },
+    {
+      "dataset": "hotpotqa",
+      "profile": "legacy_512_10",
+      "variant": "pamae_seed_k5_refine",
+      "num_queries": 1,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/legacy_512_10/pamae_seed_k5_refine/hotpotqa": [
+          "rag_summary.json"
+        ]
+      },
+      "entity_universe_size_mean": 2000.0,
+      "entity_universe_size_p50": 2000.0,
+      "entity_universe_size_p95": 2000.0,
+      "avg_query_relevance_mean": 0.7749295637607575,
+      "max_query_relevance_mean": 1.0,
+      "avg_entity_degree_mean": 9.923,
+      "num_high_degree_filtered_mean": 772.0,
+      "num_gold_entities_in_universe_eval_only_mean": 0.0,
+      "num_semantic_entities_mean": 2000.0,
+      "num_title_lookup_entities_mean": 4.0,
+      "num_graph_flow_entities_mean": 2000.0,
+      "num_source_balanced_entities_mean": 1686.0,
+      "gold_entity_hit_rate_eval_only": 0.0,
+      "interpretation": "U_q is broad but eval-only gold entity hit is near zero; U_q construction or gold-entity diagnostic mapping is a primary suspect."
+    },
+    {
+      "dataset": "hotpotqa",
+      "profile": "legacy_512_10",
+      "variant": "source_balanced_128",
+      "num_queries": 100,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/legacy_512_10/source_balanced_128/hotpotqa": []
+      },
+      "entity_universe_size_mean": 0.0,
+      "entity_universe_size_p50": 0.0,
+      "entity_universe_size_p95": 0.0,
+      "avg_query_relevance_mean": 0.0,
+      "max_query_relevance_mean": 0.0,
+      "avg_entity_degree_mean": 0.0,
+      "num_high_degree_filtered_mean": 0.0,
+      "num_gold_entities_in_universe_eval_only_mean": 0.0,
+      "num_semantic_entities_mean": 0.0,
+      "num_title_lookup_entities_mean": 0.0,
+      "num_graph_flow_entities_mean": 0.0,
+      "num_source_balanced_entities_mean": 0.0,
+      "gold_entity_hit_rate_eval_only": 0.0,
+      "interpretation": "Phase8 disabled baseline; U_q is not expected."
+    }
+  ]
+}

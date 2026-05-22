@@ -1,0 +1,884 @@
+{
+  "runs": [
+    {
+      "dataset": "2wikimultihopqa",
+      "profile": "balanced_384_8",
+      "variant": "pamae_seed_k5",
+      "num_queries": 100,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/balanced_384_8/pamae_seed_k5/2wikimultihopqa": []
+      },
+      "k": 5.0,
+      "sample_size": 200.0,
+      "num_samples": 5.0,
+      "best_seed_score_mean": 1.7340428017509817,
+      "best_seed_relevance_mean": 0.7499576979279519,
+      "best_seed_coverage_mean": 0.8753484239257214,
+      "best_seed_diversity_mean": 0.14487667989730835,
+      "best_seed_hub_penalty_mean": 0.036140000000000005,
+      "seed_gold_hit_rate_eval_only": 0.0,
+      "seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "num_refined_seeds_mean": 5.0,
+      "num_changed_seeds_mean": 0.0,
+      "changed_seed_rate": 0.0,
+      "before_seed_gold_hit_rate_eval_only": 0.0,
+      "after_seed_gold_hit_rate_eval_only": 0.0,
+      "before_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "after_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "interpretation": "Best medoid seeds rarely hit eval-only gold entities; seed selection or U_q/gold mapping is failing."
+    },
+    {
+      "dataset": "2wikimultihopqa",
+      "profile": "balanced_384_8",
+      "variant": "pamae_seed_k5_refine",
+      "num_queries": 100,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/balanced_384_8/pamae_seed_k5_refine/2wikimultihopqa": []
+      },
+      "k": 5.0,
+      "sample_size": 200.0,
+      "num_samples": 5.0,
+      "best_seed_score_mean": 1.7340428017509817,
+      "best_seed_relevance_mean": 0.7499576979279519,
+      "best_seed_coverage_mean": 0.8753484239257214,
+      "best_seed_diversity_mean": 0.14487667989730835,
+      "best_seed_hub_penalty_mean": 0.036140000000000005,
+      "seed_gold_hit_rate_eval_only": 0.0,
+      "seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "num_refined_seeds_mean": 5.0,
+      "num_changed_seeds_mean": 4.99,
+      "changed_seed_rate": 1.0,
+      "before_seed_gold_hit_rate_eval_only": 0.0,
+      "after_seed_gold_hit_rate_eval_only": 0.0,
+      "before_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "after_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "interpretation": "Best medoid seeds rarely hit eval-only gold entities; seed selection or U_q/gold mapping is failing."
+    },
+    {
+      "dataset": "2wikimultihopqa",
+      "profile": "balanced_384_8",
+      "variant": "source_balanced_128",
+      "num_queries": 100,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/balanced_384_8/source_balanced_128/2wikimultihopqa": []
+      },
+      "k": 0.0,
+      "sample_size": 0.0,
+      "num_samples": 0.0,
+      "best_seed_score_mean": 0.0,
+      "best_seed_relevance_mean": 0.0,
+      "best_seed_coverage_mean": 0.0,
+      "best_seed_diversity_mean": 0.0,
+      "best_seed_hub_penalty_mean": 0.0,
+      "seed_gold_hit_rate_eval_only": 0.0,
+      "seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "num_refined_seeds_mean": 0.0,
+      "num_changed_seeds_mean": 0.0,
+      "changed_seed_rate": 0.0,
+      "before_seed_gold_hit_rate_eval_only": 0.0,
+      "after_seed_gold_hit_rate_eval_only": 0.0,
+      "before_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "after_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "interpretation": "Phase8 disabled baseline; seed quality is not applicable."
+    },
+    {
+      "dataset": "2wikimultihopqa",
+      "profile": "legacy_512_10",
+      "variant": "pamae_seed_k5",
+      "num_queries": 100,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/legacy_512_10/pamae_seed_k5/2wikimultihopqa": []
+      },
+      "k": 5.0,
+      "sample_size": 200.0,
+      "num_samples": 5.0,
+      "best_seed_score_mean": 1.7340428017509817,
+      "best_seed_relevance_mean": 0.7499576979279519,
+      "best_seed_coverage_mean": 0.8753484239257214,
+      "best_seed_diversity_mean": 0.14487667989730835,
+      "best_seed_hub_penalty_mean": 0.036140000000000005,
+      "seed_gold_hit_rate_eval_only": 0.0,
+      "seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "num_refined_seeds_mean": 5.0,
+      "num_changed_seeds_mean": 0.0,
+      "changed_seed_rate": 0.0,
+      "before_seed_gold_hit_rate_eval_only": 0.0,
+      "after_seed_gold_hit_rate_eval_only": 0.0,
+      "before_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "after_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "interpretation": "Best medoid seeds rarely hit eval-only gold entities; seed selection or U_q/gold mapping is failing."
+    },
+    {
+      "dataset": "2wikimultihopqa",
+      "profile": "legacy_512_10",
+      "variant": "pamae_seed_k5_refine",
+      "num_queries": 100,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/legacy_512_10/pamae_seed_k5_refine/2wikimultihopqa": []
+      },
+      "k": 5.0,
+      "sample_size": 200.0,
+      "num_samples": 5.0,
+      "best_seed_score_mean": 1.7340428017509817,
+      "best_seed_relevance_mean": 0.7499576979279519,
+      "best_seed_coverage_mean": 0.8753484239257214,
+      "best_seed_diversity_mean": 0.14487667989730835,
+      "best_seed_hub_penalty_mean": 0.036140000000000005,
+      "seed_gold_hit_rate_eval_only": 0.0,
+      "seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "num_refined_seeds_mean": 5.0,
+      "num_changed_seeds_mean": 4.99,
+      "changed_seed_rate": 1.0,
+      "before_seed_gold_hit_rate_eval_only": 0.0,
+      "after_seed_gold_hit_rate_eval_only": 0.0,
+      "before_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "after_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "interpretation": "Best medoid seeds rarely hit eval-only gold entities; seed selection or U_q/gold mapping is failing."
+    },
+    {
+      "dataset": "2wikimultihopqa",
+      "profile": "legacy_512_10",
+      "variant": "source_balanced_128",
+      "num_queries": 100,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/legacy_512_10/source_balanced_128/2wikimultihopqa": []
+      },
+      "k": 0.0,
+      "sample_size": 0.0,
+      "num_samples": 0.0,
+      "best_seed_score_mean": 0.0,
+      "best_seed_relevance_mean": 0.0,
+      "best_seed_coverage_mean": 0.0,
+      "best_seed_diversity_mean": 0.0,
+      "best_seed_hub_penalty_mean": 0.0,
+      "seed_gold_hit_rate_eval_only": 0.0,
+      "seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "num_refined_seeds_mean": 0.0,
+      "num_changed_seeds_mean": 0.0,
+      "changed_seed_rate": 0.0,
+      "before_seed_gold_hit_rate_eval_only": 0.0,
+      "after_seed_gold_hit_rate_eval_only": 0.0,
+      "before_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "after_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "interpretation": "Phase8 disabled baseline; seed quality is not applicable."
+    },
+    {
+      "dataset": "hotpotqa",
+      "profile": "balanced_384_8",
+      "variant": "pamae_seed_k5",
+      "num_queries": 100,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/balanced_384_8/pamae_seed_k5/hotpotqa": []
+      },
+      "k": 5.0,
+      "sample_size": 200.0,
+      "num_samples": 5.0,
+      "best_seed_score_mean": 1.7270369173699205,
+      "best_seed_relevance_mean": 0.7444915697425604,
+      "best_seed_coverage_mean": 0.8703101144840901,
+      "best_seed_diversity_mean": 0.15405523314327002,
+      "best_seed_hub_penalty_mean": 0.04182,
+      "seed_gold_hit_rate_eval_only": 0.0,
+      "seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "num_refined_seeds_mean": 5.0,
+      "num_changed_seeds_mean": 0.0,
+      "changed_seed_rate": 0.0,
+      "before_seed_gold_hit_rate_eval_only": 0.0,
+      "after_seed_gold_hit_rate_eval_only": 0.0,
+      "before_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "after_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "interpretation": "Best medoid seeds rarely hit eval-only gold entities; seed selection or U_q/gold mapping is failing."
+    },
+    {
+      "dataset": "hotpotqa",
+      "profile": "balanced_384_8",
+      "variant": "pamae_seed_k5_refine",
+      "num_queries": 0,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/balanced_384_8/pamae_seed_k5_refine/hotpotqa": [
+          "rag_summary.json",
+          "phase8_query_trace.jsonl",
+          "phase8_seed_trace.jsonl",
+          "phase8_evidence_trace.jsonl",
+          "phase8_stage_timing.jsonl"
+        ]
+      },
+      "k": 0.0,
+      "sample_size": 0.0,
+      "num_samples": 0.0,
+      "best_seed_score_mean": 0.0,
+      "best_seed_relevance_mean": 0.0,
+      "best_seed_coverage_mean": 0.0,
+      "best_seed_diversity_mean": 0.0,
+      "best_seed_hub_penalty_mean": 0.0,
+      "seed_gold_hit_rate_eval_only": 0.0,
+      "seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "num_refined_seeds_mean": 0.0,
+      "num_changed_seeds_mean": 0.0,
+      "changed_seed_rate": 0.0,
+      "before_seed_gold_hit_rate_eval_only": 0.0,
+      "after_seed_gold_hit_rate_eval_only": 0.0,
+      "before_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "after_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "interpretation": "Best medoid seeds rarely hit eval-only gold entities; seed selection or U_q/gold mapping is failing."
+    },
+    {
+      "dataset": "hotpotqa",
+      "profile": "balanced_384_8",
+      "variant": "source_balanced_128",
+      "num_queries": 100,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/balanced_384_8/source_balanced_128/hotpotqa": []
+      },
+      "k": 0.0,
+      "sample_size": 0.0,
+      "num_samples": 0.0,
+      "best_seed_score_mean": 0.0,
+      "best_seed_relevance_mean": 0.0,
+      "best_seed_coverage_mean": 0.0,
+      "best_seed_diversity_mean": 0.0,
+      "best_seed_hub_penalty_mean": 0.0,
+      "seed_gold_hit_rate_eval_only": 0.0,
+      "seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "num_refined_seeds_mean": 0.0,
+      "num_changed_seeds_mean": 0.0,
+      "changed_seed_rate": 0.0,
+      "before_seed_gold_hit_rate_eval_only": 0.0,
+      "after_seed_gold_hit_rate_eval_only": 0.0,
+      "before_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "after_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "interpretation": "Phase8 disabled baseline; seed quality is not applicable."
+    },
+    {
+      "dataset": "hotpotqa",
+      "profile": "legacy_512_10",
+      "variant": "pamae_seed_k5",
+      "num_queries": 100,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/legacy_512_10/pamae_seed_k5/hotpotqa": []
+      },
+      "k": 5.0,
+      "sample_size": 200.0,
+      "num_samples": 5.0,
+      "best_seed_score_mean": 1.7270369173699205,
+      "best_seed_relevance_mean": 0.7444915697425604,
+      "best_seed_coverage_mean": 0.8703101144840901,
+      "best_seed_diversity_mean": 0.15405523314327002,
+      "best_seed_hub_penalty_mean": 0.04182,
+      "seed_gold_hit_rate_eval_only": 0.0,
+      "seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "num_refined_seeds_mean": 5.0,
+      "num_changed_seeds_mean": 0.0,
+      "changed_seed_rate": 0.0,
+      "before_seed_gold_hit_rate_eval_only": 0.0,
+      "after_seed_gold_hit_rate_eval_only": 0.0,
+      "before_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "after_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "interpretation": "Best medoid seeds rarely hit eval-only gold entities; seed selection or U_q/gold mapping is failing."
+    },
+    {
+      "dataset": "hotpotqa",
+      "profile": "legacy_512_10",
+      "variant": "pamae_seed_k5_refine",
+      "num_queries": 1,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/legacy_512_10/pamae_seed_k5_refine/hotpotqa": [
+          "rag_summary.json"
+        ]
+      },
+      "k": 5.0,
+      "sample_size": 200.0,
+      "num_samples": 5.0,
+      "best_seed_score_mean": 1.7740564417091678,
+      "best_seed_relevance_mean": 0.7924122035503387,
+      "best_seed_coverage_mean": 0.8903802017418215,
+      "best_seed_diversity_mean": 0.11926403641700745,
+      "best_seed_hub_penalty_mean": 0.028000000000000004,
+      "seed_gold_hit_rate_eval_only": 0.0,
+      "seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "num_refined_seeds_mean": 5.0,
+      "num_changed_seeds_mean": 5.0,
+      "changed_seed_rate": 1.0,
+      "before_seed_gold_hit_rate_eval_only": 0.0,
+      "after_seed_gold_hit_rate_eval_only": 0.0,
+      "before_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "after_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "interpretation": "Best medoid seeds rarely hit eval-only gold entities; seed selection or U_q/gold mapping is failing."
+    },
+    {
+      "dataset": "hotpotqa",
+      "profile": "legacy_512_10",
+      "variant": "source_balanced_128",
+      "num_queries": 100,
+      "missing_files": {
+        "/home/ojungii/EffiRAG/outputs/phase8_pamae_entity_seeding/legacy_512_10/source_balanced_128/hotpotqa": []
+      },
+      "k": 0.0,
+      "sample_size": 0.0,
+      "num_samples": 0.0,
+      "best_seed_score_mean": 0.0,
+      "best_seed_relevance_mean": 0.0,
+      "best_seed_coverage_mean": 0.0,
+      "best_seed_diversity_mean": 0.0,
+      "best_seed_hub_penalty_mean": 0.0,
+      "seed_gold_hit_rate_eval_only": 0.0,
+      "seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "num_refined_seeds_mean": 0.0,
+      "num_changed_seeds_mean": 0.0,
+      "changed_seed_rate": 0.0,
+      "before_seed_gold_hit_rate_eval_only": 0.0,
+      "after_seed_gold_hit_rate_eval_only": 0.0,
+      "before_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "after_seed_evidence_gold_hit_rate_eval_only": 0.0,
+      "interpretation": "Phase8 disabled baseline; seed quality is not applicable."
+    }
+  ],
+  "representative_cases": {
+    "low_seed_relevance": [
+      {
+        "query_id": "5ab57fc4554299488d4d99c0",
+        "question": "In which county is the town in which Raymond Robertsen was born ?",
+        "reason": "low_seed_relevance",
+        "best_seed_names": [
+          "wisdome",
+          "gully",
+          "plaque",
+          "refiners",
+          "592"
+        ],
+        "best_seed_entity_ids": [
+          "e::wisdome",
+          "e::gully",
+          "e::plaque",
+          "e::refiners",
+          "e::592"
+        ],
+        "best_seed_score": 1.6482835044102482,
+        "best_seed_relevance": 0.6537429124116898,
+        "best_hub_penalty": 0.030999999999999993,
+        "before_seed_gold_hit_eval_only": false,
+        "after_seed_gold_hit_eval_only": false,
+        "before_seed_evidence_gold_hit_eval_only": false,
+        "after_seed_evidence_gold_hit_eval_only": false,
+        "num_changed_seeds": 0.0
+      },
+      {
+        "query_id": "5ab57fc4554299488d4d99c0",
+        "question": "In which county is the town in which Raymond Robertsen was born ?",
+        "reason": "low_seed_relevance",
+        "best_seed_names": [
+          "wisdome",
+          "gully",
+          "plaque",
+          "refiners",
+          "592"
+        ],
+        "best_seed_entity_ids": [
+          "e::wisdome",
+          "e::gully",
+          "e::plaque",
+          "e::refiners",
+          "e::592"
+        ],
+        "best_seed_score": 1.6482835044102482,
+        "best_seed_relevance": 0.6537429124116898,
+        "best_hub_penalty": 0.030999999999999993,
+        "before_seed_gold_hit_eval_only": false,
+        "after_seed_gold_hit_eval_only": false,
+        "before_seed_evidence_gold_hit_eval_only": false,
+        "after_seed_evidence_gold_hit_eval_only": false,
+        "num_changed_seeds": 0.0
+      },
+      {
+        "query_id": "5a8e41735542995085b37406",
+        "question": "What is the county seat of the county in which Keokuk Falls, Oklahoma is loated?",
+        "reason": "low_seed_relevance",
+        "best_seed_names": [
+          "fnl",
+          "almonte",
+          "aiding",
+          "buthe",
+          "595"
+        ],
+        "best_seed_entity_ids": [
+          "e::fnl",
+          "e::almonte",
+          "e::aiding",
+          "e::buthe",
+          "e::595"
+        ],
+        "best_seed_score": 1.657855948327173,
+        "best_seed_relevance": 0.6610334798693657,
+        "best_hub_penalty": 0.029999999999999992,
+        "before_seed_gold_hit_eval_only": false,
+        "after_seed_gold_hit_eval_only": false,
+        "before_seed_evidence_gold_hit_eval_only": false,
+        "after_seed_evidence_gold_hit_eval_only": false,
+        "num_changed_seeds": 0.0
+      },
+      {
+        "query_id": "5a8e41735542995085b37406",
+        "question": "What is the county seat of the county in which Keokuk Falls, Oklahoma is loated?",
+        "reason": "low_seed_relevance",
+        "best_seed_names": [
+          "fnl",
+          "almonte",
+          "aiding",
+          "buthe",
+          "595"
+        ],
+        "best_seed_entity_ids": [
+          "e::fnl",
+          "e::almonte",
+          "e::aiding",
+          "e::buthe",
+          "e::595"
+        ],
+        "best_seed_score": 1.657855948327173,
+        "best_seed_relevance": 0.6610334798693657,
+        "best_hub_penalty": 0.029999999999999992,
+        "before_seed_gold_hit_eval_only": false,
+        "after_seed_gold_hit_eval_only": false,
+        "before_seed_evidence_gold_hit_eval_only": false,
+        "after_seed_evidence_gold_hit_eval_only": false,
+        "num_changed_seeds": 0.0
+      },
+      {
+        "query_id": "5a797bd95542994bb9457016",
+        "question": "What age was Georgia Middleman when she started singing in the seventh-most populated city in the United States?",
+        "reason": "low_seed_relevance",
+        "best_seed_names": [
+          "rainy",
+          "nee",
+          "tema",
+          "8031",
+          "acknowledged"
+        ],
+        "best_seed_entity_ids": [
+          "e::rainy",
+          "e::nee",
+          "e::tema",
+          "e::8031",
+          "e::acknowledged"
+        ],
+        "best_seed_score": 1.6432728783650807,
+        "best_seed_relevance": 0.6644159376621246,
+        "best_hub_penalty": 0.036,
+        "before_seed_gold_hit_eval_only": false,
+        "after_seed_gold_hit_eval_only": false,
+        "before_seed_evidence_gold_hit_eval_only": false,
+        "after_seed_evidence_gold_hit_eval_only": false,
+        "num_changed_seeds": 0.0
+      },
+      {
+        "query_id": "5a797bd95542994bb9457016",
+        "question": "What age was Georgia Middleman when she started singing in the seventh-most populated city in the United States?",
+        "reason": "low_seed_relevance",
+        "best_seed_names": [
+          "rainy",
+          "nee",
+          "tema",
+          "8031",
+          "acknowledged"
+        ],
+        "best_seed_entity_ids": [
+          "e::rainy",
+          "e::nee",
+          "e::tema",
+          "e::8031",
+          "e::acknowledged"
+        ],
+        "best_seed_score": 1.6432728783650807,
+        "best_seed_relevance": 0.6644159376621246,
+        "best_hub_penalty": 0.036,
+        "before_seed_gold_hit_eval_only": false,
+        "after_seed_gold_hit_eval_only": false,
+        "before_seed_evidence_gold_hit_eval_only": false,
+        "after_seed_evidence_gold_hit_eval_only": false,
+        "num_changed_seeds": 0.0
+      },
+      {
+        "query_id": "5a84fd085542994c784ddaba",
+        "question": "Devil's Food is a singles compilation by an American rock and roll band that has also been known to play country shows under what?",
+        "reason": "low_seed_relevance",
+        "best_seed_names": [
+          "talula",
+          "marr",
+          "kirsty",
+          "20hot",
+          "finest"
+        ],
+        "best_seed_entity_ids": [
+          "e::talula",
+          "e::marr",
+          "e::kirsty",
+          "e::20hot",
+          "e::finest"
+        ],
+        "best_seed_score": 1.6386010207625865,
+        "best_seed_relevance": 0.6751292109489441,
+        "best_hub_penalty": 0.042,
+        "before_seed_gold_hit_eval_only": false,
+        "after_seed_gold_hit_eval_only": false,
+        "before_seed_evidence_gold_hit_eval_only": false,
+        "after_seed_evidence_gold_hit_eval_only": false,
+        "num_changed_seeds": 0.0
+      },
+      {
+        "query_id": "5a84fd085542994c784ddaba",
+        "question": "Devil's Food is a singles compilation by an American rock and roll band that has also been known to play country shows under what?",
+        "reason": "low_seed_relevance",
+        "best_seed_names": [
+          "talula",
+          "marr",
+          "kirsty",
+          "20hot",
+          "finest"
+        ],
+        "best_seed_entity_ids": [
+          "e::talula",
+          "e::marr",
+          "e::kirsty",
+          "e::20hot",
+          "e::finest"
+        ],
+        "best_seed_score": 1.6386010207625865,
+        "best_seed_relevance": 0.6751292109489441,
+        "best_hub_penalty": 0.042,
+        "before_seed_gold_hit_eval_only": false,
+        "after_seed_gold_hit_eval_only": false,
+        "before_seed_evidence_gold_hit_eval_only": false,
+        "after_seed_evidence_gold_hit_eval_only": false,
+        "num_changed_seeds": 0.0
+      },
+      {
+        "query_id": "5ab3a83d5542992ade7c6e08",
+        "question": "Faith Goldy got fired after an interview she gave on what production site edited by Andrew Anglin?",
+        "reason": "low_seed_relevance",
+        "best_seed_names": [
+          "mackintosh",
+          "hysteria",
+          "teese",
+          "youtubers",
+          "thaw"
+        ],
+        "best_seed_entity_ids": [
+          "e::mackintosh",
+          "e::hysteria",
+          "e::teese",
+          "e::youtubers",
+          "e::thaw"
+        ],
+        "best_seed_score": 1.6589618966235573,
+        "best_seed_relevance": 0.6781726211309433,
+        "best_hub_penalty": 0.038,
+        "before_seed_gold_hit_eval_only": false,
+        "after_seed_gold_hit_eval_only": false,
+        "before_seed_evidence_gold_hit_eval_only": false,
+        "after_seed_evidence_gold_hit_eval_only": false,
+        "num_changed_seeds": 0.0
+      },
+      {
+        "query_id": "5ab3a83d5542992ade7c6e08",
+        "question": "Faith Goldy got fired after an interview she gave on what production site edited by Andrew Anglin?",
+        "reason": "low_seed_relevance",
+        "best_seed_names": [
+          "mackintosh",
+          "hysteria",
+          "teese",
+          "youtubers",
+          "thaw"
+        ],
+        "best_seed_entity_ids": [
+          "e::mackintosh",
+          "e::hysteria",
+          "e::teese",
+          "e::youtubers",
+          "e::thaw"
+        ],
+        "best_seed_score": 1.6589618966235573,
+        "best_seed_relevance": 0.6781726211309433,
+        "best_hub_penalty": 0.038,
+        "before_seed_gold_hit_eval_only": false,
+        "after_seed_gold_hit_eval_only": false,
+        "before_seed_evidence_gold_hit_eval_only": false,
+        "after_seed_evidence_gold_hit_eval_only": false,
+        "num_changed_seeds": 0.0
+      }
+    ],
+    "high_hub_penalty": [
+      {
+        "query_id": "5a7732dc55429972597f149b",
+        "question": "What 1944 Bollywood film was the mother of Bollywood actor Govinda in?",
+        "reason": "high_hub_penalty",
+        "best_seed_names": [
+          "dost",
+          "alexandre",
+          "divya",
+          "subkoff",
+          "rza"
+        ],
+        "best_seed_entity_ids": [
+          "e::dost",
+          "e::alexandre",
+          "e::divya",
+          "e::subkoff",
+          "e::rza"
+        ],
+        "best_seed_score": 1.7425979994107914,
+        "best_seed_relevance": 0.7952353715896606,
+        "best_hub_penalty": 0.08800000000000001,
+        "before_seed_gold_hit_eval_only": false,
+        "after_seed_gold_hit_eval_only": false,
+        "before_seed_evidence_gold_hit_eval_only": false,
+        "after_seed_evidence_gold_hit_eval_only": false,
+        "num_changed_seeds": 0.0
+      },
+      {
+        "query_id": "5a7732dc55429972597f149b",
+        "question": "What 1944 Bollywood film was the mother of Bollywood actor Govinda in?",
+        "reason": "high_hub_penalty",
+        "best_seed_names": [
+          "dost",
+          "alexandre",
+          "divya",
+          "subkoff",
+          "rza"
+        ],
+        "best_seed_entity_ids": [
+          "e::dost",
+          "e::alexandre",
+          "e::divya",
+          "e::subkoff",
+          "e::rza"
+        ],
+        "best_seed_score": 1.7425979994107914,
+        "best_seed_relevance": 0.7952353715896606,
+        "best_hub_penalty": 0.08800000000000001,
+        "before_seed_gold_hit_eval_only": false,
+        "after_seed_gold_hit_eval_only": false,
+        "before_seed_evidence_gold_hit_eval_only": false,
+        "after_seed_evidence_gold_hit_eval_only": false,
+        "num_changed_seeds": 0.0
+      },
+      {
+        "query_id": "5a7a3a945542996a35c17147",
+        "question": "One Raffles Place is one of the tallest skyscrapers in the city of Singapore and tallest in the wolrd outside North America until it was succeeded by a Building in city?",
+        "reason": "high_hub_penalty",
+        "best_seed_names": [
+          "193",
+          "tiruvallur",
+          "sail",
+          "tema",
+          "sch"
+        ],
+        "best_seed_entity_ids": [
+          "e::193",
+          "e::tiruvallur",
+          "e::sail",
+          "e::tema",
+          "e::sch"
+        ],
+        "best_seed_score": 1.6751679617286739,
+        "best_seed_relevance": 0.7573147594928742,
+        "best_hub_penalty": 0.076,
+        "before_seed_gold_hit_eval_only": false,
+        "after_seed_gold_hit_eval_only": false,
+        "before_seed_evidence_gold_hit_eval_only": false,
+        "after_seed_evidence_gold_hit_eval_only": false,
+        "num_changed_seeds": 0.0
+      },
+      {
+        "query_id": "5a7a3a945542996a35c17147",
+        "question": "One Raffles Place is one of the tallest skyscrapers in the city of Singapore and tallest in the wolrd outside North America until it was succeeded by a Building in city?",
+        "reason": "high_hub_penalty",
+        "best_seed_names": [
+          "193",
+          "tiruvallur",
+          "sail",
+          "tema",
+          "sch"
+        ],
+        "best_seed_entity_ids": [
+          "e::193",
+          "e::tiruvallur",
+          "e::sail",
+          "e::tema",
+          "e::sch"
+        ],
+        "best_seed_score": 1.6751679617286739,
+        "best_seed_relevance": 0.7573147594928742,
+        "best_hub_penalty": 0.076,
+        "before_seed_gold_hit_eval_only": false,
+        "after_seed_gold_hit_eval_only": false,
+        "before_seed_evidence_gold_hit_eval_only": false,
+        "after_seed_evidence_gold_hit_eval_only": false,
+        "num_changed_seeds": 0.0
+      },
+      {
+        "query_id": "5a7b3fc155429931da12ca3a",
+        "question": "Wexner Graduate Fellowships are given to students who show an ability of an individual to \"lead\" or guide who?",
+        "reason": "high_hub_penalty",
+        "best_seed_names": [
+          "unspecified",
+          "schoolteacher",
+          "kpu",
+          "forensic",
+          "zahn"
+        ],
+        "best_seed_entity_ids": [
+          "e::unspecified",
+          "e::schoolteacher",
+          "e::kpu",
+          "e::forensic",
+          "e::zahn"
+        ],
+        "best_seed_score": 1.713932447669061,
+        "best_seed_relevance": 0.776749050617218,
+        "best_hub_penalty": 0.075,
+        "before_seed_gold_hit_eval_only": false,
+        "after_seed_gold_hit_eval_only": false,
+        "before_seed_evidence_gold_hit_eval_only": false,
+        "after_seed_evidence_gold_hit_eval_only": false,
+        "num_changed_seeds": 0.0
+      },
+      {
+        "query_id": "5ae40b2b55429970de88d8b3",
+        "question": "In between  Polytechnic University of the Philippines and California Polytechnic State University which was founded as a vocational high school?",
+        "reason": "high_hub_penalty",
+        "best_seed_names": [
+          "lectured",
+          "ogden",
+          "moorhead",
+          "salah",
+          "1344"
+        ],
+        "best_seed_entity_ids": [
+          "e::lectured",
+          "e::ogden",
+          "e::moorhead",
+          "e::salah",
+          "e::1344"
+        ],
+        "best_seed_score": 1.7084381657296848,
+        "best_seed_relevance": 0.7485840648412705,
+        "best_hub_penalty": 0.075,
+        "before_seed_gold_hit_eval_only": false,
+        "after_seed_gold_hit_eval_only": false,
+        "before_seed_evidence_gold_hit_eval_only": false,
+        "after_seed_evidence_gold_hit_eval_only": false,
+        "num_changed_seeds": 0.0
+      },
+      {
+        "query_id": "5a7b3fc155429931da12ca3a",
+        "question": "Wexner Graduate Fellowships are given to students who show an ability of an individual to \"lead\" or guide who?",
+        "reason": "high_hub_penalty",
+        "best_seed_names": [
+          "unspecified",
+          "schoolteacher",
+          "kpu",
+          "forensic",
+          "zahn"
+        ],
+        "best_seed_entity_ids": [
+          "e::unspecified",
+          "e::schoolteacher",
+          "e::kpu",
+          "e::forensic",
+          "e::zahn"
+        ],
+        "best_seed_score": 1.713932447669061,
+        "best_seed_relevance": 0.776749050617218,
+        "best_hub_penalty": 0.075,
+        "before_seed_gold_hit_eval_only": false,
+        "after_seed_gold_hit_eval_only": false,
+        "before_seed_evidence_gold_hit_eval_only": false,
+        "after_seed_evidence_gold_hit_eval_only": false,
+        "num_changed_seeds": 0.0
+      },
+      {
+        "query_id": "5ae40b2b55429970de88d8b3",
+        "question": "In between  Polytechnic University of the Philippines and California Polytechnic State University which was founded as a vocational high school?",
+        "reason": "high_hub_penalty",
+        "best_seed_names": [
+          "lectured",
+          "ogden",
+          "moorhead",
+          "salah",
+          "1344"
+        ],
+        "best_seed_entity_ids": [
+          "e::lectured",
+          "e::ogden",
+          "e::moorhead",
+          "e::salah",
+          "e::1344"
+        ],
+        "best_seed_score": 1.7084381657296848,
+        "best_seed_relevance": 0.7485840648412705,
+        "best_hub_penalty": 0.075,
+        "before_seed_gold_hit_eval_only": false,
+        "after_seed_gold_hit_eval_only": false,
+        "before_seed_evidence_gold_hit_eval_only": false,
+        "after_seed_evidence_gold_hit_eval_only": false,
+        "num_changed_seeds": 0.0
+      },
+      {
+        "query_id": "fcdafe320bdb11eba7f7acde48001122",
+        "question": "Where was the director of film The Circus Cyclone born?",
+        "reason": "high_hub_penalty",
+        "best_seed_names": [
+          "boisrond",
+          "giallo",
+          "ethel",
+          "dharma",
+          "pacino"
+        ],
+        "best_seed_entity_ids": [
+          "e::boisrond",
+          "e::giallo",
+          "e::ethel",
+          "e::dharma",
+          "e::pacino"
+        ],
+        "best_seed_score": 1.6989673125299207,
+        "best_seed_relevance": 0.7506945610046387,
+        "best_hub_penalty": 0.073,
+        "before_seed_gold_hit_eval_only": false,
+        "after_seed_gold_hit_eval_only": false,
+        "before_seed_evidence_gold_hit_eval_only": false,
+        "after_seed_evidence_gold_hit_eval_only": false,
+        "num_changed_seeds": 0.0
+      },
+      {
+        "query_id": "fcdafe320bdb11eba7f7acde48001122",
+        "question": "Where was the director of film The Circus Cyclone born?",
+        "reason": "high_hub_penalty",
+        "best_seed_names": [
+          "boisrond",
+          "giallo",
+          "ethel",
+          "dharma",
+          "pacino"
+        ],
+        "best_seed_entity_ids": [
+          "e::boisrond",
+          "e::giallo",
+          "e::ethel",
+          "e::dharma",
+          "e::pacino"
+        ],
+        "best_seed_score": 1.6989673125299207,
+        "best_seed_relevance": 0.7506945610046387,
+        "best_hub_penalty": 0.073,
+        "before_seed_gold_hit_eval_only": false,
+        "after_seed_gold_hit_eval_only": false,
+        "before_seed_evidence_gold_hit_eval_only": false,
+        "after_seed_evidence_gold_hit_eval_only": false,
+        "num_changed_seeds": 5.0
+      }
+    ],
+    "refinement_decreased_hit": [],
+    "refinement_improved_hit": []
+  }
+}
