@@ -7,6 +7,9 @@ DATASET="${DATASET:-hotpotqa}"
 PROFILE="${PROFILE:-legacy_512_10}"
 LIMIT="${LIMIT:-100}"
 OUT_ROOT="${OUT_ROOT:-outputs/phase8_chunk_medoid}"
+# Optional comma-separated subset:
+#   PHASE8_CHUNK_VARIANTS=chunk_pamae_k5,chunk_bridge_refine_k5
+PHASE8_CHUNK_VARIANTS="${PHASE8_CHUNK_VARIANTS:-}"
 
 cd "${REPO_ROOT}"
 mkdir -p "${OUT_ROOT}/logs"
@@ -45,6 +48,11 @@ VARIANTS=(
 
 for row in "${VARIANTS[@]}"; do
   IFS=":" read -r VARIANT CHUNK_ENABLED BRIDGE_REFINE_ENABLED SB_ENABLED TOP_M <<<"${row}"
+  if [[ -n "${PHASE8_CHUNK_VARIANTS}" ]]; then
+    if [[ ",${PHASE8_CHUNK_VARIANTS}," != *",${VARIANT},"* ]]; then
+      continue
+    fi
+  fi
   RUN_DIR="${OUT_ROOT}/${PROFILE}/${VARIANT}/${DATASET}"
   LOG_FILE="${OUT_ROOT}/logs/${PROFILE}__${VARIANT}__${DATASET}.log"
   mkdir -p "${RUN_DIR}"
