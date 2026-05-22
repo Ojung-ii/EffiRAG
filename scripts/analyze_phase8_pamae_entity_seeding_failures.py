@@ -37,6 +37,19 @@ def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
     return rows
 
 
+def _query_id(row: Dict[str, Any]) -> str:
+    return str(row.get("query_id") or row.get("qid") or row.get("sample_id") or "")
+
+
+def _rows_by_query(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+    out = {}
+    for row in rows:
+        qid = _query_id(row)
+        if qid and qid not in out:
+            out[qid] = row
+    return out
+
+
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -58,13 +71,13 @@ def _parts(root: Path, run_dir: Path) -> Dict[str, str]:
 
 
 def _classify(q: Dict[str, Any]) -> str:
-    if _safe_float(q.get("entity_universe_size", 0.0), 0.0) <= 0:
+    if bool(q.get("phase8_pamae_enabled", False)) and _safe_float(q.get("entity_universe_size", 0.0), 0.0) <= 0:
         return "UQ_ENTITY_MISS"
     if bool(q.get("phase8_pamae_enabled", False)) and _safe_float(q.get("best_seed_score", 0.0), 0.0) <= 0.0:
         return "SEED_SELECTION_MISS"
     if bool(q.get("phase8_pamae_enabled", False)) and _safe_float(q.get("num_changed_seeds", 0.0), 0.0) > 0.0 and _safe_float(q.get("candidate_gold_recall", 0.0), 0.0) <= 0.0:
         return "REFINEMENT_DRIFT"
-    if bool(q.get("phase8_pamae_enabled", False)) and _safe_float(q.get("seed_evidence_gold_hit_rate_eval_only", 0.0), 0.0) <= 0.0 and _safe_float(q.get("candidate_gold_recall", 0.0), 0.0) <= 0.0:
+    if bool(q.get("phase8_pamae_enabled", False)) and _safe_float(q.get("seed_evidence_gold_hit_rate_eval_only", 0.0), 0.0) <= 0.0 and _safe_float(q.get("candidate_gold_recall", 0.0), 0.0) <= 0.10:
         return "SEED_TO_EVIDENCE_MISS"
     if _safe_float(q.get("chain_unit_oracle_feasible", 0.0), 0.0) <= 0.0:
         return "CANDIDATE_CHAIN_INFEASIBLE"
@@ -88,9 +101,18 @@ def main() -> int:
     for run_dir in _run_dirs(root):
         parts = _parts(root, run_dir)
         run_key = f"{parts['dataset']}/{parts['profile']}/{parts['variant']}"
+        p7 = _rows_by_query(_read_jsonl(run_dir / "phase7_query_trace.jsonl"))
         for q in _read_jsonl(run_dir / "phase8_query_trace.jsonl"):
+            qid = _query_id(q)
+            p7q = p7.get(qid, {})
+            chain = dict(p7q.get("candidate_chain_feasibility", {}) or {})
+            if chain:
+                q = dict(q)
+                q["candidate_gold_recall"] = _safe_float(chain.get("candidate_gold_recall", q.get("candidate_gold_recall", 0.0)), 0.0)
+                q["candidate_gold_full"] = bool(chain.get("candidate_gold_full", q.get("candidate_gold_full", False)))
+                q["chain_unit_oracle_feasible"] = 1.0 if bool(chain.get("chain_unit_oracle_feasible", q.get("chain_unit_oracle_feasible", False))) else 0.0
             cat = _classify(q)
-            row = {**parts, "query_id": str(q.get("query_id", "")), "category": cat, "question": str(q.get("question", ""))}
+            row = {**parts, "query_id": qid, "category": cat, "question": str(q.get("question", ""))}
             rows.append(row)
             counts[run_key][cat] += 1
             if len(examples[(run_key, cat)]) < 3:

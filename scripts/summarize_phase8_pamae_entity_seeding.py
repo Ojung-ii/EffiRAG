@@ -75,6 +75,21 @@ def _read_jsonl(path: Path) -> List[Dict[str, Any]]:
     return rows
 
 
+def _query_id(row: Dict[str, Any]) -> str:
+    return str(row.get("query_id") or row.get("qid") or row.get("sample_id") or "")
+
+
+def _dedupe_by_query(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    out: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        qid = _query_id(row)
+        if qid and qid not in out:
+            out[qid] = row
+        elif not qid:
+            out[str(len(out))] = row
+    return list(out.values())
+
+
 def _safe_float(value: Any, default: float = 0.0) -> float:
     try:
         return float(value)
@@ -119,8 +134,10 @@ def _parts(root: Path, run_dir: Path) -> Dict[str, str]:
 
 def _summarize_run(root: Path, run_dir: Path) -> Dict[str, Any]:
     summary = _read_json(run_dir / "rag_summary.json")
-    qrows = _read_jsonl(run_dir / "phase8_query_trace.jsonl")
-    timings = _read_jsonl(run_dir / "phase8_stage_timing.jsonl")
+    qrows = _dedupe_by_query(_read_jsonl(run_dir / "phase8_query_trace.jsonl"))
+    p7rows = _dedupe_by_query(_read_jsonl(run_dir / "phase7_query_trace.jsonl"))
+    p7_by_qid = {_query_id(row): row for row in p7rows if _query_id(row)}
+    timings = _dedupe_by_query(_read_jsonl(run_dir / "phase8_stage_timing.jsonl"))
     parts = _parts(root, run_dir)
     row: Dict[str, Any] = {
         **parts,
@@ -130,6 +147,24 @@ def _summarize_run(root: Path, run_dir: Path) -> Dict[str, Any]:
     for key in QUERY_KEYS:
         vals = [_safe_float(q.get(key), 0.0) for q in qrows if key in q]
         row[key] = _mean(vals)
+    if p7rows:
+        chain_vals = []
+        full_vals = []
+        partial_vals = []
+        feasible_vals = []
+        for p7 in p7rows:
+            chain = dict(p7.get("candidate_chain_feasibility", {}) or {})
+            recall = chain.get("candidate_gold_recall", p7.get("candidate_gold_recall", 0.0))
+            chain_vals.append(_safe_float(recall, 0.0))
+            full_vals.append(1.0 if bool(chain.get("candidate_gold_full", p7.get("candidate_gold_full", False))) else 0.0)
+            partial_vals.append(1.0 if bool(chain.get("candidate_gold_partial", p7.get("candidate_gold_partial", False))) else 0.0)
+            feasible_vals.append(1.0 if bool(chain.get("chain_unit_oracle_feasible", p7.get("chain_unit_oracle_feasible", False))) else 0.0)
+        row["phase1_partial_gold_hit"] = _mean(partial_vals)
+        row["phase1_full_gold_coverage"] = _mean(full_vals)
+        row["phase1_gold_recall"] = _mean(chain_vals)
+        row["candidate_gold_full"] = _mean(full_vals)
+        row["candidate_gold_recall"] = _mean(chain_vals)
+        row["chain_unit_oracle_feasible"] = _mean(feasible_vals)
     for key in TIMING_KEYS:
         raw_key = "total_retrieval_ms" if key == "retrieval_ms" else key
         vals = [_safe_float(t.get(raw_key), 0.0) for t in timings if raw_key in t]

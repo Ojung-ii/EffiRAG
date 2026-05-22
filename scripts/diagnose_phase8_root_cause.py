@@ -38,7 +38,7 @@ def _verdict_for(key: tuple[str, str, str], entity: Dict[str, Any], seed: Dict[s
     is_pamae = variant.startswith("pamae")
     uq_miss = is_pamae and safe_float(entity.get("gold_entity_hit_rate_eval_only", 0.0), 0.0) <= 0.01
     seed_miss = is_pamae and safe_float(seed.get("seed_gold_hit_rate_eval_only", 0.0), 0.0) <= 0.01
-    evidence_miss = is_pamae and safe_float(evidence.get("num_final_evidence_candidates_mean", 0.0), 0.0) > 0.0 and safe_float(evidence.get("candidate_gold_recall_mean_eval_only", 0.0), 0.0) <= 0.01
+    evidence_miss = is_pamae and safe_float(evidence.get("num_final_evidence_candidates_mean", 0.0), 0.0) > 0.0 and safe_float(evidence.get("candidate_gold_recall_mean_eval_only", 0.0), 0.0) <= 0.10
     selection_miss = is_pamae and safe_float(evidence.get("candidate_gold_recall_mean_eval_only", 0.0), 0.0) > 0.0 and safe_float(evidence.get("selected_pamae_source_rate", 0.0), 0.0) <= 0.01
     refinement_drift = is_pamae and safe_float(seed.get("after_seed_evidence_gold_hit_rate_eval_only", 0.0), 0.0) < safe_float(seed.get("before_seed_evidence_gold_hit_rate_eval_only", 0.0), 0.0)
     diag_broken = safe_float(idnorm.get("phase8_logging_mismatch_count", 0.0), 0.0) > 0.0

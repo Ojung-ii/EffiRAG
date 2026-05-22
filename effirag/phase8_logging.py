@@ -78,6 +78,7 @@ def append_phase8_runtime_trace(
     evidence_diag = _first_dict(phase8, "evidence_proposal")
     seed_rows = list(phase8.get("seed_set_candidates", []) or [])
     evidence_tags = dict(phase8.get("evidence_source_tags", {}) or {})
+    candidate_chain = dict(diagnostics.get("candidate_chain_feasibility", {}) or {})
 
     query_trace = {
         "query_id": qid,
@@ -93,14 +94,29 @@ def append_phase8_runtime_trace(
         "seed_diversity": _safe_float(best_diag.get("best_diversity", 0.0), 0.0),
         "num_refined_seeds": int(refine_diag.get("num_refined_seeds", 0) or 0),
         "num_changed_seeds": int(refine_diag.get("num_changed_seeds", 0) or 0),
-        "phase1_partial_gold_hit": bool(diagnostics.get("candidate_gold_partial", False)),
-        "phase1_full_gold_coverage": bool(diagnostics.get("candidate_gold_full", False)),
-        "phase1_gold_recall": _safe_float(diagnostics.get("candidate_gold_recall", 0.0), 0.0),
-        "candidate_gold_full": bool(diagnostics.get("candidate_gold_full", False)),
-        "candidate_gold_recall": _safe_float(diagnostics.get("candidate_gold_recall", 0.0), 0.0),
+        "phase1_partial_gold_hit": bool(
+            diagnostics.get("candidate_gold_partial", candidate_chain.get("candidate_gold_partial", False))
+        ),
+        "phase1_full_gold_coverage": bool(
+            diagnostics.get("candidate_gold_full", candidate_chain.get("candidate_gold_full", False))
+        ),
+        "phase1_gold_recall": _safe_float(
+            diagnostics.get("candidate_gold_recall", candidate_chain.get("candidate_gold_recall", 0.0)),
+            0.0,
+        ),
+        "candidate_gold_full": bool(
+            diagnostics.get("candidate_gold_full", candidate_chain.get("candidate_gold_full", False))
+        ),
+        "candidate_gold_recall": _safe_float(
+            diagnostics.get("candidate_gold_recall", candidate_chain.get("candidate_gold_recall", 0.0)),
+            0.0,
+        ),
         "candidate_oracle_F1": _safe_float(evidence_diag.get("candidate_oracle_F1_eval_only", 0.0), 0.0),
         "chain_unit_oracle_feasible": _safe_float(
-            diagnostics.get("chain_unit_oracle_feasible", evidence_diag.get("chain_unit_oracle_feasible_eval_only", 0.0)),
+            diagnostics.get(
+                "chain_unit_oracle_feasible",
+                candidate_chain.get("chain_unit_oracle_feasible", evidence_diag.get("chain_unit_oracle_feasible_eval_only", 0.0)),
+            ),
             0.0,
         ),
         "seed_gold_hit_rate_eval_only": 1.0 if bool(best_diag.get("seed_gold_hit_eval_only", False)) else 0.0,

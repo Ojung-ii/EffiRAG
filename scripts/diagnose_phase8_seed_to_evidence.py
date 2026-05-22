@@ -48,8 +48,15 @@ def _selected_pamae(query: Dict[str, Any]) -> tuple[float, Counter]:
     if not selected:
         return 0.0, Counter()
     counter = source_tag_counter(selected, evidence_tags(query))
-    pamae_count = sum(v for tag, v in counter.items() if str(tag).startswith("phase8_"))
-    return float(pamae_count / len(selected)) if selected else 0.0, counter
+    pamae_selected = 0
+    tags_by_id = evidence_tags(query)
+    for sid in selected:
+        tags = tags_by_id.get(sid, [])
+        if isinstance(tags, str):
+            tags = [tags]
+        if isinstance(tags, list) and any(str(tag).startswith("phase8_") for tag in tags):
+            pamae_selected += 1
+    return float(pamae_selected / len(selected)) if selected else 0.0, counter
 
 
 def _case(query: Dict[str, Any], reason: str) -> Dict[str, Any]:
@@ -130,8 +137,8 @@ def _interpret(row: Dict[str, Any]) -> str:
         return "Source-balanced baseline has no Phase8 evidence proposal."
     if safe_float(row.get("num_seed_atoms_mean", 0.0)) <= 1.0 and safe_float(row.get("num_seed_carriers_mean", 0.0)) <= 1.0:
         return "Seed-to-index mapping is broken: seed atoms/carriers are near zero."
-    if safe_float(row.get("num_final_evidence_candidates_mean", 0.0)) > 0.0 and safe_float(row.get("candidate_gold_recall_mean_eval_only", 0.0)) <= 0.01:
-        return "Phase8 emits candidates, but they do not cover gold/equivalent evidence; seed-to-evidence mapping is failing."
+    if safe_float(row.get("num_final_evidence_candidates_mean", 0.0)) > 0.0 and safe_float(row.get("candidate_gold_recall_mean_eval_only", 0.0)) <= 0.10:
+        return "Phase8 emits candidates, but gold/equivalent coverage is very low; seed-to-evidence mapping is weak."
     if safe_float(row.get("selected_pamae_source_rate", 0.0)) <= 0.01:
         return "Phase8 candidates exist but are not selected, or source tags are not preserved into selection."
     return "Seed-to-evidence mapping produces selected Phase8 candidates."
