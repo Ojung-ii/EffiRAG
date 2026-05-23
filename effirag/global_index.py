@@ -823,6 +823,7 @@ def build_corpus_graph(
     passage_chunk_stride_sentences=2,
     passage_chunk_min_sentences=2,
     passage_chunk_max_chars=900,
+    force_sentence_layer=False,
     show_progress=True,
 ):
     g = nx.Graph()
@@ -856,7 +857,7 @@ def build_corpus_graph(
     chunk_unit = _normalize_index_chunk_unit(index_chunk_unit, graph_mode=graph_mode)
     use_chunk_layer = chunk_unit == "passage"
     text_unit = "passage" if (graph_mode == "entity_chunk_graph" and use_chunk_layer) else "sentence"
-    build_sentence_layer = text_unit == "sentence"
+    build_sentence_layer = bool(force_sentence_layer) or text_unit == "sentence"
     doc_chunk_nodes = {}
 
     def _log(msg):
@@ -1269,6 +1270,7 @@ def build_corpus_graph(
         "passage_chunk_stride_sentences": int(passage_chunk_stride_sentences),
         "passage_chunk_min_sentences": int(passage_chunk_min_sentences),
         "passage_chunk_max_chars": int(passage_chunk_max_chars),
+        "force_sentence_layer": bool(force_sentence_layer),
         "openie_record_unit": str(text_unit),
         "build_sentence_layer": bool(build_sentence_layer),
         "openie_model_name": str(openie_model_name or ""),
@@ -1326,6 +1328,12 @@ def _normalize_build_config(
     openie_retry_attempts,
     openie_retry_backoff_sec,
     openie_error_sample_limit,
+    passage_chunking_strategy="sentence_window",
+    passage_chunk_size_sentences=3,
+    passage_chunk_stride_sentences=2,
+    passage_chunk_min_sentences=2,
+    passage_chunk_max_chars=900,
+    force_sentence_layer=False,
 ):
     mode = str(openie_mode or "llm").strip().lower()
     if mode not in {"llm", "lexical"}:
@@ -1359,6 +1367,12 @@ def _normalize_build_config(
         "openie_retry_attempts": int(openie_retry_attempts),
         "openie_retry_backoff_sec": float(openie_retry_backoff_sec),
         "openie_error_sample_limit": int(openie_error_sample_limit),
+        "passage_chunking_strategy": str(passage_chunking_strategy or "sentence_window"),
+        "passage_chunk_size_sentences": int(passage_chunk_size_sentences),
+        "passage_chunk_stride_sentences": int(passage_chunk_stride_sentences),
+        "passage_chunk_min_sentences": int(passage_chunk_min_sentences),
+        "passage_chunk_max_chars": int(passage_chunk_max_chars),
+        "force_sentence_layer": bool(force_sentence_layer),
     }
 
 
@@ -2426,6 +2440,12 @@ def load_or_build_global_index(
     openie_retry_attempts=3,
     openie_retry_backoff_sec=0.2,
     openie_error_sample_limit=20,
+    passage_chunking_strategy="sentence_window",
+    passage_chunk_size_sentences=3,
+    passage_chunk_stride_sentences=2,
+    passage_chunk_min_sentences=2,
+    passage_chunk_max_chars=900,
+    force_sentence_layer=False,
     show_progress=True,
 ):
     index_total_start = time.perf_counter()
@@ -2450,6 +2470,12 @@ def load_or_build_global_index(
         openie_retry_attempts=openie_retry_attempts,
         openie_retry_backoff_sec=openie_retry_backoff_sec,
         openie_error_sample_limit=openie_error_sample_limit,
+        passage_chunking_strategy=passage_chunking_strategy,
+        passage_chunk_size_sentences=passage_chunk_size_sentences,
+        passage_chunk_stride_sentences=passage_chunk_stride_sentences,
+        passage_chunk_min_sentences=passage_chunk_min_sentences,
+        passage_chunk_max_chars=passage_chunk_max_chars,
+        force_sentence_layer=force_sentence_layer,
     )
     semantic_build_config = _normalize_semantic_build_config(build_config)
     prebuilt_path = str(prebuilt_igraph_path or "").strip()
@@ -2609,6 +2635,7 @@ def load_or_build_global_index(
             passage_chunk_stride_sentences=build_config.get("passage_chunk_stride_sentences", 2),
             passage_chunk_min_sentences=build_config.get("passage_chunk_min_sentences", 2),
             passage_chunk_max_chars=build_config.get("passage_chunk_max_chars", 900),
+            force_sentence_layer=build_config.get("force_sentence_layer", False),
             show_progress=show_progress,
         )
         stats = dict(stats or {})
