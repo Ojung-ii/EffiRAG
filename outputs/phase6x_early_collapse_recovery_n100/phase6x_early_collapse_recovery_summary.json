@@ -1,13 +1,14 @@
 {
-  "generated_at": "2026-05-19T16:52:44Z",
+  "generated_at": "2026-05-19T17:16:06Z",
   "out_root": "/home/ojungii/EffiRAG/outputs/phase6x_early_collapse_recovery_n100",
   "artifact_validation": {
-    "scheduled_runs": 0,
-    "completed_runs": 0,
+    "scheduled_runs": 4,
+    "completed_runs": 4,
     "incomplete_attempts": 0,
     "extra_not_in_manifest": 0,
     "multi_attempt_run_names": 0,
-    "parse_errors": 0
+    "parse_errors": 0,
+    "sample_id_mismatch": 0
   },
   "datasets": [
     {
@@ -181,8 +182,11 @@
         "reserve_trigger_rate": 0.18,
         "reserve_phase2_survival_rate": 1.0,
         "reserve_sentence_candidate_rate": 1.0,
+        "reserve_ABR_candidate_rate": 1.0,
         "reserve_ABR_selected_rate": 1.0,
-        "reserve_rendered_rate": 1.0
+        "reserve_rendered_rate": 1.0,
+        "reserve_forced_selected_rate": 0.0,
+        "reserve_forced_rendered_rate": 0.0
       }
     },
     {
@@ -356,8 +360,11 @@
         "reserve_trigger_rate": 0.16,
         "reserve_phase2_survival_rate": 1.0,
         "reserve_sentence_candidate_rate": 1.0,
+        "reserve_ABR_candidate_rate": 1.0,
         "reserve_ABR_selected_rate": 1.0,
-        "reserve_rendered_rate": 1.0
+        "reserve_rendered_rate": 1.0,
+        "reserve_forced_selected_rate": 0.0,
+        "reserve_forced_rendered_rate": 0.0
       }
     }
   ],
@@ -366,6 +373,8 @@
     "max_dataset_drop_f1": 0.04300000000000004,
     "avg_delta_context_tokens": -2.5100000000000193,
     "avg_delta_retrieval_ms": -71.8240928259911,
+    "max_reserve_forced_selected_rate": 0.0,
+    "max_reserve_forced_rendered_rate": 0.0,
     "paired_query_count": 200
   },
   "decision": "strong_accept"
